@@ -1,12 +1,19 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { EventStore } from '@runtimescope/collector';
+import type { EventStore, DetectedIssue } from '@runtimescope/collector';
 import { detectIssues } from '@runtimescope/collector';
+import type { ApiDiscoveryEngine } from '@runtimescope/collector';
+import type { ProcessMonitor } from '@runtimescope/collector';
 
-export function registerIssueTools(server: McpServer, store: EventStore): void {
+export function registerIssueTools(
+  server: McpServer,
+  store: EventStore,
+  apiDiscovery?: ApiDiscoveryEngine,
+  processMonitor?: ProcessMonitor
+): void {
   server.tool(
     'detect_issues',
-    'Run all pattern detectors against captured runtime data and return prioritized issues. Detects: failed requests, slow requests (>3s), N+1 request patterns, console error spam, and high error rates. Use this as the first tool when investigating performance problems.',
+    'Run all pattern detectors against captured runtime data and return prioritized issues. Detects: failed requests, slow requests (>3s), N+1 request patterns, console error spam, high error rates, slow DB queries (>500ms), N+1 DB queries, API degradation, high latency endpoints, orphaned processes, and more. Use this as the first tool when investigating performance problems.',
     {
       since_seconds: z
         .number()
@@ -19,9 +26,24 @@ export function registerIssueTools(server: McpServer, store: EventStore): void {
     },
     async ({ since_seconds, severity_filter }) => {
       const events = store.getAllEvents(since_seconds);
-      const allIssues = detectIssues(events);
+      const allIssues: DetectedIssue[] = [...detectIssues(events)];
 
+      // Merge engine-contributed issues
+      if (apiDiscovery) {
+        try {
+          allIssues.push(...apiDiscovery.detectIssues(events));
+        } catch { /* engine may not have data yet */ }
+      }
+      if (processMonitor) {
+        try {
+          allIssues.push(...processMonitor.detectIssues());
+        } catch { /* engine may not have scanned yet */ }
+      }
+
+      // Re-sort merged issues by severity
       const severityOrder = { high: 0, medium: 1, low: 2 };
+      allIssues.sort((a, b) => severityOrder[a.severity] - severityOrder[b.severity]);
+
       const filterThreshold = severity_filter ? severityOrder[severity_filter] : 2;
       const issues = allIssues.filter(
         (i) => severityOrder[i.severity] <= filterThreshold

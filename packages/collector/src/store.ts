@@ -1,11 +1,20 @@
 import { RingBuffer } from './ring-buffer.js';
+import type { SqliteStore } from './sqlite-store.js';
 import type {
   RuntimeEvent,
   NetworkEvent,
   ConsoleEvent,
   SessionEvent,
+  StateEvent,
+  RenderEvent,
+  PerformanceEvent,
+  DatabaseEvent,
   NetworkFilter,
   ConsoleFilter,
+  StateFilter,
+  RenderFilter,
+  PerformanceFilter,
+  DatabaseFilter,
   SessionInfo,
   TimelineFilter,
   EventType,
@@ -14,6 +23,9 @@ import type {
 export class EventStore {
   private buffer: RingBuffer<RuntimeEvent>;
   private sessions: Map<string, SessionInfo> = new Map();
+  private sqliteStore: SqliteStore | null = null;
+  private currentProject: string | null = null;
+  private onEventCallbacks: ((event: RuntimeEvent) => void)[] = [];
 
   constructor(capacity = 10_000) {
     this.buffer = new RingBuffer<RuntimeEvent>(capacity);
@@ -21,6 +33,20 @@ export class EventStore {
 
   get eventCount(): number {
     return this.buffer.count;
+  }
+
+  setSqliteStore(store: SqliteStore, project: string): void {
+    this.sqliteStore = store;
+    this.currentProject = project;
+  }
+
+  onEvent(callback: (event: RuntimeEvent) => void): void {
+    this.onEventCallbacks.push(callback);
+  }
+
+  removeEventListener(callback: (event: RuntimeEvent) => void): void {
+    const idx = this.onEventCallbacks.indexOf(callback);
+    if (idx !== -1) this.onEventCallbacks.splice(idx, 1);
   }
 
   addEvent(event: RuntimeEvent): void {
@@ -40,6 +66,20 @@ export class EventStore {
 
     const session = this.sessions.get(event.sessionId);
     if (session) session.eventCount++;
+
+    // SQLite dual-write
+    if (this.sqliteStore && this.currentProject) {
+      this.sqliteStore.addEvent(event, this.currentProject);
+    }
+
+    // Notify listeners
+    for (const cb of this.onEventCallbacks) {
+      try {
+        cb(event);
+      } catch {
+        // Don't let listener errors break event ingestion
+      }
+    }
   }
 
   getNetworkRequests(filter: NetworkFilter = {}): NetworkEvent[] {
@@ -105,12 +145,81 @@ export class EventStore {
     return this.buffer.toArray().filter((e) => e.timestamp >= since);
   }
 
+  getStateEvents(filter: StateFilter = {}): StateEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'state') return false;
+      const se = e as StateEvent;
+      if (se.timestamp < since) return false;
+      if (filter.storeId && se.storeId !== filter.storeId) return false;
+      return true;
+    }) as StateEvent[];
+  }
+
+  getRenderEvents(filter: RenderFilter = {}): RenderEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'render') return false;
+      const re = e as RenderEvent;
+      if (re.timestamp < since) return false;
+      if (filter.componentName) {
+        const hasMatch = re.profiles.some((p) =>
+          p.componentName.toLowerCase().includes(filter.componentName!.toLowerCase())
+        );
+        if (!hasMatch) return false;
+      }
+      return true;
+    }) as RenderEvent[];
+  }
+
+  getPerformanceMetrics(filter: PerformanceFilter = {}): PerformanceEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'performance') return false;
+      const pe = e as PerformanceEvent;
+      if (pe.timestamp < since) return false;
+      if (filter.metricName && pe.metricName !== filter.metricName) return false;
+      return true;
+    }) as PerformanceEvent[];
+  }
+
+  getDatabaseEvents(filter: DatabaseFilter = {}): DatabaseEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'database') return false;
+      const de = e as DatabaseEvent;
+      if (de.timestamp < since) return false;
+      if (filter.table) {
+        const hasTable = de.tablesAccessed.some(
+          (t) => t.toLowerCase() === filter.table!.toLowerCase()
+        );
+        if (!hasTable) return false;
+      }
+      if (filter.minDurationMs !== undefined && de.duration < filter.minDurationMs) return false;
+      if (filter.search && !de.query.toLowerCase().includes(filter.search.toLowerCase()))
+        return false;
+      if (filter.operation && de.operation !== filter.operation) return false;
+      if (filter.source && de.source !== filter.source) return false;
+      return true;
+    }) as DatabaseEvent[];
+  }
+
   clear(): { clearedCount: number } {
     const count = this.buffer.count;
     this.buffer.clear();
-    for (const s of this.sessions.values()) {
-      s.eventCount = 0;
-    }
+    this.sessions.clear();
     return { clearedCount: count };
   }
 }

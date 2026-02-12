@@ -1,7 +1,16 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
-import type { RuntimeEvent, NetworkEvent, ConsoleEvent } from '@runtimescope/collector';
+import type {
+  RuntimeEvent,
+  NetworkEvent,
+  ConsoleEvent,
+  StateEvent,
+  RenderEvent,
+  PerformanceEvent,
+  DomSnapshotEvent,
+  DatabaseEvent,
+} from '@runtimescope/collector';
 
 export function registerTimelineTools(server: McpServer, store: EventStore): void {
   server.tool(
@@ -13,7 +22,7 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
         .optional()
         .describe('Only return events from the last N seconds (default: 60)'),
       event_types: z
-        .array(z.enum(['network', 'console', 'session']))
+        .array(z.enum(['network', 'console', 'session', 'state', 'render', 'performance', 'dom_snapshot', 'database']))
         .optional()
         .describe('Filter by event types (default: all)'),
       limit: z
@@ -104,6 +113,60 @@ function formatTimelineEvent(event: RuntimeEvent): Record<string, unknown> {
         ...base,
         note: 'SDK session connected',
       };
+    case 'state': {
+      const se = event as StateEvent;
+      return {
+        ...base,
+        storeId: se.storeId,
+        library: se.library,
+        phase: se.phase,
+        action: se.action?.type ?? null,
+        changedKeys: se.diff ? Object.keys(se.diff).join(', ') : null,
+      };
+    }
+    case 'render': {
+      const re = event as RenderEvent;
+      return {
+        ...base,
+        totalRenders: re.totalRenders,
+        componentCount: re.profiles.length,
+        suspicious: re.suspiciousComponents.length > 0
+          ? re.suspiciousComponents.join(', ')
+          : null,
+      };
+    }
+    case 'performance': {
+      const pe = event as PerformanceEvent;
+      return {
+        ...base,
+        metric: pe.metricName,
+        value: pe.value,
+        rating: pe.rating,
+        element: pe.element ?? null,
+      };
+    }
+    case 'dom_snapshot': {
+      const ds = event as DomSnapshotEvent;
+      return {
+        ...base,
+        url: ds.url,
+        elementCount: ds.elementCount,
+        htmlSize: `${Math.round(ds.html.length / 1024)}KB`,
+        truncated: ds.truncated,
+      };
+    }
+    case 'database': {
+      const de = event as DatabaseEvent;
+      return {
+        ...base,
+        operation: de.operation,
+        query: de.query.length > 150 ? de.query.slice(0, 150) + '...' : de.query,
+        duration: `${de.duration.toFixed(0)}ms`,
+        tables: de.tablesAccessed,
+        source: de.source,
+        error: de.error ?? null,
+      };
+    }
     default:
       return base;
   }

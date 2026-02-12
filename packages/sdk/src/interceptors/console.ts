@@ -1,12 +1,16 @@
 import { generateId } from '../utils/id.js';
 import { safeSerialize } from '../utils/serialize.js';
-import type { ConsoleEvent, ConsoleLevel } from '../types.js';
+import type { ConsoleEvent, ConsoleLevel, RuntimeEvent } from '../types.js';
 
 type EmitFn = (event: ConsoleEvent) => void;
 
 const LEVELS: ConsoleLevel[] = ['log', 'warn', 'error', 'info', 'debug', 'trace'];
 
-export function interceptConsole(emit: EmitFn, sessionId: string): () => void {
+export function interceptConsole(
+  emit: EmitFn,
+  sessionId: string,
+  beforeSend?: (event: RuntimeEvent) => RuntimeEvent | null
+): () => void {
   const originals: Record<string, (...args: unknown[]) => void> = {};
 
   for (const level of LEVELS) {
@@ -32,7 +36,12 @@ export function interceptConsole(emit: EmitFn, sessionId: string): () => void {
         sourceFile: undefined,
       };
 
-      emit(event);
+      if (beforeSend) {
+        const filtered = beforeSend(event);
+        if (filtered) emit(filtered as ConsoleEvent);
+      } else {
+        emit(event);
+      }
 
       // Call original — MUST come after emit, and MUST use saved reference
       originals[level](...args);

@@ -7,10 +7,13 @@
   "scripts": {
     "build": "npm run build --workspaces",
     "dev": "npm run dev --workspaces --if-present",
-    "clean": "npm run clean --workspaces --if-present"
+    "clean": "npm run clean --workspaces --if-present",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "devDependencies": {
+    "tsup": "^8.0.0",
     "typescript": "^5.4.0",
-    "tsup": "^8.0.0"
+    "vitest": "^4.0.18"
   }
 }

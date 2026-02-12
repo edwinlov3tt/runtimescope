@@ -23,6 +23,7 @@ export class Transport {
   private connected = false;
   private stopped = false;
   private config: TransportConfig;
+  private commandHandler: ((cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => void) | null = null;
 
   private static readonly MAX_OFFLINE_QUEUE = 1000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
@@ -45,6 +46,17 @@ export class Transport {
       this.scheduleReconnect();
       return;
     }
+
+    this.ws.onmessage = (event: MessageEvent) => {
+      try {
+        const msg = JSON.parse(String(event.data));
+        if (msg.type === 'command' && msg.payload && this.commandHandler) {
+          this.commandHandler(msg.payload);
+        }
+      } catch {
+        // Ignore unparseable messages
+      }
+    };
 
     this.ws.onopen = () => {
       this.connected = true;
@@ -146,6 +158,21 @@ export class Transport {
       clearInterval(this.flushTimer);
       this.flushTimer = null;
     }
+  }
+
+  onCommand(handler: (cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => void): void {
+    this.commandHandler = handler;
+  }
+
+  sendCommandResponse(requestId: string, command: string, payload: unknown): void {
+    this.sendRaw({
+      type: 'command_response',
+      requestId,
+      command,
+      payload,
+      timestamp: Date.now(),
+      sessionId: this.config.sessionId,
+    });
   }
 
   disconnect(): void {

@@ -1,14 +1,41 @@
 import { execSync } from 'node:child_process';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { CollectorServer } from '@runtimescope/collector';
+import {
+  CollectorServer,
+  ProjectManager,
+  ApiDiscoveryEngine,
+  ProcessMonitor,
+  InfraConnector,
+  ConnectionManager,
+  SchemaIntrospector,
+  DataBrowser,
+  SessionManager,
+  HttpServer,
+} from '@runtimescope/collector';
+
+// --- Existing M1/M2 tool registrations ---
 import { registerNetworkTools } from './tools/network.js';
 import { registerConsoleTools } from './tools/console.js';
 import { registerSessionTools } from './tools/session.js';
 import { registerIssueTools } from './tools/issues.js';
 import { registerTimelineTools } from './tools/timeline.js';
+import { registerStateTools } from './tools/state.js';
+import { registerRenderTools } from './tools/renders.js';
+import { registerPerformanceTools } from './tools/performance.js';
+import { registerDomSnapshotTools } from './tools/dom-snapshot.js';
+import { registerHarTools } from './tools/har.js';
+import { registerErrorTools } from './tools/errors.js';
+
+// --- New M3 tool registrations ---
+import { registerApiDiscoveryTools } from './tools/api-discovery.js';
+import { registerDatabaseTools } from './tools/database.js';
+import { registerProcessMonitorTools } from './tools/process-monitor.js';
+import { registerInfraTools } from './tools/infra-connector.js';
+import { registerSessionDiffTools } from './tools/session-diff.js';
 
 const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
+const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
 
 /**
@@ -38,50 +65,111 @@ function killStaleProcess(port: number): void {
 }
 
 async function main() {
-  // 1. Clear any stale collector from a previous session
-  killStaleProcess(COLLECTOR_PORT);
+  // 1. Initialize project management
+  const projectManager = new ProjectManager();
+  projectManager.ensureGlobalDir();
 
-  // 2. Start the collector WebSocket server (retries on EADDRINUSE)
-  const collector = new CollectorServer({ bufferSize: BUFFER_SIZE });
+  // 2. Clear any stale collector from a previous session
+  killStaleProcess(COLLECTOR_PORT);
+  killStaleProcess(HTTP_PORT);
+
+  // 3. Start the collector WebSocket server with project scoping
+  const collector = new CollectorServer({
+    bufferSize: BUFFER_SIZE,
+    projectManager,
+  });
   await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 1000 });
 
-  // 3. Create MCP server
+  const store = collector.getStore();
+
+  // 4. Initialize engines
+  const apiDiscovery = new ApiDiscoveryEngine(store);
+  const connectionManager = new ConnectionManager();
+  const schemaIntrospector = new SchemaIntrospector();
+  const dataBrowser = new DataBrowser();
+  const processMonitor = new ProcessMonitor(store);
+  processMonitor.start();
+
+  const infraConnector = new InfraConnector(store);
+
+  // Session manager uses the collector's SQLite stores
+  const sqliteStores = new Map<string, InstanceType<typeof import('@runtimescope/collector').SqliteStore>>();
+  const sessionManager = new SessionManager(projectManager, sqliteStores, store);
+
+  // 5. Start HTTP API for dashboard
+  const httpServer = new HttpServer(store);
+  try {
+    await httpServer.start({ port: HTTP_PORT });
+  } catch (err) {
+    console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
+    // Non-fatal: MCP tools still work without HTTP API
+  }
+
+  // 6. Create MCP server
   const mcp = new McpServer({
     name: 'runtimescope',
-    version: '0.1.0',
+    version: '0.3.0',
   });
 
-  // 4. Register all tools with the shared event store
-  const store = collector.getStore();
+  // 7. Register all 33 tools
+
+  // --- Core Runtime (12 existing) ---
   registerNetworkTools(mcp, store);
   registerConsoleTools(mcp, store);
   registerSessionTools(mcp, store);
-  registerIssueTools(mcp, store);
+  registerIssueTools(mcp, store, apiDiscovery, processMonitor);
   registerTimelineTools(mcp, store);
+  registerStateTools(mcp, store);
+  registerRenderTools(mcp, store);
+  registerPerformanceTools(mcp, store);
+  registerDomSnapshotTools(mcp, store, collector);
+  registerHarTools(mcp, store);
+  registerErrorTools(mcp, store);
 
-  // 5. Connect MCP to stdio transport
+  // --- API Discovery (5 new) ---
+  registerApiDiscoveryTools(mcp, store, apiDiscovery);
+
+  // --- Database (7 new) ---
+  registerDatabaseTools(mcp, store, connectionManager, schemaIntrospector, dataBrowser);
+
+  // --- Process Monitor (3 new) ---
+  registerProcessMonitorTools(mcp, processMonitor);
+
+  // --- Infrastructure (4 new) ---
+  registerInfraTools(mcp, infraConnector);
+
+  // --- Session Diffing (2 new) ---
+  registerSessionDiffTools(mcp, sessionManager);
+
+  // 8. Connect MCP to stdio transport
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  console.error('[RuntimeScope] MCP server running on stdio');
+  console.error('[RuntimeScope] MCP server running on stdio (v0.3.0 — 33 tools)');
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
+  console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);
 
-  // 6. Robust shutdown — ensure the WebSocket server is closed on any exit path
+  // 9. Robust shutdown
   let shuttingDown = false;
-  const shutdown = () => {
+  const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
+
+    processMonitor.stop();
+    await connectionManager.closeAll();
+    await httpServer.stop();
     collector.stop();
+
     process.exit(0);
   };
 
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
-  process.on('beforeExit', shutdown);
+  process.on('SIGINT', () => { shutdown(); });
+  process.on('SIGTERM', () => { shutdown(); });
+  process.on('beforeExit', () => { shutdown(); });
 
   // If stdin closes (Claude Code disconnected), shut down cleanly
-  process.stdin.on('end', shutdown);
-  process.stdin.on('close', shutdown);
+  process.stdin.on('end', () => { shutdown(); });
+  process.stdin.on('close', () => { shutdown(); });
 }
 
 main().catch((err) => {

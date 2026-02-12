@@ -10,7 +10,33 @@ Browser (SDK) --WebSocket--> [Collector + MCP Server] --stdio--> Claude Code
 
 ---
 
-## Installation
+## Quick Start (Let Claude Do It)
+
+Paste this into Claude Code and it will handle the full setup:
+
+> **Install RuntimeScope for my project.** Clone https://github.com/edwinlov3tt/runtimescope into a sibling directory, build it, register the MCP server, and add the SDK to my app. My app uses [React/Next.js/Vite/etc]. Here are the steps:
+>
+> 1. `git clone https://github.com/edwinlov3tt/runtimescope ../runtimescope && cd ../runtimescope && npm install && npm run build`
+> 2. `claude mcp add runtimescope node ../runtimescope/packages/mcp-server/dist/index.js`
+> 3. Install the SDK in my project: `npm install ../runtimescope/packages/sdk`
+> 4. Add the SDK initialization to my app's entry point (main.tsx, _app.tsx, or equivalent):
+>
+> ```typescript
+> import { RuntimeScope } from '@runtimescope/sdk';
+>
+> RuntimeScope.connect({
+>   appName: 'my-app',
+>   captureConsole: true,
+>   captureNetwork: true,
+>   captureXhr: true,
+> });
+> ```
+>
+> 5. Restart Claude Code so the MCP server loads, then verify with `get_session_info`.
+
+---
+
+## Manual Installation
 
 ### Prerequisites
 
@@ -37,20 +63,23 @@ This registers RuntimeScope as an MCP server. Claude Code will automatically sta
 
 ### 3. Add the SDK to Your App
 
-**Option A — npm install (recommended for projects in the same workspace)**
+**Option A — npm link (recommended)**
 
 ```bash
 # From your app's directory
 npm install ../runtime-profiler/packages/sdk
 ```
 
+Then add to your app's entry point (e.g. `main.tsx`, `_app.tsx`, `index.tsx`):
+
 ```typescript
 import { RuntimeScope } from '@runtimescope/sdk';
 
-RuntimeScope.connect({
-  serverUrl: 'ws://localhost:9090',
-  appName: 'my-app',
-});
+if (process.env.NODE_ENV === 'development') {
+  RuntimeScope.connect({
+    appName: 'my-app',
+  });
+}
 ```
 
 **Option B — Script tag (no build step)**
@@ -59,7 +88,6 @@ RuntimeScope.connect({
 <script src="path/to/runtime-profiler/packages/sdk/dist/index.global.js"></script>
 <script>
   RuntimeScope.RuntimeScope.connect({
-    serverUrl: 'ws://localhost:9090',
     appName: 'my-app',
   });
 </script>
@@ -73,9 +101,83 @@ Start your app, then ask Claude Code:
 
 ---
 
+## SDK Configuration
+
+```typescript
+RuntimeScope.connect({
+  // Connection
+  serverUrl: 'ws://localhost:9090',  // Collector WebSocket URL (default)
+  appName: 'my-app',                // Identifies this app in session info
+  enabled: true,                     // Set to false to disable entirely
+
+  // Capture toggles (all default to true except where noted)
+  captureNetwork: true,              // Intercept fetch
+  captureXhr: true,                  // Intercept XMLHttpRequest
+  captureConsole: true,              // Intercept console.*
+  captureBody: false,                // Capture request/response bodies (default: false)
+  maxBodySize: 65536,                // Max body size in bytes (default: 64KB)
+  capturePerformance: false,         // Web Vitals (default: false)
+  captureRenders: false,             // React render tracking (default: false)
+
+  // State tracking — pass your Zustand/Redux store refs
+  stores: {
+    // myStore: useMyStore,
+  },
+
+  // Privacy
+  redactHeaders: ['authorization', 'cookie', 'set-cookie'],
+  beforeSend: (event) => event,      // Filter/modify events before sending
+
+  // Build metadata (for session comparison)
+  buildMeta: {
+    gitCommit: 'abc1234',
+    gitBranch: 'main',
+  },
+
+  // Transport tuning
+  batchSize: 50,                     // Events per batch (default: 50)
+  flushIntervalMs: 100,              // Batch flush interval (default: 100ms)
+});
+```
+
+### Framework-Specific Setup
+
+**Next.js (App Router)**
+
+```typescript
+// app/providers.tsx
+'use client';
+import { useEffect } from 'react';
+
+export function Providers({ children }: { children: React.ReactNode }) {
+  useEffect(() => {
+    if (process.env.NODE_ENV === 'development') {
+      import('@runtimescope/sdk').then(({ RuntimeScope }) => {
+        RuntimeScope.connect({ appName: 'my-nextjs-app' });
+      });
+    }
+  }, []);
+
+  return <>{children}</>;
+}
+```
+
+**Vite / Create React App**
+
+```typescript
+// src/main.tsx
+import { RuntimeScope } from '@runtimescope/sdk';
+
+if (import.meta.env.DEV) {
+  RuntimeScope.connect({ appName: 'my-vite-app' });
+}
+```
+
+---
+
 ## Claude Prompt
 
-Copy and paste this prompt into Claude Code to give it full context on how to use RuntimeScope:
+Copy this into your project's `CLAUDE.md` or paste it directly to give Claude full context:
 
 > You have access to RuntimeScope, a runtime profiling MCP server for web apps. It captures network requests, console output, state changes, component renders, Web Vitals, database queries, and more from the running app via a browser SDK.
 >
@@ -160,8 +262,6 @@ Copy and paste this prompt into Claude Code to give it full context on how to us
 | `compare_sessions` | Compare two sessions: API latency, render counts, Web Vitals, query performance. Shows regressions and improvements |
 | `get_session_history` | List past sessions with build metadata and event counts |
 
-See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference with types, defaults, and example prompts.
-
 ---
 
 ## Detected Patterns
@@ -181,48 +281,12 @@ See [docs/TOOLS.md](docs/TOOLS.md) for the full parameter reference with types, 
 
 ---
 
-## SDK Configuration
-
-```typescript
-RuntimeScope.connect({
-  serverUrl: 'ws://localhost:9090',  // Collector WebSocket URL
-  appName: 'my-app',                // Identifies this app in session info
-
-  // Capture toggles
-  captureNetwork: true,              // Intercept fetch (default: true)
-  captureXhr: true,                  // Intercept XMLHttpRequest (default: true)
-  captureConsole: true,              // Intercept console.* (default: true)
-  captureBody: false,                // Capture request/response bodies (default: false)
-  maxBodySize: 65536,                // Max body size in bytes (default: 64KB)
-  capturePerformance: false,         // Web Vitals via web-vitals (default: false)
-  captureRenders: false,             // React render tracking (default: false)
-
-  // State tracking
-  stores: {},                        // Zustand/Redux store refs (default: {})
-
-  // Privacy
-  redactHeaders: ['authorization', 'cookie', 'set-cookie'],
-  beforeSend: (event) => event,      // Filter/modify events before sending
-
-  // Build metadata (for session comparison)
-  buildMeta: {
-    gitCommit: 'abc1234',
-    gitBranch: 'main',
-  },
-
-  // Transport tuning
-  batchSize: 50,                     // Events per batch (default: 50)
-  flushIntervalMs: 100,              // Batch flush interval (default: 100ms)
-});
-```
-
----
-
 ## Project Structure
 
 ```
 packages/
   sdk/           # Browser SDK (zero deps, ~3KB gzipped)
+  server-sdk/    # Node.js server SDK (Prisma, pg, Knex integrations)
   collector/     # WebSocket receiver + ring buffer + issue detection + engines
   mcp-server/    # MCP stdio server with 33 tools
 ```
@@ -232,7 +296,7 @@ packages/
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
-| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port (for dashboard) |
+| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
 
 ## License

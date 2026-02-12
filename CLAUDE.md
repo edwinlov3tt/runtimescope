@@ -63,7 +63,7 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 - **Interceptor pattern**: `interceptXxx(emit, sessionId, options?) → () => void`
 - **Transport**: WebSocket client with batching (50 events / 100ms), offline queue (1K max), exponential backoff reconnect
 - **Bidirectional**: Transport receives server→SDK commands (e.g., `capture_dom_snapshot`) and sends responses
-- All diagnostic logging uses `_log` (saved `console.error.bind(console)` before interceptors patch it) to avoid recursion
+- All diagnostic logging uses `_log` (saved `console.debug.bind(console)` before interceptors patch it) to avoid recursion — hidden by default in Chrome DevTools
 
 ### Collector (`packages/collector/`)
 

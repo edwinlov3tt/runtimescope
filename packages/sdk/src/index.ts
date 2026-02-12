@@ -11,8 +11,9 @@ import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent } from './types
 
 const SDK_VERSION = '0.2.0';
 
-// Save original console.error BEFORE interceptors patch it
-const _log = console.error.bind(console);
+// Save original console.debug BEFORE interceptors patch it.
+// debug-level messages are hidden by default in Chrome DevTools.
+const _log = console.debug.bind(console);
 
 export class RuntimeScope {
   private static transport: Transport | null = null;

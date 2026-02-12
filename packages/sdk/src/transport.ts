@@ -1,8 +1,8 @@
 import type { RuntimeEvent } from './types.js';
 
-// Save original console.error BEFORE any interceptors patch it.
-// This ensures diagnostic logs don't trigger the console interceptor.
-const _log = console.error.bind(console);
+// Save original console.debug BEFORE any interceptors patch it.
+// debug-level messages are hidden by default in Chrome DevTools.
+const _log = console.debug.bind(console);
 
 interface TransportConfig {
   serverUrl: string;
@@ -81,7 +81,6 @@ export class Transport {
         for (const event of queued) {
           this.batch.push(event);
         }
-        _log(`[RuntimeScope] Flushing ${queued.length} queued event(s)`);
         this.flush();
       }
 

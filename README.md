@@ -21,14 +21,15 @@ Any URL ──Playwright scan──┘
 
 Paste this into Claude Code and it will handle the full setup — **works with any tech stack**:
 
-> **Install RuntimeScope for my project.** Clone https://github.com/edwinlov3tt/runtimescope into a sibling directory, build it, and register the MCP server. Then use `get_sdk_snippet` to generate the right installation snippet for my tech stack and add it to my app.
+> **Install RuntimeScope for my project.** Clone https://github.com/edwinlov3tt/runtimescope into a sibling directory, build it, and register the MCP server. Then use `get_sdk_snippet` to generate the right installation snippet for my tech stack and add it to my app. Finally, copy the slash commands into my project.
 >
 > Steps:
 > 1. `git clone https://github.com/edwinlov3tt/runtimescope ../runtimescope && cd ../runtimescope && npm install && npm run build`
 > 2. `claude mcp add runtimescope node ../runtimescope/packages/mcp-server/dist/index.js`
 > 3. Restart Claude Code so the MCP server loads
 > 4. Use `get_sdk_snippet` — it auto-detects my framework and gives me the exact code + where to paste it
-> 5. Verify with `get_session_info`
+> 5. Copy the slash commands (additive — don't remove existing commands): `mkdir -p .claude/commands && cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/`
+> 6. Verify with `get_session_info`
 
 The `get_sdk_snippet` tool supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and any other tech stack that serves HTML. **No npm or Node.js required** — it generates a `<script>` tag that works in any HTML page.
 
@@ -198,6 +199,52 @@ app.use(RuntimeScope.middleware());
 Start your app, then ask Claude Code:
 
 > "Use get_session_info to check if the SDK is connected."
+
+### 5. Install Claude Code Commands (Optional)
+
+RuntimeScope ships with **11 slash commands** that give Claude pre-built workflows for common tasks. These go in your project's `.claude/commands/` directory.
+
+**Install commands (adds to existing commands, does not overwrite):**
+
+```bash
+# From your project directory — copies RuntimeScope commands alongside any existing commands
+cp ../runtimescope/.claude/commands/diagnose.md .claude/commands/
+cp ../runtimescope/.claude/commands/trace.md .claude/commands/
+cp ../runtimescope/.claude/commands/renders.md .claude/commands/
+cp ../runtimescope/.claude/commands/api.md .claude/commands/
+cp ../runtimescope/.claude/commands/network.md .claude/commands/
+cp ../runtimescope/.claude/commands/queries.md .claude/commands/
+cp ../runtimescope/.claude/commands/recon.md .claude/commands/
+cp ../runtimescope/.claude/commands/clone-ui.md .claude/commands/
+cp ../runtimescope/.claude/commands/devops.md .claude/commands/
+cp ../runtimescope/.claude/commands/history.md .claude/commands/
+cp ../runtimescope/.claude/commands/setup.md .claude/commands/
+```
+
+Or copy all at once:
+
+```bash
+mkdir -p .claude/commands
+cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/
+```
+
+**Available commands after installation:**
+
+| Command | Usage | What it does |
+|---------|-------|-------------|
+| `/setup` | `/setup` | Install RuntimeScope SDK — detects framework, generates snippet, verifies connection |
+| `/diagnose` | `/diagnose` | Full-stack health check — runs issue detection, API health, query performance, Web Vitals |
+| `/trace` | `/trace checkout flow` | Trace a user flow — clears events, asks you to reproduce, then analyzes the causal chain |
+| `/renders` | `/renders ProductList` | Render performance audit — finds excessive re-renders, suggests memo/callback fixes |
+| `/api` | `/api /checkout` | API health report — endpoints, latency, errors, service map |
+| `/network` | `/network 500` | Network request analysis — failed requests, slow requests, N+1 patterns |
+| `/queries` | `/queries slow` | Database query audit — slow queries, N+1 patterns, missing indexes |
+| `/recon` | `/recon https://stripe.com` | Full website recon — tech stack, design tokens, layout, fonts, accessibility, assets |
+| `/clone-ui` | `/clone-ui https://site.com .card` | Clone a component — scans URL, extracts everything needed to recreate it |
+| `/devops` | `/devops` | Dev environment status — running processes, port usage, build status, deploy logs |
+| `/history` | `/history my-app 7d` | Historical event query — list projects and query past events from SQLite |
+
+> **Note:** These commands are additive — they won't conflict with or overwrite any existing commands in your `.claude/commands/` directory.
 
 ---
 
@@ -407,8 +454,11 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 > 2. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML), the SDK is a simple `<script>` tag — no npm or build system required. The SDK bundle is served by the RuntimeScope collector at `http://localhost:9091/runtimescope.js`.
 > 3. `get_sdk_snippet` returns framework-specific placement hints (e.g., "paste in templates/base.html before </body>" for Flask).
 > 4. **Never tell users RuntimeScope is incompatible with their tech stack.** If it serves HTML, RuntimeScope works with it.
+> 5. After SDK installation, **copy the RuntimeScope slash commands** into the project's `.claude/commands/` directory (additive — do not remove existing commands): `cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/`
 >
 > **Data persistence:** All events are automatically persisted to SQLite (per-project databases at `~/.runtimescope/projects/<appName>/events.db`). Events survive Claude Code restarts. Historical data is retained for 30 days by default — this can be changed by setting the `RUNTIMESCOPE_RETENTION_DAYS` environment variable. Use `list_projects` to see all projects with stored data, and `get_historical_events` to query past events.
+>
+> **Slash commands available:** `/setup`, `/diagnose`, `/trace`, `/renders`, `/api`, `/network`, `/queries`, `/recon`, `/clone-ui`, `/devops`, `/history`. Use these for pre-built diagnostic workflows.
 
 ### Website Analysis Prompt (No SDK Required)
 

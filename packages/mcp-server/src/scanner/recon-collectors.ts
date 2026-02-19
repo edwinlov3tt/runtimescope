@@ -619,3 +619,219 @@ export async function collectAssets(page: Page): Promise<RawAssets> {
     };
   });
 }
+
+// ============================================================
+// On-demand Collectors (used by tools, not the main scan pipeline)
+// ============================================================
+
+export interface RawComputedStyles {
+  selector: string;
+  propertyFilter?: string[];
+  entries: Array<{
+    selector: string;
+    matchCount: number;
+    styles: Record<string, string>;
+    variations: Array<{
+      property: string;
+      values: Array<{ value: string; count: number }>;
+    }>;
+  }>;
+}
+
+export interface RawElementSnapshot {
+  selector: string;
+  depth: number;
+  totalNodes: number;
+  root: RawSnapshotNode;
+}
+
+export interface RawSnapshotNode {
+  tag: string;
+  id?: string;
+  classList: string[];
+  attributes: Record<string, string>;
+  textContent?: string;
+  boundingRect: { x: number; y: number; width: number; height: number };
+  computedStyles: Record<string, string>;
+  children: RawSnapshotNode[];
+}
+
+/**
+ * Collect computed styles for elements matching a CSS selector.
+ * Runs inside Playwright's page context.
+ */
+export async function collectComputedStyles(
+  page: Page,
+  selector: string,
+  propertyFilter?: string[],
+): Promise<RawComputedStyles> {
+  return page.evaluate(
+    ({ sel, propFilter }) => {
+      const elements = document.querySelectorAll(sel);
+      if (elements.length === 0) {
+        return { selector: sel, propertyFilter: propFilter, entries: [] };
+      }
+
+      // Key visual/layout properties when no filter specified
+      const DEFAULT_PROPS = [
+        'color', 'background-color', 'border-color',
+        'font-family', 'font-size', 'font-weight', 'font-style', 'line-height',
+        'letter-spacing', 'text-align', 'text-transform', 'text-decoration',
+        'display', 'position', 'top', 'right', 'bottom', 'left',
+        'width', 'height', 'min-width', 'max-width', 'min-height', 'max-height',
+        'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+        'padding-top', 'padding-right', 'padding-bottom', 'padding-left',
+        'gap', 'flex-direction', 'justify-content', 'align-items', 'flex-wrap',
+        'grid-template-columns', 'grid-template-rows',
+        'border-width', 'border-style', 'border-radius',
+        'box-shadow', 'text-shadow', 'opacity', 'overflow', 'z-index',
+        'transform', 'transition', 'background-image', 'background-size',
+        'cursor', 'pointer-events',
+      ];
+
+      const propsToCapture = propFilter && propFilter.length > 0 ? propFilter : DEFAULT_PROPS;
+
+      // Collect styles from all matching elements
+      const allStyles: Record<string, string>[] = [];
+      const limit = Math.min(elements.length, 50);
+      for (let i = 0; i < limit; i++) {
+        const cs = getComputedStyle(elements[i]);
+        const styles: Record<string, string> = {};
+        for (const prop of propsToCapture) {
+          const val = cs.getPropertyValue(prop);
+          if (val) styles[prop] = val;
+        }
+        allStyles.push(styles);
+      }
+
+      // Compute the "first element" styles and detect variations
+      const baseStyles = allStyles[0] || {};
+      const variations: Array<{
+        property: string;
+        values: Array<{ value: string; count: number }>;
+      }> = [];
+
+      if (allStyles.length > 1) {
+        for (const prop of propsToCapture) {
+          const valueCounts = new Map<string, number>();
+          for (const s of allStyles) {
+            const val = s[prop] || '';
+            valueCounts.set(val, (valueCounts.get(val) || 0) + 1);
+          }
+          if (valueCounts.size > 1) {
+            variations.push({
+              property: prop,
+              values: Array.from(valueCounts.entries())
+                .map(([value, count]) => ({ value, count }))
+                .sort((a, b) => b.count - a.count),
+            });
+          }
+        }
+      }
+
+      return {
+        selector: sel,
+        propertyFilter: propFilter,
+        entries: [{
+          selector: sel,
+          matchCount: elements.length,
+          styles: baseStyles,
+          variations,
+        }],
+      };
+    },
+    { sel: selector, propFilter: propertyFilter },
+  );
+}
+
+/**
+ * Collect a deep element snapshot for a CSS selector.
+ * Captures structure, attributes, bounding rects, and key computed styles.
+ */
+export async function collectElementSnapshot(
+  page: Page,
+  selector: string,
+  maxDepth = 5,
+): Promise<RawElementSnapshot | null> {
+  return page.evaluate(
+    ({ sel, maxD }) => {
+      const rootEl = document.querySelector(sel);
+      if (!rootEl) return null;
+
+      const KEY_STYLES = [
+        'display', 'position', 'color', 'background-color',
+        'font-family', 'font-size', 'font-weight', 'line-height',
+        'width', 'height', 'margin', 'padding', 'border',
+        'flex-direction', 'justify-content', 'align-items', 'gap',
+        'grid-template-columns', 'grid-template-rows',
+        'border-radius', 'box-shadow', 'opacity', 'overflow', 'z-index',
+      ];
+
+      type SnapNode = {
+        tag: string; id?: string; classList: string[];
+        attributes: Record<string, string>; textContent?: string;
+        boundingRect: { x: number; y: number; width: number; height: number };
+        computedStyles: Record<string, string>;
+        children: SnapNode[];
+      };
+
+      let totalNodes = 0;
+
+      function walk(el: Element, depth: number): SnapNode {
+        totalNodes++;
+        const rect = el.getBoundingClientRect();
+        const cs = getComputedStyle(el);
+
+        const attributes: Record<string, string> = {};
+        for (const attr of el.attributes) {
+          if (!['class', 'id', 'style'].includes(attr.name)) {
+            attributes[attr.name] = attr.value.slice(0, 200);
+          }
+        }
+
+        const computedStyles: Record<string, string> = {};
+        for (const prop of KEY_STYLES) {
+          const val = cs.getPropertyValue(prop);
+          if (val) computedStyles[prop] = val;
+        }
+
+        const children: SnapNode[] = [];
+        if (depth < maxD) {
+          const childLimit = Math.min(el.children.length, 30);
+          for (let i = 0; i < childLimit; i++) {
+            children.push(walk(el.children[i], depth + 1));
+          }
+        }
+
+        const node: SnapNode = {
+          tag: el.tagName.toLowerCase(),
+          classList: Array.from(el.classList),
+          attributes,
+          boundingRect: {
+            x: Math.round(rect.x), y: Math.round(rect.y),
+            width: Math.round(rect.width), height: Math.round(rect.height),
+          },
+          computedStyles,
+          children,
+        };
+
+        if (el.id) node.id = el.id;
+        if (el.children.length === 0 && el.textContent) {
+          node.textContent = el.textContent.trim().slice(0, 200);
+        }
+
+        return node;
+      }
+
+      const root = walk(rootEl, 0);
+
+      return {
+        selector: sel,
+        depth: maxD,
+        totalNodes,
+        root,
+      };
+    },
+    { sel: selector, maxD: maxDepth },
+  );
+}

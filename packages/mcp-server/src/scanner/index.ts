@@ -15,7 +15,10 @@ import {
   collectAccessibility,
   collectFonts,
   collectAssets,
+  collectComputedStyles,
+  collectElementSnapshot,
 } from './recon-collectors.js';
+import type { RawComputedStyles, RawElementSnapshot } from './recon-collectors.js';
 import { buildReconEvents } from './event-builder.js';
 
 export interface ScanOptions {
@@ -46,6 +49,7 @@ export class PlaywrightScanner {
   private browser: unknown = null;
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private static IDLE_TIMEOUT = 60_000; // Close browser after 60s idle
+  private lastScannedUrl: string | null = null;
 
   /**
    * Lazily load the technology database.
@@ -207,6 +211,8 @@ export class PlaywrightScanner {
 
       const scanDurationMs = Date.now() - startTime;
 
+      this.lastScannedUrl = page.url();
+
       return {
         url: page.url(),
         title,
@@ -215,6 +221,59 @@ export class PlaywrightScanner {
         summary: summaryParts.join('. ') + `. Scan took ${scanDurationMs}ms.`,
         scanDurationMs,
       };
+    } finally {
+      await context.close();
+    }
+  }
+
+  /**
+   * Get the last scanned URL (so tools know a scan was performed).
+   */
+  getLastScannedUrl(): string | null {
+    return this.lastScannedUrl;
+  }
+
+  /**
+   * On-demand: query computed styles for a selector on a previously scanned URL.
+   * Opens a fresh page, navigates, collects, closes.
+   */
+  async queryComputedStyles(
+    url: string,
+    selector: string,
+    propertyFilter?: string[],
+  ): Promise<RawComputedStyles> {
+    const { browser } = await this.ensureBrowser();
+    const br = browser as import('playwright').Browser;
+    const context = await br.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+      return await collectComputedStyles(page, selector, propertyFilter);
+    } finally {
+      await context.close();
+    }
+  }
+
+  /**
+   * On-demand: query element snapshot for a selector on a previously scanned URL.
+   * Opens a fresh page, navigates, collects, closes.
+   */
+  async queryElementSnapshot(
+    url: string,
+    selector: string,
+    depth = 5,
+  ): Promise<RawElementSnapshot | null> {
+    const { browser } = await this.ensureBrowser();
+    const br = browser as import('playwright').Browser;
+    const context = await br.newContext({
+      viewport: { width: 1280, height: 720 },
+    });
+    const page = await context.newPage();
+    try {
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+      return await collectElementSnapshot(page, selector, depth);
     } finally {
       await context.close();
     }

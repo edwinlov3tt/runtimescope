@@ -199,8 +199,8 @@ async function main() {
   registerReconFontTools(mcp, store);
   registerReconLayoutTools(mcp, store, collector);
   registerReconAccessibilityTools(mcp, store);
-  registerReconComputedStyleTools(mcp, store, collector);
-  registerReconElementSnapshotTools(mcp, store, collector);
+  registerReconComputedStyleTools(mcp, store, collector, scanner);
+  registerReconElementSnapshotTools(mcp, store, collector, scanner);
   registerReconAssetTools(mcp, store);
   registerReconStyleDiffTools(mcp, store);
 

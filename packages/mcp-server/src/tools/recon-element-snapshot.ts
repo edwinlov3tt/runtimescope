@@ -1,11 +1,13 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore, CollectorServer } from '@runtimescope/collector';
+import type { PlaywrightScanner } from '../scanner/index.js';
 
 export function registerReconElementSnapshotTools(
   server: McpServer,
   store: EventStore,
   collector: CollectorServer,
+  scanner: PlaywrightScanner,
 ): void {
   server.tool(
     'get_element_snapshot',
@@ -23,9 +25,10 @@ export function registerReconElementSnapshotTools(
         .boolean()
         .optional()
         .default(false)
-        .describe('Request fresh capture from extension for this element'),
+        .describe('Request fresh capture from extension or scanner for this element'),
     },
     async ({ selector, depth, force_refresh }) => {
+      // If force_refresh, try to get fresh data from extension
       if (force_refresh) {
         const sessions = store.getSessionInfo();
         const activeSession = sessions.find((s) => s.isConnected);
@@ -37,26 +40,56 @@ export function registerReconElementSnapshotTools(
               params: { selector, depth },
             });
           } catch {
-            // Fall through to stored data
+            // Fall through to stored data or scanner fallback
           }
         }
       }
 
-      // Find matching snapshots — look for this selector
+      // Check for pre-captured events first
       const events = store.getReconElementSnapshots();
-      const event = events.find((e) => e.selector === selector) ?? events[0];
+      let event = events.find((e) => e.selector === selector) ?? events[0];
+
+      // Fallback: if no pre-captured data, use the scanner to query live
+      if (!event && scanner.getLastScannedUrl()) {
+        const url = scanner.getLastScannedUrl()!;
+        try {
+          const raw = await scanner.queryElementSnapshot(url, selector, depth);
+          if (raw) {
+            // Build a synthetic event and store it for caching
+            const syntheticEvent = {
+              eventId: `evt-scan-es-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+              sessionId: `scan-${Date.now()}`,
+              timestamp: Date.now(),
+              eventType: 'recon_element_snapshot' as const,
+              url,
+              selector: raw.selector,
+              depth: raw.depth,
+              totalNodes: raw.totalNodes,
+              root: raw.root,
+            };
+            store.addEvent(syntheticEvent);
+            event = syntheticEvent;
+          }
+        } catch {
+          // Scanner query failed, fall through to error message
+        }
+      }
 
       const sessions = store.getSessionInfo();
       const sessionId = sessions[0]?.sessionId ?? null;
 
       if (!event) {
+        const hint = scanner.getLastScannedUrl()
+          ? `No element found matching "${selector}" on the scanned page. Check the selector and try again.`
+          : `No element snapshot captured for "${selector}". Run scan_website first to scan a page, then query selectors on it.`;
+
         return {
           content: [{
             type: 'text' as const,
             text: JSON.stringify({
-              summary: `No element snapshot captured for "${selector}". Use force_refresh=true to request a fresh capture from the extension.`,
+              summary: hint,
               data: null,
-              issues: ['No recon_element_snapshot events found for this selector'],
+              issues: ['No element snapshot data available for this selector'],
               metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
             }, null, 2),
           }],

@@ -104,7 +104,8 @@ export async function collectDesignTokens(page: Page): Promise<RawDesignTokens> 
       if (el.offsetHeight === 0 && el.offsetWidth === 0) continue;
 
       const cs = getComputedStyle(el);
-      const selector = el.tagName.toLowerCase() + (el.className ? '.' + el.className.split(' ')[0] : '');
+      const cls = el.getAttribute('class') || '';
+      const selector = el.tagName.toLowerCase() + (cls ? '.' + cls.split(' ')[0] : '');
 
       // Colors
       for (const prop of ['color', 'background-color', 'border-color'] as const) {
@@ -476,7 +477,8 @@ export async function collectFonts(page: Page): Promise<RawFonts> {
       const key = `${cs.fontFamily}|${cs.fontWeight}|${cs.fontStyle}`;
       const entry = fontUsageMap.get(key) || { count: 0, selectors: new Set() };
       entry.count++;
-      const selector = el.tagName.toLowerCase() + (el.className ? '.' + (el.className.split?.(' ')?.[0] || '') : '');
+      const cls = el.getAttribute('class') || '';
+      const selector = el.tagName.toLowerCase() + (cls ? '.' + cls.split(' ')[0] : '');
       if (entry.selectors.size < 3) entry.selectors.add(selector);
       fontUsageMap.set(key, entry);
     }

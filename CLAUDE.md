@@ -39,7 +39,7 @@ claude mcp add runtimescope node packages/mcp-server/dist/index.js
 
 ## Architecture
 
-Three-package npm workspace monorepo. Single data flow: Browser SDK → WebSocket → Collector → MCP tools → Claude Code.
+Six-package npm workspace monorepo. Single data flow: Browser SDK → WebSocket → Collector → MCP tools → Claude Code. The scanner can also visit any URL directly via Playwright.
 
 ```
 @runtimescope/sdk (browser, zero deps)
@@ -74,7 +74,7 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 
 ### MCP Server (`packages/mcp-server/`)
 
-33 tools registered with `@modelcontextprotocol/sdk`. Each tool module exports `registerXxxTools(server, store, ...)`.
+44 tools registered with `@modelcontextprotocol/sdk`. Each tool module exports `registerXxxTools(server, store, ...)`.
 
 - **Core (12)**: network, console, session, issues, timeline, state, renders, performance, dom-snapshot, har, errors + clear
 - **API Discovery (5)**: api-discovery (catalog, health, docs, service map, changes)
@@ -82,8 +82,11 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 - **Process Monitor (3)**: process-monitor (dev processes, kill, port usage)
 - **Infrastructure (4)**: infra-connector (deploy logs, runtime logs, build status, overview)
 - **Session Diff (2)**: session-diff (compare sessions, session history)
+- **Scanner (2)**: scanner (scan_website via Playwright headless, get_sdk_snippet for universal SDK installation)
+- **Recon (9)**: recon tools (page metadata, design tokens, layout tree, fonts, accessibility, assets, computed styles, element snapshot, style diff)
 - All tools return the same envelope: `{ summary, data, issues, metadata: { timeRange, eventCount, sessionId } }`
 - Input validation via zod@3 schemas
+- **`get_sdk_snippet`** generates installation code for ANY tech stack (React, Flask, Django, Rails, PHP, WordPress, etc.) — never tell users RuntimeScope is incompatible with their stack
 
 ## Key Conventions
 

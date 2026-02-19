@@ -1,4 +1,5 @@
 import { execSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -12,6 +13,7 @@ import {
   DataBrowser,
   SessionManager,
   HttpServer,
+  SqliteStore,
 } from '@runtimescope/collector';
 
 // --- Existing M1/M2 tool registrations ---
@@ -48,6 +50,9 @@ import { registerReconStyleDiffTools } from './tools/recon-style-diff.js';
 // --- Playwright scanner ---
 import { PlaywrightScanner } from './scanner/index.js';
 import { registerScannerTools } from './tools/scanner.js';
+
+// --- Historical event persistence ---
+import { registerHistoryTools } from './tools/history.js';
 
 const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
 const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
@@ -107,9 +112,38 @@ async function main() {
 
   const infraConnector = new InfraConnector(store);
 
-  // Session manager uses the collector's SQLite stores
-  const sqliteStores = new Map<string, InstanceType<typeof import('@runtimescope/collector').SqliteStore>>();
+  // Session manager shares the collector's SQLite stores (by reference)
+  const sqliteStores = collector.getSqliteStores();
   const sessionManager = new SessionManager(projectManager, sqliteStores, store);
+
+  // Auto-snapshot session metrics on SDK disconnect
+  collector.onDisconnect((sessionId, projectName) => {
+    try {
+      sessionManager.createSnapshot(sessionId, projectName);
+      console.error(`[RuntimeScope] Session ${sessionId} metrics saved to SQLite`);
+    } catch {
+      // Non-fatal: snapshot failure shouldn't break anything
+    }
+  });
+
+  // Retention policy: prune events older than N days on startup
+  const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
+  const cutoffMs = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+  for (const projectName of projectManager.listProjects()) {
+    const dbPath = projectManager.getProjectDbPath(projectName);
+    if (existsSync(dbPath)) {
+      try {
+        const tempStore = new SqliteStore({ dbPath });
+        const deleted = tempStore.deleteOldEvents(cutoffMs);
+        if (deleted > 0) {
+          console.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
+        }
+        tempStore.close();
+      } catch {
+        // Non-fatal: retention cleanup failure shouldn't prevent startup
+      }
+    }
+  }
 
   // 5. Start HTTP API for dashboard
   const httpServer = new HttpServer(store, processMonitor);
@@ -126,10 +160,10 @@ async function main() {
   // 7. Create MCP server
   const mcp = new McpServer({
     name: 'runtimescope',
-    version: '0.5.0',
+    version: '0.6.0',
   });
 
-  // 8. Register all 44 tools
+  // 8. Register all 46 tools
 
   // --- Core Runtime (12 existing) ---
   registerNetworkTools(mcp, store);
@@ -173,11 +207,14 @@ async function main() {
   // --- Playwright Scanner + SDK Snippet (2 new) ---
   registerScannerTools(mcp, store, scanner);
 
+  // --- Historical Persistence (2 new) ---
+  registerHistoryTools(mcp, collector, projectManager);
+
   // 9. Connect MCP to stdio transport
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  console.error('[RuntimeScope] MCP server running on stdio (v0.5.0 — 44 tools)');
+  console.error('[RuntimeScope] MCP server running on stdio (v0.6.0 — 46 tools)');
   console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${HTTP_PORT}/snippet`);
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
   console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);

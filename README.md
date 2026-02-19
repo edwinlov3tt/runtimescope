@@ -2,7 +2,7 @@
 
 Runtime profiling, website analysis, and design extraction for **any tech stack** — piped directly into Claude Code via MCP.
 
-RuntimeScope gives Claude Code eyes into your running app and any website on the internet. It intercepts network requests, console output, state changes, component renders, Web Vitals, database queries, and server metrics from your running app — and can scan any URL to extract tech stack, design tokens, layout structure, fonts, accessibility, and assets. Everything is exposed as **44 MCP tools** so Claude Code can see exactly what's happening at runtime.
+RuntimeScope gives Claude Code eyes into your running app and any website on the internet. It intercepts network requests, console output, state changes, component renders, Web Vitals, database queries, and server metrics from your running app — and can scan any URL to extract tech stack, design tokens, layout structure, fonts, accessibility, and assets. All events are persisted to **SQLite** so Claude can access historical data across sessions. Everything is exposed as **46 MCP tools** so Claude Code can see exactly what's happening at runtime.
 
 **Works with everything:** React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, static sites — any tech stack that serves HTML.
 
@@ -87,6 +87,30 @@ claude mcp add runtimescope node packages/mcp-server/dist/index.js
 ```
 
 This registers RuntimeScope as an MCP server. Claude Code will automatically start the collector when it launches.
+
+### 2b. SQLite Persistence (Automatic)
+
+RuntimeScope uses an embedded **SQLite** database (via [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)) to persist all events across sessions. This is automatic — no external database server required.
+
+**How it works:**
+- When an SDK connects with `appName: 'my-app'`, RuntimeScope creates a per-project database at `~/.runtimescope/projects/my-app/events.db`
+- Every event is dual-written: once to the in-memory ring buffer (fast, for real-time tools) and once to SQLite (persistent, for historical queries)
+- Session metrics are auto-snapshotted when an SDK disconnects
+- Old events are auto-pruned on startup based on the retention policy (default: 30 days)
+
+**Verify SQLite is working:**
+After connecting an SDK and sending some events, ask Claude:
+> "Use `list_projects` to show me all projects with historical data"
+
+Or query past events directly:
+> "Use `get_historical_events` to show me network events from the last 2 hours for my-app"
+
+**Prerequisites:** `better-sqlite3` is included as a dependency — it compiles a native module during `npm install`. If you encounter build errors, ensure you have a C++ compiler installed:
+- **macOS:** `xcode-select --install`
+- **Linux:** `sudo apt install build-essential` (or equivalent)
+- **Windows:** Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+
+**Retention policy:** Events older than 30 days are automatically pruned on MCP server startup. Configure this with the `RUNTIMESCOPE_RETENTION_DAYS` environment variable (see [Environment Variables](#environment-variables)).
 
 ### 3a. Add the Browser SDK (Frontend)
 
@@ -376,13 +400,15 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 
 ### Installation Prompt (For Any Tech Stack)
 
-> You have access to RuntimeScope, a runtime profiling MCP server with 44 tools. **RuntimeScope works with ANY tech stack** — not just JavaScript/Node.js.
+> You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. **RuntimeScope works with ANY tech stack** — not just JavaScript/Node.js.
 >
 > **When a user wants to install RuntimeScope:**
 > 1. Use `get_sdk_snippet` to generate the correct installation code for their framework. It supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and more.
 > 2. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML), the SDK is a simple `<script>` tag — no npm or build system required. The SDK bundle is served by the RuntimeScope collector at `http://localhost:9091/runtimescope.js`.
 > 3. `get_sdk_snippet` returns framework-specific placement hints (e.g., "paste in templates/base.html before </body>" for Flask).
 > 4. **Never tell users RuntimeScope is incompatible with their tech stack.** If it serves HTML, RuntimeScope works with it.
+>
+> **Data persistence:** All events are automatically persisted to SQLite (per-project databases at `~/.runtimescope/projects/<appName>/events.db`). Events survive Claude Code restarts. Historical data is retained for 30 days by default — this can be changed by setting the `RUNTIMESCOPE_RETENTION_DAYS` environment variable. Use `list_projects` to see all projects with stored data, and `get_historical_events` to query past events.
 
 ### Website Analysis Prompt (No SDK Required)
 
@@ -410,7 +436,7 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 
 ### Frontend Prompt
 
-> You have access to RuntimeScope, a runtime profiling MCP server with 44 tools. The browser SDK is installed and captures events from the running app.
+> You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The browser SDK is installed and captures events from the running app.
 >
 > **Before debugging, always check what's enabled:** Start with `get_session_info` to verify the SDK is connected and see which capture features are active.
 >
@@ -424,14 +450,17 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 > 7. Capture snapshots: `get_dom_snapshot` for current page HTML, `capture_har` for network export
 > 8. Compare sessions: `compare_sessions` to detect regressions between test runs
 > 9. For design analysis: `scan_website` to scan any URL, then `get_design_tokens`, `get_layout_tree`, `get_computed_styles` for detailed design data
+> 10. For historical analysis: `list_projects` to see all projects with stored data, `get_historical_events` to query past events from SQLite (supports time ranges like "2h", "7d", or ISO dates)
 >
 > **Important:** Some capture features are opt-in and may not be enabled. If a tool returns empty results, check whether the corresponding SDK feature is enabled (e.g., `capturePerformance` for Web Vitals, `captureRenders` for render profiling, `stores` for state tracking). Suggest the user enable the feature if needed.
+>
+> **Data persistence:** All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via `RUNTIMESCOPE_RETENTION_DAYS` env var). Use `get_historical_events` to access events beyond the in-memory buffer.
 >
 > All tools return a consistent JSON envelope with `summary`, `data`, `issues`, and `metadata` fields. Use the `since_seconds` parameter on most tools to scope queries to a time window.
 
 ### Backend Prompt
 
-> You have access to RuntimeScope, a runtime profiling MCP server with 44 tools. The server SDK is installed and captures events from the Node.js backend.
+> You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The server SDK is installed and captures events from the Node.js backend.
 >
 > **Before debugging, always check what's enabled:** Start with `get_session_info` to verify the SDK is connected. Not all features are enabled by default — `captureHttp` and `capturePerformance` are opt-in.
 >
@@ -451,11 +480,13 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 > - Outgoing HTTP requires `captureHttp: true`
 > - Console/errors are enabled by default
 >
+> **Data persistence:** All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via `RUNTIMESCOPE_RETENTION_DAYS` env var). Use `list_projects` to see all projects, and `get_historical_events` to query past events.
+>
 > All tools return a consistent JSON envelope with `summary`, `data`, `issues`, and `metadata` fields.
 
 ### Full-Stack Prompt
 
-> You have access to RuntimeScope, a runtime profiling MCP server with 44 tools that captures events from both the browser and the Node.js server. Both SDKs feed into the same collector — browser and server events appear in the same tools.
+> You have access to RuntimeScope, a runtime profiling MCP server with 46 tools that captures events from both the browser and the Node.js server. Both SDKs feed into the same collector — browser and server events appear in the same tools.
 >
 > **Before debugging, always check what's enabled:** Start with `get_session_info` to verify both SDKs are connected. Ask the user which events they want to track if you're not sure what's configured. Not all features are enabled by default.
 >
@@ -475,16 +506,19 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 > 9. Compare sessions: `compare_sessions` to detect regressions
 > 10. DevOps: `get_dev_processes`, `get_port_usage`, `get_deploy_logs`
 > 11. Website analysis: `scan_website` any URL, then use recon tools (`get_design_tokens`, `get_layout_tree`, `get_font_info`, etc.)
+> 12. Historical analysis: `list_projects` to see all projects, `get_historical_events` to query past events from SQLite
 >
 > **If a tool returns empty results**, the corresponding capture feature may not be enabled. Suggest the user enable it in their SDK config.
 >
 > **For SDK installation on any tech stack**, use `get_sdk_snippet` — it generates the right code for any framework including non-JS stacks (Flask, Django, Rails, PHP, WordPress).
 >
+> **Data persistence:** All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via `RUNTIMESCOPE_RETENTION_DAYS` env var). Use `get_historical_events` to access events beyond the in-memory buffer.
+>
 > All tools return a consistent JSON envelope with `summary`, `data`, `issues`, and `metadata` fields. Use the `since_seconds` parameter on most tools to scope queries to a time window.
 
 ---
 
-## MCP Tools (44)
+## MCP Tools (46)
 
 ### Core Runtime (12 tools)
 
@@ -550,6 +584,13 @@ Copy this into your project's `CLAUDE.md` or paste it directly to give Claude fu
 |------|-------------|
 | `compare_sessions` | Compare two sessions: API latency, render counts, Web Vitals, query performance. Shows regressions and improvements |
 | `get_session_history` | List past sessions with build metadata and event counts |
+
+### Historical Persistence (2 tools)
+
+| Tool | Description |
+|------|-------------|
+| `get_historical_events` | Query past events from persistent SQLite storage. Access events beyond the in-memory buffer (last 10K events). Events persist across Claude Code restarts. Filter by `project`, `event_types`, `since`/`until` (relative like "2h"/"7d" or ISO date), `session_id`, with pagination (`limit`, `offset`) |
+| `list_projects` | List all projects with stored historical data. Shows project names, event counts, session counts, active connections, and date ranges from SQLite persistence |
 
 ### Website Scanner (2 tools)
 
@@ -689,7 +730,7 @@ packages/
   sdk/           # Browser SDK (zero deps, ~3KB gzipped) — also served as IIFE via <script> tag
   server-sdk/    # Node.js server SDK (Prisma, Drizzle, pg, Knex, MySQL2, better-sqlite3)
   collector/     # WebSocket receiver + ring buffer + issue detection + HTTP API
-  mcp-server/    # MCP stdio server with 44 tools + Playwright scanner
+  mcp-server/    # MCP stdio server with 46 tools + Playwright scanner
   extension/     # Technology detection engine (7,221 technologies from webappanalyzer)
   dashboard/     # Web dashboard for event visualization
 ```
@@ -701,6 +742,7 @@ packages/
 | `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
 | `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
+| `RUNTIMESCOPE_RETENTION_DAYS` | `30` | Days to keep historical events in SQLite. Events older than this are auto-pruned on MCP server startup. Set to a higher value for long-running projects, or lower to save disk space |
 
 ## License
 

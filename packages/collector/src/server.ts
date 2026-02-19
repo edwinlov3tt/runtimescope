@@ -37,6 +37,7 @@ export class CollectorServer {
   private clients: Map<WebSocket, ClientInfo> = new Map();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
+  private disconnectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
 
   constructor(options: CollectorServerOptions = {}) {
     this.store = new EventStore(options.bufferSize ?? 10_000);
@@ -62,6 +63,14 @@ export class CollectorServer {
 
   getSqliteStore(projectName: string): SqliteStore | undefined {
     return this.sqliteStores.get(projectName);
+  }
+
+  getSqliteStores(): Map<string, SqliteStore> {
+    return this.sqliteStores;
+  }
+
+  onDisconnect(cb: (sessionId: string, projectName: string) => void): void {
+    this.disconnectCallbacks.push(cb);
   }
 
   start(options: CollectorServerOptions = {}): Promise<void> {
@@ -155,6 +164,15 @@ export class CollectorServer {
           }
 
           console.error(`[RuntimeScope] Session ${clientInfo.sessionId} disconnected`);
+
+          // Notify disconnect listeners (for session snapshotting)
+          for (const cb of this.disconnectCallbacks) {
+            try {
+              cb(clientInfo.sessionId, clientInfo.projectName);
+            } catch {
+              // Don't let listener errors break disconnect handling
+            }
+          }
         }
         this.clients.delete(ws);
       });

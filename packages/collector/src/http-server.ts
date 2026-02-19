@@ -1,7 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { EventStore } from './store.js';
-import type { RuntimeEvent } from './types.js';
+import type { ProcessMonitor } from './engines/process-monitor.js';
+import type { RuntimeEvent, DevProcessType } from './types.js';
 
 // ============================================================
 // HTTP API Server for Dashboard
@@ -22,12 +23,14 @@ export class HttpServer {
   private server: Server | null = null;
   private wss: WebSocketServer | null = null;
   private store: EventStore;
+  private processMonitor: ProcessMonitor | null;
   private dashboardClients: Set<WebSocket> = new Set();
   private eventListener: ((event: RuntimeEvent) => void) | null = null;
   private routes: Map<string, RouteHandler> = new Map();
 
-  constructor(store: EventStore) {
+  constructor(store: EventStore, processMonitor?: ProcessMonitor) {
     this.store = store;
+    this.processMonitor = processMonitor ?? null;
     this.registerRoutes();
   }
 
@@ -43,12 +46,61 @@ export class HttpServer {
       this.json(res, { data: sessions, count: sessions.length });
     });
 
+    // Projects (sessions grouped by appName)
+    this.routes.set('GET /api/projects', (_req, res) => {
+      const sessions = this.store.getSessionInfo();
+      const projectMap = new Map<string, { appName: string; sessions: string[]; isConnected: boolean; eventCount: number }>();
+
+      for (const s of sessions) {
+        const existing = projectMap.get(s.appName);
+        if (existing) {
+          existing.sessions.push(s.sessionId);
+          existing.eventCount += s.eventCount;
+          if (s.isConnected) existing.isConnected = true;
+        } else {
+          projectMap.set(s.appName, {
+            appName: s.appName,
+            sessions: [s.sessionId],
+            isConnected: s.isConnected,
+            eventCount: s.eventCount,
+          });
+        }
+      }
+
+      const projects = Array.from(projectMap.values());
+      this.json(res, { data: projects, count: projects.length });
+    });
+
+    // Processes (served from background scan cache — no blocking lsof calls)
+    this.routes.set('GET /api/processes', (_req, res, params) => {
+      if (!this.processMonitor) {
+        this.json(res, { data: [], count: 0 });
+        return;
+      }
+      const type = params.get('type') as DevProcessType | undefined ?? undefined;
+      const project = params.get('project') ?? undefined;
+      const processes = this.processMonitor.getProcesses({ type, project });
+      this.json(res, { data: processes, count: processes.length });
+    });
+
+    // Port usage (served from background scan cache)
+    this.routes.set('GET /api/ports', (_req, res, params) => {
+      if (!this.processMonitor) {
+        this.json(res, { data: [], count: 0 });
+        return;
+      }
+      const port = numParam(params, 'port');
+      const ports = this.processMonitor.getPortUsage(port);
+      this.json(res, { data: ports, count: ports.length });
+    });
+
     // Network events
     this.routes.set('GET /api/events/network', (_req, res, params) => {
       const events = this.store.getNetworkRequests({
         sinceSeconds: numParam(params, 'since_seconds'),
         urlPattern: params.get('url_pattern') ?? undefined,
         method: params.get('method') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -59,6 +111,7 @@ export class HttpServer {
         sinceSeconds: numParam(params, 'since_seconds'),
         level: params.get('level') ?? undefined,
         search: params.get('search') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -68,6 +121,7 @@ export class HttpServer {
       const events = this.store.getStateEvents({
         sinceSeconds: numParam(params, 'since_seconds'),
         storeId: params.get('store_id') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -77,6 +131,7 @@ export class HttpServer {
       const events = this.store.getRenderEvents({
         sinceSeconds: numParam(params, 'since_seconds'),
         componentName: params.get('component') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -86,6 +141,7 @@ export class HttpServer {
       const events = this.store.getPerformanceMetrics({
         sinceSeconds: numParam(params, 'since_seconds'),
         metricName: params.get('metric') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -97,6 +153,7 @@ export class HttpServer {
         table: params.get('table') ?? undefined,
         minDurationMs: numParam(params, 'min_duration_ms'),
         search: params.get('search') ?? undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -107,6 +164,7 @@ export class HttpServer {
       const events = this.store.getEventTimeline({
         sinceSeconds: numParam(params, 'since_seconds'),
         eventTypes: eventTypes as RuntimeEvent['eventType'][] | undefined,
+        sessionId: params.get('session_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });

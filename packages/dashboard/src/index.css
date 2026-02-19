@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+/*
+ * RuntimeScope Design Tokens
+ * Supabase-matched warm-dark aesthetic with blue brand identity.
+ * Dark-to-light color system: dark bg → lighter border → light text.
+ */
+
+@theme {
+  /* ── Font Families ── */
+  --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
+
+  /* ── Background Layers (matched to Supabase rgb values) ── */
+  --color-bg-base: #0f0f0f;
+  --color-bg-app: #121212;
+  --color-bg-surface: #171717;
+  --color-bg-elevated: #1f1f1f;
+  --color-bg-overlay: #242424;
+  --color-bg-hover: rgba(255, 255, 255, 0.05);
+  --color-bg-active: rgba(255, 255, 255, 0.08);
+  --color-bg-input: #242424;
+
+  /* ── Text Hierarchy (Supabase values) ── */
+  --color-text-primary: #fafafa;
+  --color-text-secondary: #d4d4d4;
+  --color-text-tertiary: #898989;
+  --color-text-muted: #525252;
+  --color-text-inverse: #09090b;
+
+  /* ── Borders (Supabase values) ── */
+  --color-border-default: #2e2e2e;
+  --color-border-muted: #282828;
+  --color-border-strong: #363636;
+  --color-border-hover: #454545;
+
+  /* ── Brand: Blue (dark-to-light system) ── */
+  --color-brand: #3b82f6;
+  --color-brand-hover: #60a5fa;
+  --color-brand-dark: #003973;
+  --color-brand-muted: rgba(59, 130, 246, 0.15);
+  --color-brand-subtle: rgba(59, 130, 246, 0.08);
+  --color-brand-light: #93c5fd;
+  --color-brand-border: rgba(59, 130, 246, 0.35);
+
+  /* ── Green (dark-to-light — Supabase's actual green) ── */
+  --color-green: #3ecf8e;
+  --color-green-dark: #006239;
+  --color-green-muted: rgba(62, 207, 142, 0.15);
+  --color-green-light: #85e0ba;
+  --color-green-border: rgba(62, 207, 142, 0.35);
+
+  /* ── Blue / Info (dark-to-light) ── */
+  --color-blue: #3b82f6;
+  --color-blue-dark: #002d5c;
+  --color-blue-muted: rgba(59, 130, 246, 0.15);
+  --color-blue-light: #93c5fd;
+  --color-blue-border: rgba(59, 130, 246, 0.35);
+
+  /* ── Purple (dark-to-light) ── */
+  --color-purple: #a855f7;
+  --color-purple-dark: #3b0062;
+  --color-purple-muted: rgba(168, 85, 247, 0.15);
+  --color-purple-light: #d8b4fe;
+  --color-purple-border: rgba(168, 85, 247, 0.35);
+
+  /* ── Amber (dark-to-light — Supabase's actual amber) ── */
+  --color-amber: #db8e00;
+  --color-amber-dark: rgba(219, 142, 0, 0.15);
+  --color-amber-muted: rgba(219, 142, 0, 0.1);
+  --color-amber-light: #fbbf24;
+  --color-amber-border: #693f05;
+
+  /* ── Red (dark-to-light) ── */
+  --color-red: #ef4444;
+  --color-red-dark: #620000;
+  --color-red-muted: rgba(239, 68, 68, 0.15);
+  --color-red-light: #fca5a5;
+  --color-red-border: rgba(239, 68, 68, 0.35);
+
+  /* ── Orange (dark-to-light) ── */
+  --color-orange: #f97316;
+  --color-orange-dark: #622100;
+  --color-orange-muted: rgba(249, 115, 22, 0.15);
+  --color-orange-light: #fdba74;
+  --color-orange-border: rgba(249, 115, 22, 0.35);
+
+  /* ── Cyan (dark-to-light) ── */
+  --color-cyan: #06b6d4;
+  --color-cyan-dark: #004455;
+  --color-cyan-muted: rgba(6, 182, 212, 0.15);
+  --color-cyan-light: #67e8f9;
+  --color-cyan-border: rgba(6, 182, 212, 0.35);
+
+  /* ── Chart Colors ── */
+  --color-chart-line: #3b82f6;
+  --color-chart-fill: rgba(59, 130, 246, 0.08);
+  --color-chart-request: #3b82f6;
+  --color-chart-log: #db8e00;
+  --color-chart-render: #3ecf8e;
+  --color-chart-grid: #282828;
+  --color-chart-label: #898989;
+
+  /* ── Radii (Supabase uses 6px default) ── */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --radius-xl: 12px;
+  --radius-2xl: 16px;
+  --radius-full: 9999px;
+
+  /* ── Shadows (used sparingly — borders do the heavy lifting) ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(59, 130, 246, 0.25);
+
+  /* ── Layout ── */
+  --sidebar-width: 240px;
+  --sidebar-collapsed: 56px;
+  --topbar-height: 48px;
+  --detail-panel-width: 380px;
+}
+
+/* ── Global Resets ── */
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-sans);
+  background: var(--color-bg-base);
+  color: var(--color-text-primary);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+/* ── Selection ── */
+::selection {
+  background: var(--color-brand-muted);
+  color: var(--color-text-primary);
+}
+
+/* ── Scrollbar (Supabase-style thin scrollbar) ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-default);
+  border-radius: var(--radius-full);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--color-border-strong);
+}
+
+/* ── Focus ring (brand glow) ── */
+*:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-glow);
+}

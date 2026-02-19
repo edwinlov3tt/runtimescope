@@ -84,10 +84,12 @@ export class SessionManager {
       }
     }
 
-    // Web Vitals
+    // Web Vitals (only include events with a rating — i.e., browser Web Vitals, not server metrics)
     const webVitals: Record<string, { value: number; rating: WebVitalRating }> = {};
     for (const pe of performanceEvents) {
-      webVitals[pe.metricName] = { value: pe.value, rating: pe.rating };
+      if (pe.rating) {
+        webVitals[pe.metricName] = { value: pe.value, rating: pe.rating };
+      }
     }
 
     // Query metrics

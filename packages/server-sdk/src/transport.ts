@@ -1,5 +1,5 @@
 import WebSocket from 'ws';
-import type { DatabaseEvent, WSMessage } from './types.js';
+import type { ServerRuntimeEvent, WSMessage } from './types.js';
 
 export class ServerTransport {
   private ws: WebSocket | null = null;
@@ -7,7 +7,9 @@ export class ServerTransport {
   private sessionId: string;
   private appName: string;
   private sdkVersion: string;
-  private queue: DatabaseEvent[] = [];
+  private queue: ServerRuntimeEvent[] = [];
+  private maxQueueSize: number;
+  private _droppedCount = 0;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private connected = false;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
@@ -17,11 +19,17 @@ export class ServerTransport {
     sessionId: string;
     appName: string;
     sdkVersion: string;
+    maxQueueSize?: number;
   }) {
     this.url = options.url;
     this.sessionId = options.sessionId;
     this.appName = options.appName;
     this.sdkVersion = options.sdkVersion;
+    this.maxQueueSize = options.maxQueueSize ?? 10_000;
+  }
+
+  get droppedCount(): number {
+    return this._droppedCount;
   }
 
   connect(): void {
@@ -81,7 +89,12 @@ export class ServerTransport {
     });
   }
 
-  sendEvent(event: DatabaseEvent): void {
+  sendEvent(event: ServerRuntimeEvent): void {
+    // Enforce queue cap — drop oldest events when full
+    if (this.queue.length >= this.maxQueueSize) {
+      this.queue.shift();
+      this._droppedCount++;
+    }
     this.queue.push(event);
     if (this.connected && this.queue.length >= 10) {
       this.flushQueue();

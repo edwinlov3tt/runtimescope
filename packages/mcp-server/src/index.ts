@@ -34,6 +34,21 @@ import { registerProcessMonitorTools } from './tools/process-monitor.js';
 import { registerInfraTools } from './tools/infra-connector.js';
 import { registerSessionDiffTools } from './tools/session-diff.js';
 
+// --- Recon tools (extension-powered UI analysis) ---
+import { registerReconMetadataTools } from './tools/recon-metadata.js';
+import { registerReconDesignTokenTools } from './tools/recon-design-tokens.js';
+import { registerReconFontTools } from './tools/recon-fonts.js';
+import { registerReconLayoutTools } from './tools/recon-layout.js';
+import { registerReconAccessibilityTools } from './tools/recon-accessibility.js';
+import { registerReconComputedStyleTools } from './tools/recon-computed-styles.js';
+import { registerReconElementSnapshotTools } from './tools/recon-element-snapshot.js';
+import { registerReconAssetTools } from './tools/recon-assets.js';
+import { registerReconStyleDiffTools } from './tools/recon-style-diff.js';
+
+// --- Playwright scanner ---
+import { PlaywrightScanner } from './scanner/index.js';
+import { registerScannerTools } from './tools/scanner.js';
+
 const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
 const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
@@ -97,7 +112,7 @@ async function main() {
   const sessionManager = new SessionManager(projectManager, sqliteStores, store);
 
   // 5. Start HTTP API for dashboard
-  const httpServer = new HttpServer(store);
+  const httpServer = new HttpServer(store, processMonitor);
   try {
     await httpServer.start({ port: HTTP_PORT });
   } catch (err) {
@@ -105,13 +120,16 @@ async function main() {
     // Non-fatal: MCP tools still work without HTTP API
   }
 
-  // 6. Create MCP server
+  // 6. Create Playwright scanner (lazy — browser launches on first scan)
+  const scanner = new PlaywrightScanner();
+
+  // 7. Create MCP server
   const mcp = new McpServer({
     name: 'runtimescope',
-    version: '0.3.0',
+    version: '0.5.0',
   });
 
-  // 7. Register all 33 tools
+  // 8. Register all 43 tools
 
   // --- Core Runtime (12 existing) ---
   registerNetworkTools(mcp, store);
@@ -141,21 +159,36 @@ async function main() {
   // --- Session Diffing (2 new) ---
   registerSessionDiffTools(mcp, sessionManager);
 
-  // 8. Connect MCP to stdio transport
+  // --- Recon / UI Analysis (9 new — extension-powered) ---
+  registerReconMetadataTools(mcp, store, collector);
+  registerReconDesignTokenTools(mcp, store, collector);
+  registerReconFontTools(mcp, store);
+  registerReconLayoutTools(mcp, store, collector);
+  registerReconAccessibilityTools(mcp, store);
+  registerReconComputedStyleTools(mcp, store, collector);
+  registerReconElementSnapshotTools(mcp, store, collector);
+  registerReconAssetTools(mcp, store);
+  registerReconStyleDiffTools(mcp, store);
+
+  // --- Playwright Scanner (1 new — headless browser site analysis) ---
+  registerScannerTools(mcp, store, scanner);
+
+  // 9. Connect MCP to stdio transport
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  console.error('[RuntimeScope] MCP server running on stdio (v0.3.0 — 33 tools)');
+  console.error('[RuntimeScope] MCP server running on stdio (v0.5.0 — 43 tools)');
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
   console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);
 
-  // 9. Robust shutdown
+  // 10. Robust shutdown
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
 
     processMonitor.stop();
+    await scanner.shutdown();
     await connectionManager.closeAll();
     await httpServer.stop();
     collector.stop();

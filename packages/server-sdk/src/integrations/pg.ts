@@ -2,6 +2,7 @@ import type { DatabaseEvent } from '../types.js';
 import { generateId } from '../utils/id.js';
 import { parseOperation, parseTablesAccessed, normalizeQuery, redactParams } from '../utils/sql-parser.js';
 import { captureStack } from '../utils/stack.js';
+import { _log } from '../utils/log.js';
 
 export interface PgInstrumentOptions {
   sessionId: string;
@@ -22,7 +23,7 @@ export function instrumentPg(
   const originalQuery = client.query as Function;
 
   if (typeof originalQuery !== 'function') {
-    console.warn('[RuntimeScope] pg client does not have a query method');
+    _log.warn('[RuntimeScope] pg client does not have a query method');
     return () => {};
   }
 

@@ -9,12 +9,22 @@ import type {
   RenderEvent,
   PerformanceEvent,
   DatabaseEvent,
+  ReconMetadataEvent,
+  ReconDesignTokensEvent,
+  ReconFontsEvent,
+  ReconLayoutTreeEvent,
+  ReconAccessibilityEvent,
+  ReconComputedStylesEvent,
+  ReconElementSnapshotEvent,
+  ReconAssetInventoryEvent,
   NetworkFilter,
   ConsoleFilter,
   StateFilter,
   RenderFilter,
   PerformanceFilter,
   DatabaseFilter,
+  ReconFilter,
+  ReconEventType,
   SessionInfo,
   TimelineFilter,
   EventType,
@@ -89,6 +99,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'network') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const ne = e as NetworkEvent;
       if (ne.timestamp < since) return false;
       if (filter.urlPattern && !ne.url.includes(filter.urlPattern)) return false;
@@ -106,6 +117,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'console') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const ce = e as ConsoleEvent;
       if (ce.timestamp < since) return false;
       if (filter.level && ce.level !== filter.level) return false;
@@ -135,14 +147,25 @@ export class EventStore {
     // toArray returns oldest→newest (chronological order)
     return this.buffer.toArray().filter((e) => {
       if (e.timestamp < since) return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       if (typeSet && !typeSet.has(e.eventType)) return false;
       return true;
     });
   }
 
-  getAllEvents(sinceSeconds?: number): RuntimeEvent[] {
+  getAllEvents(sinceSeconds?: number, sessionId?: string): RuntimeEvent[] {
     const since = sinceSeconds ? Date.now() - sinceSeconds * 1000 : 0;
-    return this.buffer.toArray().filter((e) => e.timestamp >= since);
+    return this.buffer.toArray().filter((e) => {
+      if (e.timestamp < since) return false;
+      if (sessionId && e.sessionId !== sessionId) return false;
+      return true;
+    });
+  }
+
+  getSessionIdsForProject(appName: string): string[] {
+    return Array.from(this.sessions.values())
+      .filter((s) => s.appName === appName)
+      .map((s) => s.sessionId);
   }
 
   getStateEvents(filter: StateFilter = {}): StateEvent[] {
@@ -152,6 +175,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'state') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const se = e as StateEvent;
       if (se.timestamp < since) return false;
       if (filter.storeId && se.storeId !== filter.storeId) return false;
@@ -166,6 +190,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'render') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const re = e as RenderEvent;
       if (re.timestamp < since) return false;
       if (filter.componentName) {
@@ -185,6 +210,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'performance') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const pe = e as PerformanceEvent;
       if (pe.timestamp < since) return false;
       if (filter.metricName && pe.metricName !== filter.metricName) return false;
@@ -199,6 +225,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'database') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
       const de = e as DatabaseEvent;
       if (de.timestamp < since) return false;
       if (filter.table) {
@@ -214,6 +241,85 @@ export class EventStore {
       if (filter.source && de.source !== filter.source) return false;
       return true;
     }) as DatabaseEvent[];
+  }
+
+  // ============================================================
+  // Recon event queries — returns the most recent event of each type
+  // ============================================================
+
+  private getLatestReconEvent<T extends RuntimeEvent>(
+    eventType: ReconEventType,
+    filter: ReconFilter = {},
+  ): T | null {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    // query() returns newest-first, so the first match is the most recent
+    const results = this.buffer.query((e) => {
+      if (e.eventType !== eventType) return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (e.timestamp < since) return false;
+      if (filter.url) {
+        const re = e as unknown as { url?: string };
+        if (re.url && !re.url.includes(filter.url)) return false;
+      }
+      return true;
+    });
+
+    return (results[0] as T) ?? null;
+  }
+
+  private getReconEvents<T extends RuntimeEvent>(
+    eventType: ReconEventType,
+    filter: ReconFilter = {},
+  ): T[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== eventType) return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (e.timestamp < since) return false;
+      if (filter.url) {
+        const re = e as unknown as { url?: string };
+        if (re.url && !re.url.includes(filter.url)) return false;
+      }
+      return true;
+    }) as T[];
+  }
+
+  getReconMetadata(filter: ReconFilter = {}): ReconMetadataEvent | null {
+    return this.getLatestReconEvent<ReconMetadataEvent>('recon_metadata', filter);
+  }
+
+  getReconDesignTokens(filter: ReconFilter = {}): ReconDesignTokensEvent | null {
+    return this.getLatestReconEvent<ReconDesignTokensEvent>('recon_design_tokens', filter);
+  }
+
+  getReconFonts(filter: ReconFilter = {}): ReconFontsEvent | null {
+    return this.getLatestReconEvent<ReconFontsEvent>('recon_fonts', filter);
+  }
+
+  getReconLayoutTree(filter: ReconFilter = {}): ReconLayoutTreeEvent | null {
+    return this.getLatestReconEvent<ReconLayoutTreeEvent>('recon_layout_tree', filter);
+  }
+
+  getReconAccessibility(filter: ReconFilter = {}): ReconAccessibilityEvent | null {
+    return this.getLatestReconEvent<ReconAccessibilityEvent>('recon_accessibility', filter);
+  }
+
+  getReconComputedStyles(filter: ReconFilter = {}): ReconComputedStylesEvent[] {
+    return this.getReconEvents<ReconComputedStylesEvent>('recon_computed_styles', filter);
+  }
+
+  getReconElementSnapshots(filter: ReconFilter = {}): ReconElementSnapshotEvent[] {
+    return this.getReconEvents<ReconElementSnapshotEvent>('recon_element_snapshot', filter);
+  }
+
+  getReconAssetInventory(filter: ReconFilter = {}): ReconAssetInventoryEvent | null {
+    return this.getLatestReconEvent<ReconAssetInventoryEvent>('recon_asset_inventory', filter);
   }
 
   clear(): { clearedCount: number } {

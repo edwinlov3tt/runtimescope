@@ -62,6 +62,18 @@ export function registerProcessMonitorTools(
       signal: z.enum(['SIGTERM', 'SIGKILL']).optional().describe('Signal to send (default: SIGTERM)'),
     },
     async ({ pid, signal }) => {
+      // Safety: refuse to kill PID 0/1 (init) or the current process
+      if (pid < 2 || pid === process.pid) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `Refusing to kill PID ${pid}: ${pid < 2 ? 'system process' : 'current process'}.`,
+            data: { success: false, pid },
+            issues: [`Cannot kill PID ${pid}`],
+            metadata: { timeRange: { from: Date.now(), to: Date.now() }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
+
       const result = processMonitor.killProcess(pid, signal ?? 'SIGTERM');
 
       const response = {
@@ -197,6 +209,18 @@ export function registerProcessMonitorTools(
       signal: z.enum(['SIGTERM', 'SIGKILL']).optional().describe('Kill signal (default: SIGTERM)'),
     },
     async ({ pid, command, skipCachePurge, signal }) => {
+      // Safety: refuse to kill PID 0/1 (init) or the current process
+      if (pid < 2 || pid === process.pid) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `Refusing to restart PID ${pid}: ${pid < 2 ? 'system process' : 'current process'}.`,
+            data: { success: false, pid },
+            issues: [`Cannot kill PID ${pid}`],
+            metadata: { timeRange: { from: Date.now(), to: Date.now() }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
+
       // 1. Get process info before killing
       processMonitor.scan();
       const processes = processMonitor.getProcesses();

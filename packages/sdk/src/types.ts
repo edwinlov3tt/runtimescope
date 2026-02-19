@@ -8,7 +8,8 @@ export type EventType =
   | 'state'
   | 'render'
   | 'dom_snapshot'
-  | 'performance';
+  | 'performance'
+  | 'database';
 
 export interface BaseEvent {
   eventId: string;
@@ -38,7 +39,7 @@ export interface NetworkEvent extends BaseEvent {
   responseBody?: string;
   errorPhase?: 'error' | 'abort' | 'timeout';
   errorMessage?: string;
-  source?: 'fetch' | 'xhr';
+  source?: 'fetch' | 'xhr' | 'node-http' | 'node-https';
 }
 
 export type ConsoleLevel = 'log' | 'warn' | 'error' | 'info' | 'debug' | 'trace';
@@ -110,11 +111,31 @@ export interface DomSnapshotEvent extends BaseEvent {
 
 export type WebVitalRating = 'good' | 'needs-improvement' | 'poor';
 
+export type ServerMetricName =
+  | 'memory.rss'
+  | 'memory.heapUsed'
+  | 'memory.heapTotal'
+  | 'memory.external'
+  | 'eventloop.lag.mean'
+  | 'eventloop.lag.p99'
+  | 'eventloop.lag.max'
+  | 'gc.pause.major'
+  | 'gc.pause.minor'
+  | 'cpu.user'
+  | 'cpu.system'
+  | 'handles.active'
+  | 'requests.active';
+
+export type PerformanceMetricName =
+  | 'LCP' | 'FCP' | 'CLS' | 'TTFB' | 'FID' | 'INP'
+  | ServerMetricName;
+
 export interface PerformanceEvent extends BaseEvent {
   eventType: 'performance';
-  metricName: 'LCP' | 'FCP' | 'CLS' | 'TTFB' | 'FID' | 'INP';
+  metricName: PerformanceMetricName;
   value: number;
-  rating: WebVitalRating;
+  rating?: WebVitalRating;
+  unit?: 'bytes' | 'ms' | 'percent' | 'count' | 'score';
   element?: string;
   entries?: unknown[];
 }

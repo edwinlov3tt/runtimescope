@@ -2,6 +2,7 @@ import type { DatabaseEvent, DatabaseSource } from '../types.js';
 import { generateId } from '../utils/id.js';
 import { parseOperation, parseTablesAccessed, normalizeQuery, redactParams } from '../utils/sql-parser.js';
 import { captureStack } from '../utils/stack.js';
+import { _log } from '../utils/log.js';
 
 export interface PrismaInstrumentOptions {
   sessionId: string;
@@ -114,7 +115,7 @@ export function instrumentPrisma(
     };
   }
 
-  console.warn('[RuntimeScope] Prisma client does not support $on or $extends');
+  _log.warn('[RuntimeScope] Prisma client does not support $on or $extends');
   return () => {};
 }
 

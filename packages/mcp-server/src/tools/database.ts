@@ -166,7 +166,19 @@ export function registerDatabaseTools(
         };
       }
 
-      const schema = await schemaIntrospector.introspect(conn, table);
+      let schema;
+      try {
+        schema = await schemaIntrospector.introspect(conn, table);
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `Schema introspection failed: ${(err as Error).message}`,
+            data: null,
+            issues: [(err as Error).message],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
 
       const response = {
         summary: `Schema for ${schema.connectionId}: ${schema.tables.length} table(s).`,
@@ -230,7 +242,19 @@ export function registerDatabaseTools(
         };
       }
 
-      const result = await dataBrowser.read(conn, { table, limit, offset, where, orderBy: order_by });
+      let result;
+      try {
+        result = await dataBrowser.read(conn, { table, limit, offset, where, orderBy: order_by });
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `Read failed: ${(err as Error).message}`,
+            data: null,
+            issues: [(err as Error).message],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
 
       const response = {
         summary: `${result.rows.length} row(s) from "${table}" (${result.total} total).`,
@@ -276,7 +300,31 @@ export function registerDatabaseTools(
         };
       }
 
-      const result = await dataBrowser.write(conn, { table, operation, data, where });
+      // Safety: require WHERE for update/delete to prevent accidental mass operations
+      if ((operation === 'update' || operation === 'delete') && !where) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `WHERE clause required for ${operation} operations.`,
+            data: null,
+            issues: [`${operation} without WHERE clause is not allowed`],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
+
+      let result;
+      try {
+        result = await dataBrowser.write(conn, { table, operation, data, where });
+      } catch (err) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `Write failed: ${(err as Error).message}`,
+            data: null,
+            issues: [(err as Error).message],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
 
       const response = {
         summary: result.success

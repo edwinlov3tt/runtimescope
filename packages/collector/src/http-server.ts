@@ -1,4 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { readFileSync, existsSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
 import type { EventStore } from './store.js';
 import type { ProcessMonitor } from './engines/process-monitor.js';
@@ -27,6 +30,8 @@ export class HttpServer {
   private dashboardClients: Set<WebSocket> = new Set();
   private eventListener: ((event: RuntimeEvent) => void) | null = null;
   private routes: Map<string, RouteHandler> = new Map();
+  private sdkBundlePath: string | null = null;
+  private activePort = 9091;
 
   constructor(store: EventStore, processMonitor?: ProcessMonitor) {
     this.store = store;
@@ -176,6 +181,28 @@ export class HttpServer {
     });
   }
 
+  /**
+   * Resolve the SDK IIFE bundle path.
+   * Tries multiple locations for monorepo and installed-package scenarios.
+   */
+  private resolveSdkPath(): string | null {
+    if (this.sdkBundlePath) return this.sdkBundlePath;
+
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      resolve(__dir, '../../sdk/dist/index.global.js'),          // monorepo: packages/collector/dist -> packages/sdk/dist
+      resolve(__dir, '../../../node_modules/@runtimescope/sdk/dist/index.global.js'),  // npm installed
+    ];
+
+    for (const p of candidates) {
+      if (existsSync(p)) {
+        this.sdkBundlePath = p;
+        return p;
+      }
+    }
+    return null;
+  }
+
   async start(options: HttpServerOptions = {}): Promise<void> {
     const port = options.port ?? parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
     const host = options.host ?? '127.0.0.1';
@@ -197,6 +224,7 @@ export class HttpServer {
 
       server.on('listening', () => {
         this.server = server;
+        this.activePort = port;
         console.error(`[RuntimeScope] HTTP API listening on http://${host}:${port}`);
         resolve();
       });
@@ -265,6 +293,45 @@ export class HttpServer {
     }
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+
+    // Serve SDK IIFE bundle — works in any HTML page via <script> tag
+    if (req.method === 'GET' && url.pathname === '/runtimescope.js') {
+      const sdkPath = this.resolveSdkPath();
+      if (sdkPath) {
+        const bundle = readFileSync(sdkPath, 'utf-8');
+        res.writeHead(200, {
+          'Content-Type': 'application/javascript',
+          'Cache-Control': 'no-cache',
+          'Access-Control-Allow-Origin': '*',
+        });
+        res.end(bundle);
+      } else {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('SDK bundle not found. Run: npm run build -w packages/sdk');
+      }
+      return;
+    }
+
+    // Serve a ready-to-paste snippet for any tech stack
+    if (req.method === 'GET' && url.pathname === '/snippet') {
+      const appName = url.searchParams.get('app') || 'my-app';
+      const wsPort = process.env.RUNTIMESCOPE_PORT ?? '9090';
+      const snippet = `<!-- RuntimeScope SDK — paste before </body> -->
+<script src="http://localhost:${this.activePort}/runtimescope.js"></script>
+<script>
+  RuntimeScope.init({
+    appName: '${appName}',
+    endpoint: 'ws://localhost:${wsPort}',
+  });
+</script>`;
+      res.writeHead(200, {
+        'Content-Type': 'text/plain',
+        'Access-Control-Allow-Origin': '*',
+      });
+      res.end(snippet);
+      return;
+    }
+
     const routeKey = `${req.method} ${url.pathname}`;
     const handler = this.routes.get(routeKey);
 

@@ -3,11 +3,103 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
 
+const COLLECTOR_PORT = process.env.RUNTIMESCOPE_PORT ?? '9090';
+const HTTP_PORT = process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091';
+
 export function registerScannerTools(
   server: McpServer,
   store: EventStore,
   scanner: PlaywrightScanner,
 ): void {
+  // ---------- get_sdk_snippet ----------
+  server.tool(
+    'get_sdk_snippet',
+    'Generate a ready-to-paste code snippet to connect any web application to RuntimeScope for live runtime monitoring. Works with ANY tech stack — React, Vue, Angular, Svelte, plain HTML, Flask/Django templates, Rails ERB, PHP, WordPress, etc. Returns the appropriate installation method based on the project type.',
+    {
+      app_name: z
+        .string()
+        .optional()
+        .default('my-app')
+        .describe('Name for the app in RuntimeScope (e.g., "echo-frontend", "dashboard")'),
+      framework: z
+        .enum(['html', 'react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt', 'flask', 'django', 'rails', 'php', 'wordpress', 'other'])
+        .optional()
+        .default('html')
+        .describe('The framework/tech stack of the project. Use "html" for any plain HTML or server-rendered pages.'),
+    },
+    async ({ app_name, framework }) => {
+      const scriptTagSnippet = `<!-- RuntimeScope — paste before </body> -->
+<script src="http://localhost:${HTTP_PORT}/runtimescope.js"></script>
+<script>
+  RuntimeScope.init({
+    appName: '${app_name}',
+    endpoint: 'ws://localhost:${COLLECTOR_PORT}',
+  });
+</script>`;
+
+      const npmSnippet = `// Install: npm install @runtimescope/sdk
+import { RuntimeScope } from '@runtimescope/sdk';
+
+RuntimeScope.init({
+  appName: '${app_name}',
+  endpoint: 'ws://localhost:${COLLECTOR_PORT}',
+});`;
+
+      // Determine which snippet to use
+      const usesNpm = ['react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt'].includes(framework);
+      const primarySnippet = usesNpm ? npmSnippet : scriptTagSnippet;
+
+      // Framework-specific placement hints
+      const placementHints: Record<string, string> = {
+        html: 'Paste the <script> tags before </body> in your HTML file(s).',
+        react: 'Add the import to your entry file (src/index.tsx or src/main.tsx), before ReactDOM.render/createRoot.',
+        vue: 'Add the import to your entry file (src/main.ts), before createApp().',
+        angular: 'Add the import to your main.ts, before bootstrapApplication().',
+        svelte: 'Add the import to your entry file (src/main.ts), before new App().',
+        nextjs: 'Add the import to your app/layout.tsx or pages/_app.tsx. For App Router, use a client component wrapper.',
+        nuxt: 'Create a plugin file (plugins/runtimescope.client.ts) with the init call.',
+        flask: 'Add the <script> tags to your base template (templates/base.html) before </body>.',
+        django: 'Add the <script> tags to your base template (templates/base.html) before </body>.',
+        rails: 'Add the <script> tags to your application layout (app/views/layouts/application.html.erb) before </body>.',
+        php: 'Add the <script> tags to your layout/footer file before </body>.',
+        wordpress: 'Add the <script> tags to your theme\'s footer.php before </body>, or use a custom HTML plugin.',
+        other: 'Add the <script> tags to your HTML template before </body>. Works in any HTML page.',
+      };
+
+      const response = {
+        summary: `SDK snippet for ${framework} project "${app_name}". ${usesNpm ? 'Uses npm import.' : 'Uses <script> tag — no build system required.'}`,
+        data: {
+          snippet: primarySnippet,
+          placement: placementHints[framework] || placementHints.other,
+          alternativeSnippet: usesNpm ? scriptTagSnippet : npmSnippet,
+          alternativeNote: usesNpm
+            ? 'If you prefer, you can also use a <script> tag instead of npm:'
+            : 'If the project uses npm/Node.js, you can also install via:',
+          requirements: [
+            'RuntimeScope MCP server must be running (it starts automatically with Claude Code)',
+            `SDK bundle served at http://localhost:${HTTP_PORT}/runtimescope.js`,
+            `WebSocket collector at ws://localhost:${COLLECTOR_PORT}`,
+          ],
+          whatItCaptures: [
+            'Network requests (fetch/XHR) with timing and headers',
+            'Console logs, warnings, and errors with stack traces',
+            'React/Vue/Svelte component renders (if applicable)',
+            'State store changes (Redux, Zustand, Pinia)',
+            'Web Vitals (LCP, FCP, CLS, TTFB, INP)',
+            'Unhandled errors and promise rejections',
+          ],
+        },
+        issues: [],
+        metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+      };
+
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify(response, null, 2) }],
+      };
+    },
+  );
+
+  // ---------- scan_website ----------
   server.tool(
     'scan_website',
     'Visit a website with a headless browser and extract comprehensive data: tech stack (7,221 technologies), design tokens (colors, typography, spacing, CSS variables), layout tree (DOM with bounding rects, flex/grid), accessibility structure, fonts, and asset inventory (images, SVGs, sprites). After scanning, all recon tools (get_design_tokens, get_layout_tree, get_font_info, etc.) will return data from the scanned page. This is the primary way to analyze any website.',

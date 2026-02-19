@@ -83,42 +83,46 @@ This registers RuntimeScope as an MCP server. Claude Code will automatically sta
 
 ### 3a. Add the Browser SDK (Frontend)
 
-**Option A — npm link (recommended)**
+**Works with ANY tech stack** — React, Vue, Angular, Svelte, plain HTML, Flask/Django templates, Rails ERB, PHP, WordPress, etc.
 
-```bash
-# From your app's directory
-npm install ../runtime-profiler/packages/sdk
-```
+**Option A — Script tag (universal, no build system required)**
 
-Then add to your app's entry point (e.g. `main.tsx`, `_app.tsx`, `index.tsx`):
-
-```typescript
-import { RuntimeScope } from '@runtimescope/sdk';
-
-if (process.env.NODE_ENV === 'development') {
-  RuntimeScope.connect({
-    appName: 'my-app',
-    captureNetwork: true,
-    captureConsole: true,
-    captureXhr: true,
-    capturePerformance: true,    // Web Vitals (LCP, FCP, CLS, TTFB, FID, INP)
-    captureRenders: true,        // React component render profiling
-  });
-}
-```
-
-**Option B — Script tag (no build step)**
+Add this to any HTML page before `</body>`. The SDK is served automatically by the RuntimeScope collector:
 
 ```html
-<script src="path/to/runtime-profiler/packages/sdk/dist/index.global.js"></script>
+<script src="http://localhost:9091/runtimescope.js"></script>
 <script>
-  RuntimeScope.RuntimeScope.connect({
+  RuntimeScope.init({
     appName: 'my-app',
+    endpoint: 'ws://localhost:9090',
     captureNetwork: true,
     captureConsole: true,
   });
 </script>
 ```
+
+This works with Flask (`templates/base.html`), Django, Rails (`application.html.erb`), PHP, WordPress (`footer.php`), static HTML — anything that serves HTML.
+
+**Option B — npm install (for JS build systems)**
+
+```bash
+npm install ../runtime-profiler/packages/sdk
+```
+
+```typescript
+import { RuntimeScope } from '@runtimescope/sdk';
+
+RuntimeScope.connect({
+  appName: 'my-app',
+  captureNetwork: true,
+  captureConsole: true,
+  captureXhr: true,
+  capturePerformance: true,    // Web Vitals (LCP, FCP, CLS, TTFB, FID, INP)
+  captureRenders: true,        // React component render profiling
+});
+```
+
+> **Tip:** Ask Claude `get_sdk_snippet` and it will generate the right snippet for your specific tech stack.
 
 ### 3b. Add the Server SDK (Backend)
 

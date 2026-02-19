@@ -129,7 +129,7 @@ async function main() {
     version: '0.5.0',
   });
 
-  // 8. Register all 43 tools
+  // 8. Register all 44 tools
 
   // --- Core Runtime (12 existing) ---
   registerNetworkTools(mcp, store);
@@ -170,14 +170,15 @@ async function main() {
   registerReconAssetTools(mcp, store);
   registerReconStyleDiffTools(mcp, store);
 
-  // --- Playwright Scanner (1 new — headless browser site analysis) ---
+  // --- Playwright Scanner + SDK Snippet (2 new) ---
   registerScannerTools(mcp, store, scanner);
 
   // 9. Connect MCP to stdio transport
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  console.error('[RuntimeScope] MCP server running on stdio (v0.5.0 — 43 tools)');
+  console.error('[RuntimeScope] MCP server running on stdio (v0.5.0 — 44 tools)');
+  console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${HTTP_PORT}/snippet`);
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
   console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);
 

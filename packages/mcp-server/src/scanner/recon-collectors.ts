@@ -100,8 +100,9 @@ export async function collectDesignTokens(page: Page): Promise<RawDesignTokens> 
     const allElements = document.querySelectorAll('body *');
     const sampleLimit = Math.min(allElements.length, 200);
     for (let i = 0; i < sampleLimit; i++) {
-      const el = allElements[i] as HTMLElement;
-      if (el.offsetHeight === 0 && el.offsetWidth === 0) continue;
+      const el = allElements[i];
+      const elRect = el.getBoundingClientRect();
+      if (elRect.width === 0 && elRect.height === 0) continue;
 
       const cs = getComputedStyle(el);
       const cls = el.getAttribute('class') || '';
@@ -471,8 +472,9 @@ export async function collectFonts(page: Page): Promise<RawFonts> {
     const elements = document.querySelectorAll('body *');
     const limit = Math.min(elements.length, 200);
     for (let i = 0; i < limit; i++) {
-      const el = elements[i] as HTMLElement;
-      if (el.offsetHeight === 0 && el.offsetWidth === 0) continue;
+      const el = elements[i];
+      const elRect = el.getBoundingClientRect();
+      if (elRect.width === 0 && elRect.height === 0) continue;
       const cs = getComputedStyle(el);
       const key = `${cs.fontFamily}|${cs.fontWeight}|${cs.fontStyle}`;
       const entry = fontUsageMap.get(key) || { count: 0, selectors: new Set() };

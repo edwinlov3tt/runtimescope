@@ -129,7 +129,7 @@ export class PlaywrightScanner {
       viewportWidth = 1280,
       viewportHeight = 720,
       waitFor = 'networkidle',
-      timeout = 30_000,
+      timeout = 60_000,
     } = options;
 
     const db = this.ensureDb();
@@ -249,7 +249,7 @@ export class PlaywrightScanner {
     });
     const page = await context.newPage();
     try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
       return await collectComputedStyles(page, selector, propertyFilter);
     } finally {
       await context.close();
@@ -272,7 +272,7 @@ export class PlaywrightScanner {
     });
     const page = await context.newPage();
     try {
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30_000 });
+      await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
       return await collectElementSnapshot(page, selector, depth);
     } finally {
       await context.close();

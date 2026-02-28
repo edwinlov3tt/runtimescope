@@ -2,7 +2,7 @@
 
 Runtime profiling, website analysis, and design extraction for **any tech stack** — piped directly into Claude Code via MCP.
 
-RuntimeScope gives Claude Code eyes into your running app and any website on the internet. It intercepts network requests, console output, state changes, component renders, Web Vitals, database queries, and server metrics from your running app — and can scan any URL to extract tech stack, design tokens, layout structure, fonts, accessibility, and assets. All events are persisted to **SQLite** so Claude can access historical data across sessions. Everything is exposed as **46 MCP tools** so Claude Code can see exactly what's happening at runtime.
+RuntimeScope gives Claude Code eyes into your running app and any website on the internet. It intercepts network requests, console output, state changes, component renders, Web Vitals, database queries, and server metrics — and can scan any URL to extract tech stack, design tokens, layout structure, fonts, accessibility, and assets. All events are persisted to **SQLite** so Claude can access historical data across sessions. Everything is exposed as **46 MCP tools** so Claude Code can see exactly what's happening at runtime.
 
 **Works with everything:** React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, static sites — any tech stack that serves HTML.
 
@@ -15,43 +15,104 @@ Any URL ──Playwright scan──┘
 
 ---
 
-## Quick Start (Let Claude Do It)
+## Install the MCP Server
 
-### Any Tech Stack (2 minutes)
+Register RuntimeScope as an MCP server so Claude Code can use all 46 tools:
 
-Paste this into Claude Code and it will handle the full setup — **works with any tech stack**:
-
-```
-Install RuntimeScope for my project. Clone https://github.com/edwinlov3tt/runtimescope into a sibling directory, build it, and register the MCP server. Then use get_sdk_snippet to generate the right installation snippet for my tech stack and add it to my app. Finally, copy the slash commands into my project.
-
-Steps:
-1. git clone https://github.com/edwinlov3tt/runtimescope ../runtimescope && cd ../runtimescope && npm install && npm run build
-2. claude mcp add runtimescope node ../runtimescope/packages/mcp-server/dist/index.js
-3. Restart Claude Code so the MCP server loads
-4. Use get_sdk_snippet — it auto-detects my framework and gives me the exact code + where to paste it
-5. Copy the slash commands (additive — don't remove existing commands): mkdir -p .claude/commands && cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/
-6. Verify with get_session_info
+```bash
+claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
 ```
 
-The `get_sdk_snippet` tool supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and any other tech stack that serves HTML. **No npm or Node.js required** — it generates a `<script>` tag that works in any HTML page.
+That's it. Restart Claude Code and the MCP server is available globally across all projects.
 
-### Backend (Node.js Server SDK)
+For Claude Desktop, add this to your `claude_desktop_config.json`:
 
-For Node.js backends, also paste this:
+```json
+{
+  "mcpServers": {
+    "runtimescope": {
+      "command": "npx",
+      "args": ["-y", "@runtimescope/mcp-server"]
+    }
+  }
+}
+```
+
+---
+
+## Add the SDK to Your App
+
+The MCP server gives Claude the tools. The SDK connects your running app so those tools have data to work with. Choose the method that fits your stack:
+
+### Option A — Script Tag (Any HTML page, no build system required)
+
+The MCP server serves the SDK bundle automatically. Add this before `</body>` in any HTML file:
+
+```html
+<script src="http://localhost:9091/runtimescope.js"></script>
+<script>
+  RuntimeScope.init({
+    appName: 'my-app',
+    endpoint: 'ws://localhost:9090',
+  });
+</script>
+```
+
+Works with Flask (`templates/base.html`), Django, Rails (`application.html.erb`), PHP, WordPress (`footer.php`), static HTML — anything that serves HTML. No npm or Node.js required.
+
+### Option B — npm Install (JS/TS projects with a build system)
+
+```bash
+npm install @runtimescope/sdk
+```
+
+```typescript
+import { RuntimeScope } from '@runtimescope/sdk';
+
+RuntimeScope.init({
+  appName: 'my-app',
+  endpoint: 'ws://localhost:9090',
+});
+```
+
+### Option C — Let Claude Do It
+
+Ask Claude Code and it handles everything:
 
 ```
-Add RuntimeScope server-side monitoring to my backend.
+Install RuntimeScope SDK in my project. Use get_sdk_snippet to detect my framework and generate the right code.
+```
 
-Before starting, ask me:
-1. Which events to track: console output, errors, outgoing HTTP requests, server performance metrics (memory, CPU, event loop lag, GC pauses), and/or database queries?
-2. Which ORM/database driver I'm using: Prisma, Drizzle, Knex, pg, MySQL2, or better-sqlite3?
-3. Whether I want sampling/rate limiting for high-throughput services?
+The `get_sdk_snippet` tool auto-detects your framework and returns the exact snippet + where to paste it.
 
-Steps:
-1. npm install ../runtimescope/packages/server-sdk (skip git clone and claude mcp add if already done above)
-2. Add the SDK initialization to my server's entry point, enabling only the features I selected, and instrument my ORM.
-3. If I'm using Express/Connect, add the middleware for per-request context tracking.
-4. Verify with get_session_info.
+### Backend SDK (Node.js)
+
+For server-side monitoring (database queries, HTTP requests, performance metrics):
+
+```bash
+npm install @runtimescope/server-sdk
+```
+
+```typescript
+import { RuntimeScope } from '@runtimescope/server-sdk';
+
+RuntimeScope.connect({
+  appName: 'my-api',
+  captureConsole: true,
+  captureHttp: true,
+  capturePerformance: true,
+});
+
+// Instrument your ORM (pick one):
+RuntimeScope.instrumentPrisma(prisma);
+RuntimeScope.instrumentDrizzle(db);
+RuntimeScope.instrumentPg(pool);
+RuntimeScope.instrumentKnex(knex);
+RuntimeScope.instrumentMysql2(pool);
+RuntimeScope.instrumentBetterSqlite3(db);
+
+// Express/Connect middleware for per-request context
+app.use(RuntimeScope.middleware());
 ```
 
 ### Full-Stack (Both SDKs)
@@ -60,151 +121,15 @@ For full-stack apps (e.g. Next.js with API routes, Express + React), install bot
 
 ### Website Analysis (No SDK Required)
 
-RuntimeScope can also analyze **any website** without installing anything. Just ask Claude:
+RuntimeScope can analyze **any website** without installing anything:
 
 ```
 Scan https://stripe.com and show me their design tokens, tech stack, and layout structure
 ```
 
-This uses the `scan_website` tool — a headless browser visits the URL and extracts everything. See [Use Cases & Scenarios](#use-cases--scenarios) below.
+This uses the `scan_website` tool — a headless browser visits the URL and extracts everything.
 
----
-
-## Manual Installation
-
-### Prerequisites
-
-- Node.js 20+
-- npm 9+
-- Claude Code CLI (`claude`)
-
-### 1. Clone & Build
-
-```bash
-git clone https://github.com/edwinlov3tt/runtimescope runtime-profiler
-cd runtime-profiler
-npm install
-npm run build
-```
-
-### 2. Register with Claude Code
-
-```bash
-claude mcp add runtimescope node packages/mcp-server/dist/index.js
-```
-
-This registers RuntimeScope as an MCP server. Claude Code will automatically start the collector when it launches.
-
-### 2b. SQLite Persistence (Automatic)
-
-RuntimeScope uses an embedded **SQLite** database (via [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)) to persist all events across sessions. This is automatic — no external database server required.
-
-**How it works:**
-- When an SDK connects with `appName: 'my-app'`, RuntimeScope creates a per-project database at `~/.runtimescope/projects/my-app/events.db`
-- Every event is dual-written: once to the in-memory ring buffer (fast, for real-time tools) and once to SQLite (persistent, for historical queries)
-- Session metrics are auto-snapshotted when an SDK disconnects
-- Old events are auto-pruned on startup based on the retention policy (default: 30 days)
-
-**Verify SQLite is working:**
-After connecting an SDK and sending some events, ask Claude:
-```
-Use list_projects to show me all projects with historical data
-```
-
-Or query past events directly:
-```
-Use get_historical_events to show me network events from the last 2 hours for my-app
-```
-
-**Prerequisites:** `better-sqlite3` is included as a dependency — it compiles a native module during `npm install`. If you encounter build errors, ensure you have a C++ compiler installed:
-- **macOS:** `xcode-select --install`
-- **Linux:** `sudo apt install build-essential` (or equivalent)
-- **Windows:** Install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
-
-**Retention policy:** Events older than 30 days are automatically pruned on MCP server startup. Configure this with the `RUNTIMESCOPE_RETENTION_DAYS` environment variable (see [Environment Variables](#environment-variables)).
-
-### 3a. Add the Browser SDK (Frontend)
-
-**Works with ANY tech stack** — React, Vue, Angular, Svelte, plain HTML, Flask/Django templates, Rails ERB, PHP, WordPress, etc.
-
-**Option A — Script tag (universal, no build system required)**
-
-Add this to any HTML page before `</body>`. The SDK is served automatically by the RuntimeScope collector:
-
-```html
-<script src="http://localhost:9091/runtimescope.js"></script>
-<script>
-  RuntimeScope.init({
-    appName: 'my-app',
-    endpoint: 'ws://localhost:9090',
-    captureNetwork: true,
-    captureConsole: true,
-  });
-</script>
-```
-
-This works with Flask (`templates/base.html`), Django, Rails (`application.html.erb`), PHP, WordPress (`footer.php`), static HTML — anything that serves HTML.
-
-**Option B — npm install (for JS build systems)**
-
-```bash
-npm install ../runtime-profiler/packages/sdk
-```
-
-```typescript
-import { RuntimeScope } from '@runtimescope/sdk';
-
-RuntimeScope.connect({
-  appName: 'my-app',
-  captureNetwork: true,
-  captureConsole: true,
-  captureXhr: true,
-  capturePerformance: true,    // Web Vitals (LCP, FCP, CLS, TTFB, FID, INP)
-  captureRenders: true,        // React component render profiling
-});
-```
-
-**Tip:** Ask Claude `get_sdk_snippet` and it will generate the right snippet for your specific tech stack.
-
-### 3b. Add the Server SDK (Backend)
-
-```bash
-# From your app's directory
-npm install ../runtime-profiler/packages/server-sdk
-```
-
-Then add to your server's entry point (e.g. `server.ts`, `app.ts`, `index.ts`):
-
-```typescript
-import { RuntimeScope } from '@runtimescope/server-sdk';
-
-RuntimeScope.connect({
-  appName: 'my-api',
-  captureConsole: true,          // Intercept console.log/warn/error (default: true)
-  captureHttp: true,             // Intercept outgoing HTTP requests
-  capturePerformance: true,      // Memory, CPU, event loop lag, GC pauses
-});
-```
-
-**Instrument your ORM** (call after `connect()`):
-
-```typescript
-// Pick the one matching your setup:
-RuntimeScope.instrumentPrisma(prisma);
-RuntimeScope.instrumentDrizzle(db);
-RuntimeScope.instrumentPg(pool);
-RuntimeScope.instrumentKnex(knex);
-RuntimeScope.instrumentMysql2(pool);
-RuntimeScope.instrumentBetterSqlite3(db);
-```
-
-**Add Express/Connect middleware** for per-request context tracking:
-
-```typescript
-app.use(RuntimeScope.middleware());
-```
-
-### 4. Verify Connection
+### Verify Connection
 
 Start your app, then ask Claude Code:
 
@@ -212,64 +137,184 @@ Start your app, then ask Claude Code:
 Use get_session_info to check if the SDK is connected.
 ```
 
-### 5. Install Claude Code Commands (Optional)
+---
 
-RuntimeScope ships with **11 slash commands** that give Claude pre-built workflows for common tasks. These go in your project's `.claude/commands/` directory.
+## Slash Commands (Optional)
 
-**Install commands (adds to existing commands, does not overwrite):**
+RuntimeScope ships with **11 slash commands** for pre-built diagnostic workflows. Copy them into your project:
 
 ```bash
-# From your project directory — copies RuntimeScope commands alongside any existing commands
-cp ../runtimescope/.claude/commands/diagnose.md .claude/commands/
-cp ../runtimescope/.claude/commands/trace.md .claude/commands/
-cp ../runtimescope/.claude/commands/renders.md .claude/commands/
-cp ../runtimescope/.claude/commands/api.md .claude/commands/
-cp ../runtimescope/.claude/commands/network.md .claude/commands/
-cp ../runtimescope/.claude/commands/queries.md .claude/commands/
-cp ../runtimescope/.claude/commands/recon.md .claude/commands/
-cp ../runtimescope/.claude/commands/clone-ui.md .claude/commands/
-cp ../runtimescope/.claude/commands/devops.md .claude/commands/
-cp ../runtimescope/.claude/commands/history.md .claude/commands/
-cp ../runtimescope/.claude/commands/setup.md .claude/commands/
+mkdir -p .claude/commands
+curl -sL https://raw.githubusercontent.com/edwinlov3tt/runtimescope/main/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md -o '.claude/commands/#1.md'
 ```
 
-Or copy all at once:
+Or if you have the repo cloned:
 
 ```bash
 mkdir -p .claude/commands
 cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/
 ```
 
-**Available commands after installation:**
+| Command | What it does |
+|---------|-------------|
+| `/setup` | Install SDK — detects framework, generates snippet, verifies connection |
+| `/diagnose` | Full-stack health check — issue detection, API health, query performance, Web Vitals |
+| `/trace` | Trace a user flow — clears events, asks you to reproduce, analyzes the causal chain |
+| `/renders` | Render audit — finds excessive re-renders, suggests memo/callback fixes |
+| `/api` | API health — endpoints, latency, errors, service map |
+| `/network` | Network analysis — failed requests, slow requests, N+1 patterns |
+| `/queries` | Database audit — slow queries, N+1 patterns, missing indexes |
+| `/recon` | Website recon — tech stack, design tokens, layout, fonts, accessibility, assets |
+| `/clone-ui` | Clone a component — scans URL, extracts everything needed to recreate it |
+| `/devops` | Dev status — running processes, port usage, build status, deploy logs |
+| `/history` | Historical query — list projects, query past events from SQLite |
 
-| Command | Usage | What it does |
-|---------|-------|-------------|
-| `/setup` | `/setup` | Install RuntimeScope SDK — detects framework, generates snippet, verifies connection |
-| `/diagnose` | `/diagnose` | Full-stack health check — runs issue detection, API health, query performance, Web Vitals |
-| `/trace` | `/trace checkout flow` | Trace a user flow — clears events, asks you to reproduce, then analyzes the causal chain |
-| `/renders` | `/renders ProductList` | Render performance audit — finds excessive re-renders, suggests memo/callback fixes |
-| `/api` | `/api /checkout` | API health report — endpoints, latency, errors, service map |
-| `/network` | `/network 500` | Network request analysis — failed requests, slow requests, N+1 patterns |
-| `/queries` | `/queries slow` | Database query audit — slow queries, N+1 patterns, missing indexes |
-| `/recon` | `/recon https://stripe.com` | Full website recon — tech stack, design tokens, layout, fonts, accessibility, assets |
-| `/clone-ui` | `/clone-ui https://site.com .card` | Clone a component — scans URL, extracts everything needed to recreate it |
-| `/devops` | `/devops` | Dev environment status — running processes, port usage, build status, deploy logs |
-| `/history` | `/history my-app 7d` | Historical event query — list projects and query past events from SQLite |
+---
 
-**Note:** These commands are additive — they won't conflict with or overwrite any existing commands in your `.claude/commands/` directory.
+## Claude Prompts
+
+Copy one of these into your project's `CLAUDE.md` to give Claude full context on how to use RuntimeScope.
+
+### Installation Prompt (For Any Tech Stack)
+
+```
+You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. RuntimeScope works with ANY tech stack — not just JavaScript/Node.js.
+
+When a user wants to install RuntimeScope:
+1. The MCP server should already be registered. If not: claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
+2. Use get_sdk_snippet to generate the correct installation code for their framework. It supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and more.
+3. For npm-based projects (React, Vue, etc.): npm install @runtimescope/sdk
+4. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML): use the <script> tag — no npm or build system required. The SDK bundle is served by the MCP server at http://localhost:9091/runtimescope.js.
+5. get_sdk_snippet returns framework-specific placement hints (e.g., "paste in templates/base.html before </body>" for Flask).
+6. Never tell users RuntimeScope is incompatible with their tech stack. If it serves HTML, RuntimeScope works with it.
+7. For Node.js backends: npm install @runtimescope/server-sdk
+
+Data persistence: All events are automatically persisted to SQLite (per-project databases at ~/.runtimescope/projects/<appName>/events.db). Events survive Claude Code restarts. Historical data is retained for 30 days by default. Use list_projects to see all projects with stored data, and get_historical_events to query past events.
+```
+
+### Frontend Prompt
+
+```
+You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The browser SDK is installed and captures events from the running app.
+
+Before debugging, always check what's enabled: Start with get_session_info to verify the SDK is connected and see which capture features are active.
+
+Workflow:
+1. Start with get_session_info to verify the SDK is connected
+2. Use clear_events before reproducing an issue for a clean capture
+3. After the user reproduces the issue, run detect_issues to get prioritized problems with evidence and fix suggestions
+4. Use get_event_timeline to trace the causal chain in chronological order
+5. Drill into specifics with targeted tools: get_network_requests (filter by URL/status/method), get_console_messages (filter by level/search), get_errors_with_source_context (errors with source code), get_state_snapshots (state mutations), get_render_profile (component re-renders), get_performance_metrics (Web Vitals)
+6. For API analysis: get_api_catalog discovers endpoints, get_api_health shows latency/error rates, get_service_map maps external service topology
+7. Capture snapshots: get_dom_snapshot for current page HTML, capture_har for network export
+8. Compare sessions: compare_sessions to detect regressions between test runs
+9. For design analysis: scan_website to scan any URL, then get_design_tokens, get_layout_tree, get_computed_styles for detailed design data
+10. For historical analysis: list_projects to see all projects with stored data, get_historical_events to query past events from SQLite (supports time ranges like "2h", "7d", or ISO dates)
+
+Important: Some capture features are opt-in and may not be enabled. If a tool returns empty results, check whether the corresponding SDK feature is enabled (e.g., capturePerformance for Web Vitals, captureRenders for render profiling, stores for state tracking). Suggest the user enable the feature if needed.
+
+All tools return a consistent JSON envelope with summary, data, issues, and metadata fields. Use the since_seconds parameter on most tools to scope queries to a time window.
+```
+
+### Backend Prompt
+
+```
+You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The server SDK is installed and captures events from the Node.js backend.
+
+Before debugging, always check what's enabled: Start with get_session_info to verify the SDK is connected. Not all features are enabled by default — captureHttp and capturePerformance are opt-in.
+
+Workflow:
+1. Start with get_session_info to verify the SDK is connected
+2. Use clear_events before reproducing an issue for a clean capture
+3. Run detect_issues for automated problem detection
+4. For database analysis: get_query_log shows captured queries, get_query_performance detects N+1 and slow queries, suggest_indexes recommends indexes, get_schema_map shows the database schema
+5. For server health: get_performance_metrics with source: 'server' shows memory, CPU, event loop lag, and GC pauses
+6. For outgoing HTTP: get_network_requests shows requests made by the server (requires captureHttp: true)
+7. For console/errors: get_console_messages and get_errors_with_source_context
+8. DevOps: get_dev_processes for running processes, get_port_usage for port conflicts
+
+Important: Some capture features are opt-in. If a tool returns empty results, check whether the corresponding SDK feature is enabled:
+- Database queries require an ORM instrumentation call (e.g., RuntimeScope.instrumentPrisma(prisma))
+- Server metrics require capturePerformance: true
+- Outgoing HTTP requires captureHttp: true
+- Console/errors are enabled by default
+
+All tools return a consistent JSON envelope with summary, data, issues, and metadata fields.
+```
+
+### Full-Stack Prompt
+
+```
+You have access to RuntimeScope, a runtime profiling MCP server with 46 tools that captures events from both the browser and the Node.js server. Both SDKs feed into the same collector — browser and server events appear in the same tools.
+
+Before debugging, always check what's enabled: Start with get_session_info to verify both SDKs are connected. Not all features are enabled by default.
+
+Capture features and their defaults:
+- Browser: captureNetwork (on), captureConsole (on), captureXhr (on), captureBody (off), capturePerformance (off), captureRenders (off), stores (off)
+- Server: captureConsole (on), captureErrors (on), captureHttp (off), capturePerformance (off), database instrumentation (manual)
+
+Workflow:
+1. Start with get_session_info to verify both SDKs are connected
+2. Use clear_events before reproducing an issue for a clean capture
+3. Run detect_issues for automated problem detection across the full stack
+4. Use get_event_timeline to trace causal chains across browser and server
+5. Drill into specifics: network (get_network_requests), console (get_console_messages), errors (get_errors_with_source_context), state (get_state_snapshots), renders (get_render_profile), performance (get_performance_metrics — use source: 'browser' or source: 'server' to filter)
+6. For API analysis: get_api_catalog, get_api_health, get_service_map
+7. For database analysis: get_query_log, get_query_performance, suggest_indexes, get_schema_map
+8. Capture snapshots: get_dom_snapshot, capture_har
+9. Compare sessions: compare_sessions to detect regressions
+10. DevOps: get_dev_processes, get_port_usage, get_deploy_logs
+11. Website analysis: scan_website any URL, then use recon tools (get_design_tokens, get_layout_tree, get_font_info, etc.)
+12. Historical analysis: list_projects to see all projects, get_historical_events to query past events from SQLite
+
+If a tool returns empty results, the corresponding capture feature may not be enabled. Suggest the user enable it in their SDK config.
+
+For SDK installation on any tech stack, use get_sdk_snippet — it generates the right code for any framework including non-JS stacks (Flask, Django, Rails, PHP, WordPress).
+
+All tools return a consistent JSON envelope with summary, data, issues, and metadata fields. Use the since_seconds parameter on most tools to scope queries to a time window.
+```
+
+### Website Analysis Prompt (No SDK Required)
+
+```
+You have access to RuntimeScope's website scanner and recon tools. These work on any URL without installing anything.
+
+When a user wants to analyze a website:
+1. scan_website({ url }) — visits the page with a headless browser, detects tech stack from 7,221 technologies, extracts design tokens, layout, fonts, accessibility, and assets. Stores everything for follow-up queries.
+2. After scanning, use recon tools to drill into specifics:
+   - get_design_tokens() — CSS custom properties, color palette, typography, spacing, shadows
+   - get_layout_tree({ selector: ".hero" }) — DOM structure with flex/grid layout info
+   - get_font_info() — font faces, families used, icon fonts, loading strategy
+   - get_accessibility_tree() — heading hierarchy, landmarks, form labels, alt text
+   - get_asset_inventory() — images, SVGs, sprites, icon fonts
+   - get_computed_styles({ selector: ".btn" }) — exact CSS values for any element
+   - get_element_snapshot({ selector: ".card" }) — deep snapshot for component recreation
+   - get_page_metadata() — tech stack, meta tags, external resources
+   - get_style_diff({ source_selector, target_selector }) — compare two elements' styles
+
+Common workflows:
+- Brand extraction: scan_website → get_design_tokens → get_font_info
+- UI recreation: scan_website → get_element_snapshot → get_computed_styles → build → get_style_diff to verify
+- Tech stack discovery: scan_website → get_page_metadata
+- Accessibility audit: scan_website → get_accessibility_tree
+- Competitor analysis: scan_website → get_design_tokens + get_layout_tree + get_font_info + get_asset_inventory
+```
 
 ---
 
 ## Browser SDK Configuration
 
 ```typescript
-RuntimeScope.connect({
+import { RuntimeScope } from '@runtimescope/sdk';
+
+RuntimeScope.init({
   // Connection
-  serverUrl: 'ws://localhost:9090',  // Collector WebSocket URL (default)
+  endpoint: 'ws://localhost:9090',   // Collector WebSocket URL (default)
   appName: 'my-app',                // Identifies this app in session info
   enabled: true,                     // Set to false to disable entirely
+  authToken: undefined,              // API key for authenticated collectors
 
-  // Capture toggles — enable what you need
+  // Capture toggles
   captureNetwork: true,              // Intercept fetch (default: true)
   captureXhr: true,                  // Intercept XMLHttpRequest (default: true)
   captureConsole: true,              // Intercept console.* (default: true)
@@ -279,9 +324,7 @@ RuntimeScope.connect({
   captureRenders: false,             // React render tracking (default: false)
 
   // State tracking — pass your Zustand/Redux store refs
-  stores: {
-    // myStore: useMyStore,
-  },
+  stores: {},
 
   // Privacy
   redactHeaders: ['authorization', 'cookie', 'set-cookie'],
@@ -308,11 +351,12 @@ RuntimeScope.connect({
   // Connection
   serverUrl: 'ws://localhost:9090',  // Collector WebSocket URL (default)
   appName: 'my-api',                // Identifies this app in session info
+  authToken: undefined,              // API key for authenticated collectors
 
-  // Capture toggles — enable what you need
+  // Capture toggles
   captureConsole: true,              // Intercept console.log/warn/error (default: true)
-  captureErrors: true,               // Capture uncaught exceptions and unhandled rejections (default: true)
-  captureHttp: false,                // Intercept outgoing http/https requests (default: false)
+  captureErrors: true,               // Capture uncaught exceptions (default: true)
+  captureHttp: false,                // Intercept outgoing HTTP requests (default: false)
   captureBody: false,                // Capture HTTP request/response bodies (default: false)
   maxBodySize: 65536,                // Max body size in bytes (default: 64KB)
   capturePerformance: false,         // Server metrics: memory, CPU, event loop, GC (default: false)
@@ -345,7 +389,7 @@ RuntimeScope.connect({
 
 ### Express/Connect Middleware
 
-The middleware provides per-request context propagation via `AsyncLocalStorage`. All events emitted during a request (database queries, console logs, errors) automatically inherit the request's session ID.
+Per-request context propagation via `AsyncLocalStorage`. All events emitted during a request automatically inherit the request's session ID.
 
 ```typescript
 app.use(RuntimeScope.middleware());
@@ -371,9 +415,11 @@ When `capturePerformance: true` is set, the server SDK collects these Node.js ru
 | `handles.active` | count | Active libuv handles |
 | `requests.active` | count | Active libuv requests |
 
-### Framework-Specific Setup
+---
 
-**Next.js (App Router) — Browser SDK**
+## Framework Examples
+
+### Next.js (App Router) — Browser SDK
 
 ```typescript
 // app/providers.tsx
@@ -384,7 +430,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (process.env.NODE_ENV === 'development') {
       import('@runtimescope/sdk').then(({ RuntimeScope }) => {
-        RuntimeScope.connect({
+        RuntimeScope.init({
           appName: 'my-nextjs-app',
           captureNetwork: true,
           captureConsole: true,
@@ -398,7 +444,7 @@ export function Providers({ children }: { children: React.ReactNode }) {
 }
 ```
 
-**Next.js (API Routes / Server Actions) — Server SDK**
+### Next.js (API Routes / Server Actions) — Server SDK
 
 ```typescript
 // instrumentation.ts (Next.js instrumentation hook)
@@ -418,7 +464,7 @@ export async function register() {
 }
 ```
 
-**Express**
+### Express
 
 ```typescript
 // server.ts
@@ -433,17 +479,17 @@ RuntimeScope.connect({
 });
 
 const app = express();
-app.use(RuntimeScope.middleware()); // Per-request context tracking
+app.use(RuntimeScope.middleware());
 ```
 
-**Vite / Create React App — Browser SDK**
+### Vite / Create React App
 
 ```typescript
 // src/main.tsx
 import { RuntimeScope } from '@runtimescope/sdk';
 
 if (import.meta.env.DEV) {
-  RuntimeScope.connect({
+  RuntimeScope.init({
     appName: 'my-vite-app',
     captureNetwork: true,
     captureConsole: true,
@@ -451,142 +497,46 @@ if (import.meta.env.DEV) {
 }
 ```
 
+### Flask / Django / Rails / PHP
+
+No npm required. Add the script tag to your base template:
+
+```html
+<!-- Flask: templates/base.html -->
+<!-- Django: templates/base.html -->
+<!-- Rails: app/views/layouts/application.html.erb -->
+<!-- PHP/WordPress: footer.php -->
+
+<script src="http://localhost:9091/runtimescope.js"></script>
+<script>
+  RuntimeScope.init({
+    appName: 'my-app',
+    endpoint: 'ws://localhost:9090',
+  });
+</script>
+```
+
 ---
 
-## Claude Prompt
+## SQLite Persistence
 
-Copy this into your project's `CLAUDE.md` or paste it directly to give Claude full context on how to use RuntimeScope's tools.
+RuntimeScope automatically persists all events to SQLite — no configuration required.
 
-### Installation Prompt (For Any Tech Stack)
+- When an SDK connects with `appName: 'my-app'`, a per-project database is created at `~/.runtimescope/projects/my-app/events.db`
+- Every event is dual-written: in-memory ring buffer (fast, for real-time tools) + SQLite (persistent, for historical queries)
+- Session metrics are auto-snapshotted on SDK disconnect
+- Old events are auto-pruned on startup (default: 30 days, configurable via `RUNTIMESCOPE_RETENTION_DAYS`)
 
+Query historical data:
 ```
-You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. RuntimeScope works with ANY tech stack — not just JavaScript/Node.js.
-
-When a user wants to install RuntimeScope:
-1. Use get_sdk_snippet to generate the correct installation code for their framework. It supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and more.
-2. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML), the SDK is a simple <script> tag — no npm or build system required. The SDK bundle is served by the RuntimeScope collector at http://localhost:9091/runtimescope.js.
-3. get_sdk_snippet returns framework-specific placement hints (e.g., "paste in templates/base.html before </body>" for Flask).
-4. Never tell users RuntimeScope is incompatible with their tech stack. If it serves HTML, RuntimeScope works with it.
-5. After SDK installation, copy the RuntimeScope slash commands into the project's .claude/commands/ directory (additive — do not remove existing commands): cp ../runtimescope/.claude/commands/{diagnose,trace,renders,api,network,queries,recon,clone-ui,devops,history,setup}.md .claude/commands/
-
-Data persistence: All events are automatically persisted to SQLite (per-project databases at ~/.runtimescope/projects/<appName>/events.db). Events survive Claude Code restarts. Historical data is retained for 30 days by default — this can be changed by setting the RUNTIMESCOPE_RETENTION_DAYS environment variable. Use list_projects to see all projects with stored data, and get_historical_events to query past events.
-
-Slash commands available: /setup, /diagnose, /trace, /renders, /api, /network, /queries, /recon, /clone-ui, /devops, /history. Use these for pre-built diagnostic workflows.
+Use list_projects to show me all projects with historical data
+Use get_historical_events to show me network events from the last 2 hours for my-app
 ```
 
-### Website Analysis Prompt (No SDK Required)
-
-```
-You have access to RuntimeScope's website scanner and recon tools. These work on any URL without installing anything.
-
-When a user wants to analyze a website:
-1. scan_website({ url }) — visits the page with a headless browser, detects tech stack from 7,221 technologies, extracts design tokens, layout, fonts, accessibility, and assets. Stores everything for follow-up queries.
-2. After scanning, use recon tools to drill into specifics:
-   - get_design_tokens() — CSS custom properties, color palette, typography, spacing, shadows
-   - get_layout_tree({ selector: ".hero" }) — DOM structure with flex/grid layout info
-   - get_font_info() — font faces, families used, icon fonts, loading strategy
-   - get_accessibility_tree() — heading hierarchy, landmarks, form labels, alt text
-   - get_asset_inventory() — images, SVGs, sprites, icon fonts
-   - get_computed_styles({ selector: ".btn" }) — exact CSS values for any element
-   - get_element_snapshot({ selector: ".card" }) — deep snapshot for component recreation
-   - get_page_metadata() — tech stack, meta tags, external resources
-   - get_style_diff({ source_selector, target_selector }) — compare two elements' styles
-
-Common workflows:
-- Brand extraction: scan_website → get_design_tokens → get_font_info
-- UI recreation: scan_website → get_element_snapshot → get_computed_styles → build → get_style_diff to verify
-- Tech stack discovery: scan_website → get_page_metadata
-- Accessibility audit: scan_website → get_accessibility_tree
-- Competitor analysis: scan_website → get_design_tokens + get_layout_tree + get_font_info + get_asset_inventory
-```
-
-### Frontend Prompt
-
-```
-You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The browser SDK is installed and captures events from the running app.
-
-Before debugging, always check what's enabled: Start with get_session_info to verify the SDK is connected and see which capture features are active.
-
-Workflow:
-1. Start with get_session_info to verify the SDK is connected
-2. Use clear_events before reproducing an issue for a clean capture
-3. After the user reproduces the issue, run detect_issues to get prioritized problems with evidence and fix suggestions
-4. Use get_event_timeline to trace the causal chain in chronological order
-5. Drill into specifics with targeted tools: get_network_requests (filter by URL/status/method), get_console_messages (filter by level/search), get_errors_with_source_context (errors with source code), get_state_snapshots (state mutations), get_render_profile (component re-renders), get_performance_metrics (Web Vitals)
-6. For API analysis: get_api_catalog discovers endpoints, get_api_health shows latency/error rates, get_service_map maps external service topology
-7. Capture snapshots: get_dom_snapshot for current page HTML, capture_har for network export
-8. Compare sessions: compare_sessions to detect regressions between test runs
-9. For design analysis: scan_website to scan any URL, then get_design_tokens, get_layout_tree, get_computed_styles for detailed design data
-10. For historical analysis: list_projects to see all projects with stored data, get_historical_events to query past events from SQLite (supports time ranges like "2h", "7d", or ISO dates)
-
-Important: Some capture features are opt-in and may not be enabled. If a tool returns empty results, check whether the corresponding SDK feature is enabled (e.g., capturePerformance for Web Vitals, captureRenders for render profiling, stores for state tracking). Suggest the user enable the feature if needed.
-
-Data persistence: All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via RUNTIMESCOPE_RETENTION_DAYS env var). Use get_historical_events to access events beyond the in-memory buffer.
-
-All tools return a consistent JSON envelope with summary, data, issues, and metadata fields. Use the since_seconds parameter on most tools to scope queries to a time window.
-```
-
-### Backend Prompt
-
-```
-You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. The server SDK is installed and captures events from the Node.js backend.
-
-Before debugging, always check what's enabled: Start with get_session_info to verify the SDK is connected. Not all features are enabled by default — captureHttp and capturePerformance are opt-in.
-
-Workflow:
-1. Start with get_session_info to verify the SDK is connected
-2. Use clear_events before reproducing an issue for a clean capture
-3. Run detect_issues for automated problem detection
-4. For database analysis: get_query_log shows captured queries, get_query_performance detects N+1 and slow queries, suggest_indexes recommends indexes, get_schema_map shows the database schema
-5. For server health: get_performance_metrics with source: 'server' shows memory, CPU, event loop lag, and GC pauses
-6. For outgoing HTTP: get_network_requests shows requests made by the server (requires captureHttp: true)
-7. For console/errors: get_console_messages and get_errors_with_source_context
-8. DevOps: get_dev_processes for running processes, get_port_usage for port conflicts
-
-Important: Some capture features are opt-in. If a tool returns empty results, check whether the corresponding SDK feature is enabled:
-- Database queries require an ORM instrumentation call (e.g., RuntimeScope.instrumentPrisma(prisma))
-- Server metrics require capturePerformance: true
-- Outgoing HTTP requires captureHttp: true
-- Console/errors are enabled by default
-
-Data persistence: All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via RUNTIMESCOPE_RETENTION_DAYS env var). Use list_projects to see all projects, and get_historical_events to query past events.
-
-All tools return a consistent JSON envelope with summary, data, issues, and metadata fields.
-```
-
-### Full-Stack Prompt
-
-```
-You have access to RuntimeScope, a runtime profiling MCP server with 46 tools that captures events from both the browser and the Node.js server. Both SDKs feed into the same collector — browser and server events appear in the same tools.
-
-Before debugging, always check what's enabled: Start with get_session_info to verify both SDKs are connected. Ask the user which events they want to track if you're not sure what's configured. Not all features are enabled by default.
-
-Capture features and their defaults:
-- Browser: captureNetwork (on), captureConsole (on), captureXhr (on), captureBody (off), capturePerformance (off), captureRenders (off), stores (off)
-- Server: captureConsole (on), captureErrors (on), captureHttp (off), capturePerformance (off), database instrumentation (manual)
-
-Workflow:
-1. Start with get_session_info to verify both SDKs are connected
-2. Use clear_events before reproducing an issue for a clean capture
-3. Run detect_issues for automated problem detection across the full stack
-4. Use get_event_timeline to trace causal chains across browser and server
-5. Drill into specifics: network (get_network_requests), console (get_console_messages), errors (get_errors_with_source_context), state (get_state_snapshots), renders (get_render_profile), performance (get_performance_metrics — use source: 'browser' or source: 'server' to filter)
-6. For API analysis: get_api_catalog, get_api_health, get_service_map
-7. For database analysis: get_query_log, get_query_performance, suggest_indexes, get_schema_map
-8. Capture snapshots: get_dom_snapshot, capture_har
-9. Compare sessions: compare_sessions to detect regressions
-10. DevOps: get_dev_processes, get_port_usage, get_deploy_logs
-11. Website analysis: scan_website any URL, then use recon tools (get_design_tokens, get_layout_tree, get_font_info, etc.)
-12. Historical analysis: list_projects to see all projects, get_historical_events to query past events from SQLite
-
-If a tool returns empty results, the corresponding capture feature may not be enabled. Suggest the user enable it in their SDK config.
-
-For SDK installation on any tech stack, use get_sdk_snippet — it generates the right code for any framework including non-JS stacks (Flask, Django, Rails, PHP, WordPress).
-
-Data persistence: All events are persisted to SQLite and survive Claude Code restarts. Historical data is retained for 30 days by default (configurable via RUNTIMESCOPE_RETENTION_DAYS env var). Use get_historical_events to access events beyond the in-memory buffer.
-
-All tools return a consistent JSON envelope with summary, data, issues, and metadata fields. Use the since_seconds parameter on most tools to scope queries to a time window.
-```
+**Prerequisites:** `better-sqlite3` compiles a native module during install. If you encounter build errors:
+- **macOS:** `xcode-select --install`
+- **Linux:** `sudo apt install build-essential`
+- **Windows:** [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
 
 ---
 
@@ -613,9 +563,9 @@ All tools return a consistent JSON envelope with summary, data, issues, and meta
 
 | Tool | Description |
 |------|-------------|
-| `get_api_catalog` | Discover all API endpoints, auto-grouped by service. Shows normalized paths, call counts, auth patterns. Filter by `service`, `min_calls` |
-| `get_api_health` | Health metrics per endpoint: success rate, p50/p95 latency, error codes. Filter by `endpoint`, `since_seconds` |
-| `get_api_documentation` | Generate markdown API docs from observed traffic. Filter by `service` |
+| `get_api_catalog` | Discover all API endpoints, auto-grouped by service. Shows normalized paths, call counts, auth patterns |
+| `get_api_health` | Health metrics per endpoint: success rate, p50/p95 latency, error codes |
+| `get_api_documentation` | Generate markdown API docs from observed traffic |
 | `get_service_map` | Topology map of external services with detected platforms (Supabase, Stripe, Vercel, etc.) |
 | `get_api_changes` | Compare API endpoints between two sessions — added, removed, modified |
 
@@ -635,18 +585,18 @@ All tools return a consistent JSON envelope with summary, data, issues, and meta
 
 | Tool | Description |
 |------|-------------|
-| `get_dev_processes` | List running dev processes (Next.js, Vite, Docker, etc.) with PID, port, memory, CPU. Filter by `type`, `project` |
+| `get_dev_processes` | List running dev processes (Next.js, Vite, Docker, etc.) with PID, port, memory, CPU |
 | `kill_process` | Terminate a dev process by PID (SIGTERM or SIGKILL). Safety-guarded against system PIDs |
-| `get_port_usage` | Show which processes are bound to which ports. Filter by `port` |
-| `purge_caches` | Delete build/dev cache directories (.next/cache, node_modules/.cache, .vite, .turbo, etc.). Supports dry run |
-| `restart_dev_server` | Kill process + purge caches + restart with inferred or custom command. One-step dev server reset |
+| `get_port_usage` | Show which processes are bound to which ports |
+| `purge_caches` | Delete build/dev cache directories (.next/cache, node_modules/.cache, .vite, .turbo, etc.) |
+| `restart_dev_server` | Kill process + purge caches + restart. One-step dev server reset |
 
 ### Infrastructure (4 tools)
 
 | Tool | Description |
 |------|-------------|
-| `get_deploy_logs` | Deployment history from Vercel, Cloudflare, Railway. Filter by `platform`, `deploy_id` |
-| `get_runtime_logs` | Runtime logs from deployment platforms. Filter by `level`, `since_seconds` |
+| `get_deploy_logs` | Deployment history from Vercel, Cloudflare, Railway |
+| `get_runtime_logs` | Runtime logs from deployment platforms |
 | `get_build_status` | Current deployment status per connected platform |
 | `get_infra_overview` | Infrastructure overview combining config with auto-detection from network traffic |
 
@@ -654,38 +604,36 @@ All tools return a consistent JSON envelope with summary, data, issues, and meta
 
 | Tool | Description |
 |------|-------------|
-| `compare_sessions` | Compare two sessions: API latency, render counts, Web Vitals, query performance. Shows regressions and improvements |
+| `compare_sessions` | Compare two sessions: API latency, render counts, Web Vitals, query performance |
 | `get_session_history` | List past sessions with build metadata and event counts |
 
 ### Historical Persistence (2 tools)
 
 | Tool | Description |
 |------|-------------|
-| `get_historical_events` | Query past events from persistent SQLite storage. Access events beyond the in-memory buffer (last 10K events). Events persist across Claude Code restarts. Filter by `project`, `event_types`, `since`/`until` (relative like "2h"/"7d" or ISO date), `session_id`, with pagination (`limit`, `offset`) |
-| `list_projects` | List all projects with stored historical data. Shows project names, event counts, session counts, active connections, and date ranges from SQLite persistence |
+| `get_historical_events` | Query past events from SQLite. Filter by `project`, `event_types`, `since`/`until`, `session_id` |
+| `list_projects` | List all projects with stored historical data, event counts, session counts |
 
 ### Website Scanner (2 tools)
 
 | Tool | Description |
 |------|-------------|
-| `scan_website` | Visit any URL with a headless browser and extract comprehensive data: tech stack (7,221 technologies), design tokens, layout tree, accessibility structure, fonts, and asset inventory. After scanning, all recon tools return data from the scanned page. **No SDK installation required** |
-| `get_sdk_snippet` | Generate a ready-to-paste code snippet to connect any web application to RuntimeScope. Works with **any tech stack** — React, Vue, Angular, Svelte, plain HTML, Flask, Django, Rails, PHP, WordPress, etc. Returns the appropriate installation method with framework-specific placement hints |
+| `scan_website` | Visit any URL with a headless browser. Extracts tech stack (7,221 technologies), design tokens, layout, accessibility, fonts, and assets. **No SDK required** |
+| `get_sdk_snippet` | Generate a ready-to-paste code snippet for any tech stack — React, Vue, Flask, Django, Rails, PHP, WordPress, etc. |
 
 ### Recon & Design Extraction (9 tools)
 
-These tools return data from pages connected via the SDK **or** from pages scanned with `scan_website`. Use them after `scan_website` to drill into specific aspects of a page's design and structure.
-
 | Tool | Description |
 |------|-------------|
-| `get_page_metadata` | Tech stack detection and page metadata: URL, viewport, meta tags, detected framework/UI library/build tool/hosting, external stylesheets and scripts |
-| `get_design_tokens` | CSS custom properties (--variables), color palette, typography scale, spacing scale, border radii, box shadows, and CSS architecture detection. Essential for matching a site's visual style |
-| `get_layout_tree` | DOM structure with layout information: element tags, classes, bounding rects, display mode (flex/grid/block), flex/grid properties, position, z-index. Optionally scoped to a CSS selector |
-| `get_font_info` | @font-face declarations, font families used in computed styles, icon fonts with glyph usage, and font loading strategy |
-| `get_accessibility_tree` | Heading hierarchy (h1-h6), ARIA landmarks, form fields with labels, buttons, links, images with alt text status |
-| `get_asset_inventory` | Images, inline SVGs, SVG sprite sheets, CSS background sprites (with crop coordinates), CSS mask sprites, and icon fonts |
-| `get_computed_styles` | Computed CSS styles for any selector. Filter by property group (colors, typography, spacing, layout, borders, visual) or specific properties |
-| `get_element_snapshot` | Deep snapshot of a specific element and children: structure, attributes, text, bounding rects, computed styles. The "zoom in" tool for recreating a component |
-| `get_style_diff` | Compare computed styles between two selectors. Reports property-by-property differences with match percentage. Use to verify UI recreation fidelity |
+| `get_page_metadata` | Tech stack detection: framework, UI library, build tool, hosting, external resources |
+| `get_design_tokens` | CSS custom properties, color palette, typography scale, spacing, shadows |
+| `get_layout_tree` | DOM structure with bounding rects, flex/grid layout, position, z-index |
+| `get_font_info` | @font-face declarations, font families, icon fonts, loading strategy |
+| `get_accessibility_tree` | Heading hierarchy, ARIA landmarks, form labels, images with alt text |
+| `get_asset_inventory` | Images, inline SVGs, sprite sheets, CSS backgrounds, icon fonts |
+| `get_computed_styles` | Computed CSS values for any selector, filterable by property group |
+| `get_element_snapshot` | Deep snapshot of an element + children: structure, styles, bounding rects |
+| `get_style_diff` | Compare styles between two selectors with match percentage |
 
 ---
 
@@ -693,125 +641,37 @@ These tools return data from pages connected via the SDK **or** from pages scann
 
 `detect_issues` runs these pattern detectors automatically:
 
-| Pattern | Trigger | Severity | Source |
-|---------|---------|----------|--------|
-| Failed requests | HTTP 4xx/5xx | HIGH (5xx) / MEDIUM (4xx) | Browser + Server |
-| Slow requests | Duration > 3s | MEDIUM | Browser + Server |
-| N+1 requests | Same endpoint > 5x in 2s | MEDIUM | Browser + Server |
-| N+1 queries | Same query pattern > 5x in quick succession | MEDIUM | Server |
-| Slow queries | Query duration > 500ms | MEDIUM | Server |
-| Console error spam | Same error > 5x in 10s | MEDIUM | Browser + Server |
-| High error rate | > 30% of console messages are errors | HIGH | Browser + Server |
-| Excessive re-renders | Component render velocity > 4/sec | MEDIUM | Browser |
-| Large state updates | State snapshot > 100KB | MEDIUM | Browser |
-| Poor Web Vitals | Any metric rated "poor" | HIGH (LCP/CLS) / MEDIUM (others) | Browser |
-| High heap usage | Heap used > 500MB | HIGH | Server |
-| Event loop lag | p99 lag > 100ms | HIGH | Server |
+| Pattern | Trigger | Severity |
+|---------|---------|----------|
+| Failed requests | HTTP 4xx/5xx | HIGH (5xx) / MEDIUM (4xx) |
+| Slow requests | Duration > 3s | MEDIUM |
+| N+1 requests | Same endpoint > 5x in 2s | MEDIUM |
+| N+1 queries | Same query pattern > 5x in quick succession | MEDIUM |
+| Slow queries | Query duration > 500ms | MEDIUM |
+| Console error spam | Same error > 5x in 10s | MEDIUM |
+| High error rate | > 30% of console messages are errors | HIGH |
+| Excessive re-renders | Component render velocity > 4/sec | MEDIUM |
+| Large state updates | State snapshot > 100KB | MEDIUM |
+| Poor Web Vitals | Any metric rated "poor" | HIGH (LCP/CLS) / MEDIUM |
+| High heap usage | Heap used > 500MB | HIGH |
+| Event loop lag | p99 lag > 100ms | HIGH |
 
 ---
 
-## Use Cases & Scenarios
+## npm Packages
 
-### Competitor Analysis & Brand Extraction
-
-Scan any website to extract its complete design system — no access to their source code needed.
-
-```
-Scan https://linear.app and pull their brand colors, typography, and spacing system
-```
-
-Claude will:
-1. `scan_website({ url: "https://linear.app" })` — visits the page, detects 7,221+ technologies, extracts everything
-2. `get_design_tokens()` — returns CSS custom properties, color palette, typography scale, spacing values
-3. `get_font_info()` — returns exact font families, weights, and loading strategy
-4. `get_layout_tree({ selector: ".hero" })` — returns DOM structure with flex/grid layout details
-
-**Result:** Complete design spec — exact hex colors, font stacks, spacing scale, CSS variables — ready to use as reference for your own design system.
-
-### UI Recreation & Pixel-Perfect Matching
-
-Rebuild a specific component from any website with exact fidelity.
-
-```
-I need to recreate the pricing card from stripe.com/pricing. Scan the page and get me the exact styles.
-```
-
-Claude will:
-1. `scan_website({ url: "https://stripe.com/pricing" })` — full page scan
-2. `get_element_snapshot({ selector: ".pricing-card" })` — deep snapshot of the card: every child element, computed styles, bounding rects
-3. `get_computed_styles({ selector: ".pricing-card .btn", properties: "visual" })` — exact button styles
-4. `get_asset_inventory()` — images, SVGs, and icons used on the page
-
-After building your version, use `get_style_diff` to compare your recreation against the original.
-
-### Debugging a Flask / Django / Rails App
-
-RuntimeScope works with **any** backend that serves HTML — not just JavaScript frameworks.
-
-```
-I'm building a Flask app and my AJAX requests are failing. Help me debug.
-```
-
-Claude will:
-1. `get_sdk_snippet({ framework: "flask" })` — generates a `<script>` tag to paste in `templates/base.html`
-2. After you add the snippet and reload: `get_session_info()` — confirms SDK is connected
-3. `get_network_requests({ status: 500 })` — shows failed requests with timing and response details
-4. `get_console_messages({ level: "error" })` — shows JavaScript errors
-5. `detect_issues()` — automated pattern detection across all captured events
-
-**The `<script>` tag approach works everywhere** — no npm, no build system, no Node.js required. Just paste two lines of HTML.
-
-### Full-Stack Performance Debugging
-
-Trace a slow user interaction across browser and server.
-
-```
-The checkout flow is slow. Help me figure out where the bottleneck is.
-```
-
-Claude will:
-1. `clear_events()` — clean slate
-2. (User reproduces the slow checkout)
-3. `detect_issues()` — finds slow requests, N+1 queries, poor Web Vitals
-4. `get_event_timeline({ since_seconds: 30 })` — chronological trace of what happened: button click → API call → database queries → response
-5. `get_query_performance()` — detects N+1 patterns, shows p95 latencies
-6. `get_api_health({ endpoint: "/api/checkout" })` — success rate and latency percentiles
-7. `get_performance_metrics({ source: "server" })` — memory, CPU, event loop lag during the checkout
-
-### Accessibility Audit of Any Website
-
-Scan a website and get an instant accessibility report.
-
-```
-Audit the accessibility of our staging site at https://staging.myapp.com
-```
-
-Claude will:
-1. `scan_website({ url: "https://staging.myapp.com" })` — full page scan
-2. `get_accessibility_tree()` — heading hierarchy, ARIA landmarks, form labels, image alt text status
-3. Report issues: missing alt text, broken heading hierarchy, unlabeled form fields, missing landmarks
-
-### Tech Stack Discovery
-
-Find out what any website is built with — framework, hosting, analytics, CDN, and more.
-
-```
-What tech stack does vercel.com use?
-```
-
-Claude will:
-1. `scan_website({ url: "https://vercel.com" })` — detects from a database of 7,221 technologies
-2. `get_page_metadata()` — framework, UI library, build tool, hosting platform, external scripts/stylesheets
-
-Returns categorized results: Next.js (framework), React (UI library), Vercel (hosting), webpack (build tool), plus analytics, CDNs, fonts, and more.
-
----
+| Package | Install | Description |
+|---------|---------|-------------|
+| [`@runtimescope/sdk`](https://www.npmjs.com/package/@runtimescope/sdk) | `npm install @runtimescope/sdk` | Browser SDK (zero deps, ~3KB gzipped) |
+| [`@runtimescope/server-sdk`](https://www.npmjs.com/package/@runtimescope/server-sdk) | `npm install @runtimescope/server-sdk` | Node.js server SDK |
+| [`@runtimescope/mcp-server`](https://www.npmjs.com/package/@runtimescope/mcp-server) | `npx -y @runtimescope/mcp-server` | MCP server (46 tools) |
+| [`@runtimescope/collector`](https://www.npmjs.com/package/@runtimescope/collector) | Internal dependency | Event collector (used by mcp-server) |
 
 ## Project Structure
 
 ```
 packages/
-  sdk/           # Browser SDK (zero deps, ~3KB gzipped) — also served as IIFE via <script> tag
+  sdk/           # Browser SDK (zero deps, ~3KB gzipped) — ESM + IIFE via <script> tag
   server-sdk/    # Node.js server SDK (Prisma, Drizzle, pg, Knex, MySQL2, better-sqlite3)
   collector/     # WebSocket receiver + ring buffer + issue detection + HTTP API
   mcp-server/    # MCP stdio server with 46 tools + Playwright scanner
@@ -826,7 +686,7 @@ packages/
 | `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
 | `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
-| `RUNTIMESCOPE_RETENTION_DAYS` | `30` | Days to keep historical events in SQLite. Events older than this are auto-pruned on MCP server startup. Set to a higher value for long-running projects, or lower to save disk space |
+| `RUNTIMESCOPE_RETENTION_DAYS` | `30` | Days to keep historical events in SQLite |
 
 ## License
 

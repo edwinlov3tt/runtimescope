@@ -152,7 +152,11 @@ export type RuntimeEvent =
 export interface RuntimeScopeConfig {
   enabled?: boolean;
   serverUrl?: string;
+  /** Alias for `serverUrl` — used by script-tag snippets */
+  endpoint?: string;
   appName?: string;
+  /** API key for authenticated connections to the collector */
+  authToken?: string;
   buildMeta?: BuildMeta;
   captureNetwork?: boolean;
   captureConsole?: boolean;
@@ -164,6 +168,8 @@ export interface RuntimeScopeConfig {
   stores?: Record<string, unknown>;
   beforeSend?: (event: RuntimeEvent) => RuntimeEvent | null;
   redactHeaders?: string[];
+  /** Regex patterns applied to all string fields before sending */
+  redactPatterns?: { pattern: string; replacement: string }[];
   batchSize?: number;
   flushIntervalMs?: number;
 }

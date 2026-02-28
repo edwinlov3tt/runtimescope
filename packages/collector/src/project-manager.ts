@@ -1,6 +1,7 @@
 import { mkdirSync, readFileSync, writeFileSync, existsSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
+import type { ApiKeyEntry } from './auth.js';
 
 // ============================================================
 // Project Manager — manages ~/.runtimescope/ directory structure
@@ -10,6 +11,29 @@ export interface GlobalConfig {
   defaultPort: number;
   bufferSize: number;
   httpPort: number;
+  /** Authentication configuration */
+  auth?: {
+    enabled: boolean;
+    apiKeys: ApiKeyEntry[];
+  };
+  /** TLS certificate paths */
+  tls?: {
+    certPath: string;
+    keyPath: string;
+    caPath?: string;
+  };
+  /** CORS allowed origins (defaults to '*' when not set) */
+  corsOrigins?: string[];
+  /** Rate limiting configuration */
+  rateLimits?: {
+    maxEventsPerSecond?: number;
+    maxEventsPerMinute?: number;
+  };
+  /** Payload redaction configuration */
+  redaction?: {
+    enabled: boolean;
+    rules?: { name: string; pattern: string; replacement: string }[];
+  };
 }
 
 export interface ProjectConfig {

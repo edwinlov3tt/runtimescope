@@ -114,6 +114,8 @@ export interface ServerSdkConfig {
   serverUrl?: string;
   appName?: string;
   sessionId?: string;
+  /** API key for authenticated connections to the collector */
+  authToken?: string;
   captureStackTraces?: boolean;
   redactParams?: boolean;
   maxQueryLength?: number;

@@ -1,6 +1,7 @@
 {
   "name": "@runtimescope/server-sdk",
-  "version": "0.1.0",
+  "version": "0.6.0",
+  "description": "Server-side SDK for RuntimeScope — instruments database queries, HTTP requests, console output, and performance metrics",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,6 +11,11 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist"
+  ],
+  "keywords": ["runtime", "profiler", "telemetry", "observability", "server", "database", "prisma", "knex", "drizzle"],
+  "license": "MIT",
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

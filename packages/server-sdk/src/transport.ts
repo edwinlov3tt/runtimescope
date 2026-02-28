@@ -14,17 +14,22 @@ export class ServerTransport {
   private connected = false;
   private flushTimer: ReturnType<typeof setInterval> | null = null;
 
+  private authToken: string | undefined;
+  private authFailed = false;
+
   constructor(options: {
     url: string;
     sessionId: string;
     appName: string;
     sdkVersion: string;
+    authToken?: string;
     maxQueueSize?: number;
   }) {
     this.url = options.url;
     this.sessionId = options.sessionId;
     this.appName = options.appName;
     this.sdkVersion = options.sdkVersion;
+    this.authToken = options.authToken;
     this.maxQueueSize = options.maxQueueSize ?? 10_000;
   }
 
@@ -33,6 +38,8 @@ export class ServerTransport {
   }
 
   connect(): void {
+    if (this.authFailed) return; // Don't reconnect after auth rejection
+
     try {
       this.ws = new WebSocket(this.url);
 
@@ -45,16 +52,26 @@ export class ServerTransport {
         this.flushTimer = setInterval(() => this.flushQueue(), 100);
       });
 
+      this.ws.on('message', (data: Buffer) => {
+        try {
+          const msg = JSON.parse(data.toString());
+          if (msg.type === 'error' && msg.payload?.code === 'AUTH_FAILED') {
+            console.error('[RuntimeScope] Authentication failed — stopping reconnection');
+            this.authFailed = true;
+          }
+        } catch { /* ignore */ }
+      });
+
       this.ws.on('close', () => {
         this.connected = false;
         this.cleanup();
-        this.scheduleReconnect();
+        if (!this.authFailed) this.scheduleReconnect();
       });
 
       this.ws.on('error', () => {
         this.connected = false;
         this.cleanup();
-        this.scheduleReconnect();
+        if (!this.authFailed) this.scheduleReconnect();
       });
     } catch {
       this.scheduleReconnect();
@@ -83,6 +100,7 @@ export class ServerTransport {
         appName: this.appName,
         sdkVersion: this.sdkVersion,
         sessionId: this.sessionId,
+        ...(this.authToken ? { authToken: this.authToken } : {}),
       },
       timestamp: Date.now(),
       sessionId: this.sessionId,

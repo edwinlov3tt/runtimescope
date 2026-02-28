@@ -9,7 +9,7 @@ import { interceptErrors } from './interceptors/errors.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent } from './types.js';
 
-const SDK_VERSION = '0.2.0';
+const SDK_VERSION = '0.6.0';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
@@ -29,7 +29,7 @@ export class RuntimeScope {
     if (this.transport) this.disconnect();
 
     const resolved = {
-      serverUrl: config.serverUrl ?? 'ws://localhost:9090',
+      serverUrl: config.serverUrl ?? config.endpoint ?? 'ws://localhost:9090',
       appName: config.appName ?? 'unknown',
       captureNetwork: config.captureNetwork ?? true,
       captureConsole: config.captureConsole ?? true,
@@ -52,6 +52,7 @@ export class RuntimeScope {
       appName: resolved.appName,
       sessionId: this._sessionId,
       sdkVersion: SDK_VERSION,
+      authToken: config.authToken,
       batchSize: resolved.batchSize,
       flushIntervalMs: resolved.flushIntervalMs,
     });
@@ -183,6 +184,11 @@ export class RuntimeScope {
       default:
         this.transport?.sendCommandResponse(cmd.requestId, cmd.command, { error: 'Unknown command' });
     }
+  }
+
+  /** Alias for `connect` — used by script-tag snippets */
+  static init(config: RuntimeScopeConfig = {}): void {
+    return this.connect(config);
   }
 
   static disconnect(): void {

@@ -14,6 +14,9 @@ import {
   SessionManager,
   HttpServer,
   SqliteStore,
+  AuthManager,
+  Redactor,
+  resolveTlsConfig,
 } from '@runtimescope/collector';
 
 // --- Existing M1/M2 tool registrations ---
@@ -89,6 +92,39 @@ async function main() {
   const projectManager = new ProjectManager();
   projectManager.ensureGlobalDir();
 
+  // 1b. Load security config from ~/.runtimescope/config.json
+  const globalConfig = projectManager.getGlobalConfig();
+
+  const authManager = new AuthManager({
+    enabled: globalConfig.auth?.enabled ?? false,
+    apiKeys: globalConfig.auth?.apiKeys ?? [],
+  });
+
+  const tlsConfig = resolveTlsConfig() ?? globalConfig.tls ?? undefined;
+
+  const redactor = new Redactor({
+    enabled: globalConfig.redaction?.enabled ?? false,
+    useBuiltIn: true,
+    rules: globalConfig.redaction?.rules?.map(r => ({
+      name: r.name,
+      pattern: new RegExp(r.pattern, 'gi'),
+      replacement: r.replacement,
+    })),
+  });
+
+  const corsOrigins = process.env.RUNTIMESCOPE_CORS_ORIGINS?.split(',').map(s => s.trim())
+    ?? globalConfig.corsOrigins;
+
+  if (authManager.isEnabled()) {
+    console.error(`[RuntimeScope] Auth enabled (${globalConfig.auth?.apiKeys?.length ?? 0} API keys)`);
+  }
+  if (tlsConfig) {
+    console.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);
+  }
+  if (redactor.isEnabled()) {
+    console.error('[RuntimeScope] Payload redaction enabled');
+  }
+
   // 2. Clear any stale collector from a previous session
   killStaleProcess(COLLECTOR_PORT);
   killStaleProcess(HTTP_PORT);
@@ -97,10 +133,18 @@ async function main() {
   const collector = new CollectorServer({
     bufferSize: BUFFER_SIZE,
     projectManager,
+    authManager,
+    rateLimits: globalConfig.rateLimits,
+    tls: tlsConfig,
   });
   await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 1000 });
 
   const store = collector.getStore();
+
+  // Wire in redactor for defense-in-depth event sanitization
+  if (redactor.isEnabled()) {
+    store.setRedactor(redactor);
+  }
 
   // 4. Initialize engines
   const apiDiscovery = new ApiDiscoveryEngine(store);
@@ -146,9 +190,12 @@ async function main() {
   }
 
   // 5. Start HTTP API for dashboard
-  const httpServer = new HttpServer(store, processMonitor);
+  const httpServer = new HttpServer(store, processMonitor, {
+    authManager,
+    allowedOrigins: corsOrigins,
+  });
   try {
-    await httpServer.start({ port: HTTP_PORT });
+    await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
   } catch (err) {
     console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
     // Non-fatal: MCP tools still work without HTTP API

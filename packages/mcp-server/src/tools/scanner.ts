@@ -37,7 +37,7 @@ export function registerScannerTools(
   });
 </script>`;
 
-      const npmSnippet = `// Install from local clone: npm install ../runtimescope/packages/sdk
+      const npmSnippet = `// npm install @runtimescope/sdk
 import { RuntimeScope } from '@runtimescope/sdk';
 
 RuntimeScope.init({

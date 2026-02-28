@@ -7,6 +7,14 @@ export { ProjectManager } from './project-manager.js';
 export type { GlobalConfig, ProjectConfig, InfrastructureConfig } from './project-manager.js';
 export { SqliteStore } from './sqlite-store.js';
 export type { SqliteStoreOptions } from './sqlite-store.js';
+export { AuthManager, generateApiKey } from './auth.js';
+export type { ApiKeyEntry, AuthConfig } from './auth.js';
+export { SessionRateLimiter } from './rate-limiter.js';
+export type { RateLimitConfig } from './rate-limiter.js';
+export { Redactor, BUILT_IN_RULES } from './redactor.js';
+export type { RedactionRule, RedactorConfig } from './redactor.js';
+export { loadTlsOptions, resolveTlsConfig } from './tls.js';
+export type { TlsConfig } from './tls.js';
 export { ApiDiscoveryEngine } from './engines/api-discovery.js';
 export {
   aggregateQueryStats,

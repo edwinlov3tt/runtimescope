@@ -1,5 +1,6 @@
 import { RingBuffer } from './ring-buffer.js';
 import type { SqliteStore } from './sqlite-store.js';
+import type { Redactor } from './redactor.js';
 import type {
   RuntimeEvent,
   NetworkEvent,
@@ -36,9 +37,14 @@ export class EventStore {
   private sqliteStore: SqliteStore | null = null;
   private currentProject: string | null = null;
   private onEventCallbacks: ((event: RuntimeEvent) => void)[] = [];
+  private redactor: Redactor | null = null;
 
   constructor(capacity = 10_000) {
     this.buffer = new RingBuffer<RuntimeEvent>(capacity);
+  }
+
+  setRedactor(redactor: Redactor): void {
+    this.redactor = redactor;
   }
 
   get eventCount(): number {
@@ -60,6 +66,11 @@ export class EventStore {
   }
 
   addEvent(event: RuntimeEvent): void {
+    // Apply redaction before storing (defense in depth)
+    if (this.redactor?.isEnabled()) {
+      event = this.redactor.redactEvent(event);
+    }
+
     this.buffer.push(event);
 
     if (event.eventType === 'session') {

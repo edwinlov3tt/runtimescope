@@ -97,6 +97,21 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 - SDK targets `es2020`, collector and MCP server target `node20`
 - MCP server version and SDK version (`SDK_VERSION` constant in `sdk/src/index.ts`) should stay in sync
 
+## Publishing to npm
+
+All 4 public packages are published under the `@runtimescope` org. A GitHub Action (`.github/workflows/publish.yml`) handles automated publishing.
+
+To release a new version:
+```bash
+npm version 0.7.0 --workspaces --no-git-tag-version  # Bump all package.json files
+# Also update SDK_VERSION in packages/sdk/src/index.ts and packages/server-sdk/src/index.ts
+git add -A && git commit -m "v0.7.0"
+git tag v0.7.0
+git push && git push --tags                            # Triggers GitHub Action → npm publish
+```
+
+The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packages are published with `--access public`.
+
 ## Environment Variables
 
 | Variable | Default | Description |

@@ -1,7 +1,11 @@
+import { createServer as createHttpsServer } from 'node:https';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EventStore } from './store.js';
 import { ProjectManager } from './project-manager.js';
 import { SqliteStore } from './sqlite-store.js';
+import { AuthManager } from './auth.js';
+import { SessionRateLimiter, type RateLimitConfig } from './rate-limiter.js';
+import { loadTlsOptions, type TlsConfig } from './tls.js';
 import type {
   WSMessage,
   HandshakePayload,
@@ -17,6 +21,9 @@ export interface CollectorServerOptions {
   maxRetries?: number;
   retryDelayMs?: number;
   projectManager?: ProjectManager;
+  authManager?: AuthManager;
+  rateLimits?: RateLimitConfig;
+  tls?: TlsConfig;
 }
 
 interface ClientInfo {
@@ -34,17 +41,30 @@ export class CollectorServer {
   private wss: WebSocketServer | null = null;
   private store: EventStore;
   private projectManager: ProjectManager | null;
+  private authManager: AuthManager | null = null;
+  private rateLimiter: SessionRateLimiter;
   private clients: Map<WebSocket, ClientInfo> = new Map();
+  private pendingHandshakes: Set<WebSocket> = new Set();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
   private disconnectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
+  private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private tlsConfig: TlsConfig | null = null;
 
   constructor(options: CollectorServerOptions = {}) {
     this.store = new EventStore(options.bufferSize ?? 10_000);
     this.projectManager = options.projectManager ?? null;
+    this.authManager = options.authManager ?? null;
+    this.rateLimiter = new SessionRateLimiter(options.rateLimits ?? {});
+    this.tlsConfig = options.tls ?? null;
 
     if (this.projectManager) {
       this.projectManager.ensureGlobalDir();
+    }
+
+    // Periodically prune stale rate limiter entries
+    if (this.rateLimiter.isEnabled()) {
+      this.pruneTimer = setInterval(() => this.rateLimiter.prune(), 60_000);
     }
   }
 
@@ -55,6 +75,10 @@ export class CollectorServer {
   getPort(): number | null {
     const addr = this.wss?.address();
     return addr && typeof addr === 'object' ? addr.port : null;
+  }
+
+  getClientCount(): number {
+    return this.clients.size;
   }
 
   getProjectManager(): ProjectManager | null {
@@ -69,6 +93,10 @@ export class CollectorServer {
     return this.sqliteStores;
   }
 
+  getRateLimiter(): SessionRateLimiter {
+    return this.rateLimiter;
+  }
+
   onDisconnect(cb: (sessionId: string, projectName: string) => void): void {
     this.disconnectCallbacks.push(cb);
   }
@@ -78,44 +106,81 @@ export class CollectorServer {
     const host = options.host ?? '127.0.0.1';
     const maxRetries = options.maxRetries ?? 5;
     const retryDelayMs = options.retryDelayMs ?? 1000;
+    const tls = options.tls ?? this.tlsConfig;
 
-    return this.tryStart(port, host, maxRetries, retryDelayMs);
+    return this.tryStart(port, host, maxRetries, retryDelayMs, tls);
   }
 
   private tryStart(
     port: number,
     host: string,
     retriesLeft: number,
-    retryDelayMs: number
+    retryDelayMs: number,
+    tls?: TlsConfig | null
   ): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wss = new WebSocketServer({ port, host });
+      let wss: WebSocketServer;
 
-      wss.on('listening', () => {
-        this.wss = wss;
-        this.setupConnectionHandler(wss);
-        console.error(`[RuntimeScope] Collector listening on ws://${host}:${port}`);
-        resolve();
-      });
+      if (tls) {
+        // TLS mode: create HTTPS server, then attach WebSocket to it
+        const httpsServer = createHttpsServer(loadTlsOptions(tls));
+        wss = new WebSocketServer({ server: httpsServer });
 
-      wss.on('error', (err: NodeJS.ErrnoException) => {
-        wss.close();
+        httpsServer.on('listening', () => {
+          this.wss = wss;
+          this.setupConnectionHandler(wss);
+          console.error(`[RuntimeScope] Collector listening on wss://${host}:${port}`);
+          resolve();
+        });
 
-        if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
-          console.error(
-            `[RuntimeScope] Port ${port} in use, retrying in ${retryDelayMs}ms (${retriesLeft} attempts left)...`
-          );
-          setTimeout(() => {
-            this.tryStart(port, host, retriesLeft - 1, retryDelayMs)
-              .then(resolve)
-              .catch(reject);
-          }, retryDelayMs);
-        } else {
-          console.error('[RuntimeScope] WebSocket server error:', err.message);
-          reject(err);
-        }
-      });
+        httpsServer.on('error', (err: NodeJS.ErrnoException) => {
+          httpsServer.close();
+          this.handleStartError(err, port, host, retriesLeft, retryDelayMs, tls, resolve, reject);
+        });
+
+        httpsServer.listen(port, host);
+      } else {
+        // Plain WS mode (default — backward compatible)
+        wss = new WebSocketServer({ port, host });
+
+        wss.on('listening', () => {
+          this.wss = wss;
+          this.setupConnectionHandler(wss);
+          console.error(`[RuntimeScope] Collector listening on ws://${host}:${port}`);
+          resolve();
+        });
+
+        wss.on('error', (err: NodeJS.ErrnoException) => {
+          wss.close();
+          this.handleStartError(err, port, host, retriesLeft, retryDelayMs, tls, resolve, reject);
+        });
+      }
     });
+  }
+
+  private handleStartError(
+    err: NodeJS.ErrnoException,
+    port: number,
+    host: string,
+    retriesLeft: number,
+    retryDelayMs: number,
+    tls: TlsConfig | null | undefined,
+    resolve: () => void,
+    reject: (err: Error) => void
+  ): void {
+    if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
+      console.error(
+        `[RuntimeScope] Port ${port} in use, retrying in ${retryDelayMs}ms (${retriesLeft} attempts left)...`
+      );
+      setTimeout(() => {
+        this.tryStart(port, host, retriesLeft - 1, retryDelayMs, tls)
+          .then(resolve)
+          .catch(reject);
+      }, retryDelayMs);
+    } else {
+      console.error('[RuntimeScope] WebSocket server error:', err.message);
+      reject(err);
+    }
   }
 
   private ensureSqliteStore(projectName: string): SqliteStore | null {
@@ -143,6 +208,32 @@ export class CollectorServer {
 
   private setupConnectionHandler(wss: WebSocketServer): void {
     wss.on('connection', (ws) => {
+      // If auth is enabled, the connection starts in a pending state.
+      // The first message must be a valid handshake with an authToken.
+      if (this.authManager?.isEnabled()) {
+        this.pendingHandshakes.add(ws);
+
+        // Auto-close if no valid handshake within 5 seconds
+        const authTimeout = setTimeout(() => {
+          if (this.pendingHandshakes.has(ws)) {
+            this.pendingHandshakes.delete(ws);
+            try {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { code: 'AUTH_TIMEOUT', message: 'Handshake timeout' },
+                timestamp: Date.now(),
+              }));
+            } catch { /* ignore */ }
+            ws.close(4001, 'Authentication timeout');
+          }
+        }, 5000);
+
+        ws.on('close', () => {
+          clearTimeout(authTimeout);
+          this.pendingHandshakes.delete(ws);
+        });
+      }
+
       ws.on('message', (data) => {
         try {
           const msg: WSMessage = JSON.parse(data.toString());
@@ -187,6 +278,23 @@ export class CollectorServer {
     switch (msg.type) {
       case 'handshake': {
         const payload = msg.payload as HandshakePayload;
+
+        // Authenticate if auth is enabled
+        if (this.authManager?.isEnabled()) {
+          if (!this.authManager.isAuthorized(payload.authToken)) {
+            try {
+              ws.send(JSON.stringify({
+                type: 'error',
+                payload: { code: 'AUTH_FAILED', message: 'Invalid or missing API key' },
+                timestamp: Date.now(),
+              }));
+            } catch { /* ignore */ }
+            ws.close(4001, 'Authentication failed');
+            return;
+          }
+          this.pendingHandshakes.delete(ws);
+        }
+
         const projectName = payload.appName;
 
         this.clients.set(ws, {
@@ -217,9 +325,17 @@ export class CollectorServer {
         break;
       }
       case 'event': {
+        // Reject events from unauthenticated connections
+        if (this.pendingHandshakes.has(ws)) return;
+
+        const clientInfo = this.clients.get(ws);
         const payload = msg.payload as EventBatchPayload;
         if (Array.isArray(payload.events)) {
           for (const event of payload.events) {
+            // Rate limit per session
+            if (clientInfo && !this.rateLimiter.allow(clientInfo.sessionId)) {
+              break; // drop remaining events in this batch
+            }
             this.store.addEvent(event);
           }
         }
@@ -300,6 +416,12 @@ export class CollectorServer {
   }
 
   stop(): void {
+    // Stop rate limiter pruning
+    if (this.pruneTimer) {
+      clearInterval(this.pruneTimer);
+      this.pruneTimer = null;
+    }
+
     // Close all SQLite stores
     for (const [name, sqliteStore] of this.sqliteStores) {
       try {

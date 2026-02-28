@@ -723,6 +723,7 @@ export interface HandshakePayload {
   appName: string;
   sdkVersion: string;
   sessionId: string;
+  authToken?: string;
 }
 
 export interface EventBatchPayload {

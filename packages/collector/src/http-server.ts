@@ -1,4 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
+import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -6,6 +7,8 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import type { EventStore } from './store.js';
 import type { ProcessMonitor } from './engines/process-monitor.js';
 import type { RuntimeEvent, DevProcessType } from './types.js';
+import { AuthManager } from './auth.js';
+import { loadTlsOptions, type TlsConfig } from './tls.js';
 
 // ============================================================
 // HTTP API Server for Dashboard
@@ -16,6 +19,9 @@ import type { RuntimeEvent, DevProcessType } from './types.js';
 export interface HttpServerOptions {
   port?: number;
   host?: string;
+  authManager?: AuthManager;
+  allowedOrigins?: string[];
+  tls?: TlsConfig;
 }
 
 interface RouteHandler {
@@ -27,22 +33,37 @@ export class HttpServer {
   private wss: WebSocketServer | null = null;
   private store: EventStore;
   private processMonitor: ProcessMonitor | null;
+  private authManager: AuthManager | null;
+  private allowedOrigins: string[] | null;
   private dashboardClients: Set<WebSocket> = new Set();
   private eventListener: ((event: RuntimeEvent) => void) | null = null;
   private routes: Map<string, RouteHandler> = new Map();
   private sdkBundlePath: string | null = null;
   private activePort = 9091;
+  private startedAt = Date.now();
 
-  constructor(store: EventStore, processMonitor?: ProcessMonitor) {
+  constructor(
+    store: EventStore,
+    processMonitor?: ProcessMonitor,
+    options?: { authManager?: AuthManager; allowedOrigins?: string[] }
+  ) {
     this.store = store;
     this.processMonitor = processMonitor ?? null;
+    this.authManager = options?.authManager ?? null;
+    this.allowedOrigins = options?.allowedOrigins ?? null;
     this.registerRoutes();
   }
 
   private registerRoutes(): void {
-    // Health check
+    // Health check — always unauthenticated for load balancer probes
     this.routes.set('GET /api/health', (_req, res) => {
-      this.json(res, { status: 'ok', timestamp: Date.now() });
+      this.json(res, {
+        status: 'ok',
+        timestamp: Date.now(),
+        uptime: Math.floor((Date.now() - this.startedAt) / 1000),
+        sessions: this.store.getSessionInfo().filter(s => s.isConnected).length,
+        authEnabled: this.authManager?.isEnabled() ?? false,
+      });
     });
 
     // Sessions
@@ -204,11 +225,33 @@ export class HttpServer {
   }
 
   async start(options: HttpServerOptions = {}): Promise<void> {
-    const port = options.port ?? parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
+    const basePort = options.port ?? parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
     const host = options.host ?? '127.0.0.1';
+    const tls = options.tls;
+    const maxRetries = 5;
 
+    for (let attempt = 0; attempt <= maxRetries; attempt++) {
+      const port = basePort + attempt;
+      try {
+        await this.tryStart(port, host, tls);
+        return;
+      } catch (err) {
+        const isAddrInUse = (err as NodeJS.ErrnoException).code === 'EADDRINUSE';
+        if (isAddrInUse && attempt < maxRetries) {
+          console.error(`[RuntimeScope] HTTP port ${port} in use, trying ${port + 1}...`);
+          continue;
+        }
+        throw err;
+      }
+    }
+  }
+
+  private tryStart(port: number, host: string, tls?: TlsConfig): Promise<void> {
     return new Promise((resolve, reject) => {
-      const server = createServer((req, res) => this.handleRequest(req, res));
+      const handler = (req: IncomingMessage, res: ServerResponse) => this.handleRequest(req, res);
+      const server = tls
+        ? createHttpsServer(loadTlsOptions(tls), handler)
+        : createServer(handler);
 
       // Set up WebSocket server for real-time event streaming
       this.wss = new WebSocketServer({ server, path: '/api/ws/events' });
@@ -225,12 +268,20 @@ export class HttpServer {
       server.on('listening', () => {
         this.server = server;
         this.activePort = port;
-        console.error(`[RuntimeScope] HTTP API listening on http://${host}:${port}`);
+        this.startedAt = Date.now();
+        const proto = tls ? 'https' : 'http';
+        console.error(`[RuntimeScope] HTTP API listening on ${proto}://${host}:${port}`);
         resolve();
       });
 
       server.on('error', (err) => {
-        console.error('[RuntimeScope] HTTP server error:', err.message);
+        // Clean up the WebSocket server on failure
+        this.wss?.close();
+        this.wss = null;
+        if (this.eventListener) {
+          this.store.removeEventListener(this.eventListener);
+          this.eventListener = null;
+        }
         reject(err);
       });
 
@@ -281,10 +332,10 @@ export class HttpServer {
   }
 
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
-    // CORS headers for localhost
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+
+    // CORS headers — use specific origin when configured, wildcard for dev
+    this.setCorsHeaders(req, res);
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204);
@@ -292,7 +343,18 @@ export class HttpServer {
       return;
     }
 
-    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+    // Auth check — skip for health endpoint and static assets
+    const isPublic = url.pathname === '/api/health'
+      || url.pathname === '/runtimescope.js'
+      || url.pathname === '/snippet';
+
+    if (!isPublic && this.authManager?.isEnabled()) {
+      const token = AuthManager.extractBearer(req.headers.authorization);
+      if (!this.authManager.isAuthorized(token)) {
+        this.json(res, { error: 'Unauthorized', code: 'AUTH_FAILED' }, 401);
+        return;
+      }
+    }
 
     // Serve SDK IIFE bundle — works in any HTML page via <script> tag
     if (req.method === 'GET' && url.pathname === '/runtimescope.js') {
@@ -302,7 +364,6 @@ export class HttpServer {
         res.writeHead(200, {
           'Content-Type': 'application/javascript',
           'Cache-Control': 'no-cache',
-          'Access-Control-Allow-Origin': '*',
         });
         res.end(bundle);
       } else {
@@ -326,7 +387,6 @@ export class HttpServer {
 </script>`;
       res.writeHead(200, {
         'Content-Type': 'text/plain',
-        'Access-Control-Allow-Origin': '*',
       });
       res.end(snippet);
       return;
@@ -349,6 +409,25 @@ export class HttpServer {
     } else {
       this.json(res, { error: 'Not found', path: url.pathname }, 404);
     }
+  }
+
+  private setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
+    const origin = req.headers.origin;
+
+    if (this.allowedOrigins && this.allowedOrigins.length > 0) {
+      // Whitelist mode: only allow configured origins
+      if (origin && this.allowedOrigins.includes(origin)) {
+        res.setHeader('Access-Control-Allow-Origin', origin);
+        res.setHeader('Vary', 'Origin');
+      }
+      // If origin not in whitelist, omit the header (browser blocks the request)
+    } else {
+      // Default: wildcard for backward compat in local dev
+      res.setHeader('Access-Control-Allow-Origin', '*');
+    }
+
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
   }
 
   private json(res: ServerResponse, data: unknown, status = 200): void {

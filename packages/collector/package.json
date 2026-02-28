@@ -1,6 +1,7 @@
 {
   "name": "@runtimescope/collector",
-  "version": "0.1.0",
+  "version": "0.6.0",
+  "description": "Event collector and persistence layer for RuntimeScope",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -10,6 +11,10 @@
       "types": "./dist/index.d.ts"
     }
   },
+  "files": [
+    "dist"
+  ],
+  "license": "MIT",
   "scripts": {
     "build": "tsup",
     "dev": "tsup --watch",

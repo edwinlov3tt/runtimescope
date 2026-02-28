@@ -9,6 +9,7 @@ interface TransportConfig {
   appName: string;
   sessionId: string;
   sdkVersion: string;
+  authToken?: string;
   batchSize: number;
   flushIntervalMs: number;
 }
@@ -53,6 +54,11 @@ export class Transport {
         if (msg.type === 'command' && msg.payload && this.commandHandler) {
           this.commandHandler(msg.payload);
         }
+        // Handle auth rejection — stop reconnecting
+        if (msg.type === 'error' && msg.payload?.code === 'AUTH_FAILED') {
+          _log('[RuntimeScope] Authentication failed — stopping reconnection');
+          this.stopped = true;
+        }
       } catch {
         // Ignore unparseable messages
       }
@@ -70,6 +76,7 @@ export class Transport {
           appName: this.config.appName,
           sdkVersion: this.config.sdkVersion,
           sessionId: this.config.sessionId,
+          ...(this.config.authToken ? { authToken: this.config.authToken } : {}),
         },
         timestamp: Date.now(),
         sessionId: this.config.sessionId,

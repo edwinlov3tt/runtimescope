@@ -9,7 +9,7 @@ import { interceptErrors } from './interceptors/errors.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent } from './types.js';
 
-const SDK_VERSION = '0.6.0';
+const SDK_VERSION = '0.6.1';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.

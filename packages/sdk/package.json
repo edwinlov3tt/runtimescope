@@ -1,15 +1,16 @@
 {
   "name": "@runtimescope/sdk",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Zero-dependency browser SDK for RuntimeScope runtime profiling and telemetry",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.cjs"
     },
     "./browser": {
       "default": "./dist/index.global.js"
@@ -18,7 +19,14 @@
   "files": [
     "dist"
   ],
-  "keywords": ["runtime", "profiler", "telemetry", "observability", "sdk", "browser"],
+  "keywords": [
+    "runtime",
+    "profiler",
+    "telemetry",
+    "observability",
+    "sdk",
+    "browser"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "tsup",

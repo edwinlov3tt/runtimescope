@@ -1,20 +1,32 @@
 {
   "name": "@runtimescope/server-sdk",
-  "version": "0.6.0",
+  "version": "0.6.1",
   "description": "Server-side SDK for RuntimeScope — instruments database queries, HTTP requests, console output, and performance metrics",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
+      "types": "./dist/index.d.ts",
       "import": "./dist/index.js",
-      "types": "./dist/index.d.ts"
+      "require": "./dist/index.cjs"
     }
   },
   "files": [
     "dist"
   ],
-  "keywords": ["runtime", "profiler", "telemetry", "observability", "server", "database", "prisma", "knex", "drizzle"],
+  "keywords": [
+    "runtime",
+    "profiler",
+    "telemetry",
+    "observability",
+    "server",
+    "database",
+    "prisma",
+    "knex",
+    "drizzle"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "tsup",
@@ -38,11 +50,23 @@
     "better-sqlite3": ">=9.0.0"
   },
   "peerDependenciesMeta": {
-    "@prisma/client": { "optional": true },
-    "drizzle-orm": { "optional": true },
-    "knex": { "optional": true },
-    "pg": { "optional": true },
-    "mysql2": { "optional": true },
-    "better-sqlite3": { "optional": true }
+    "@prisma/client": {
+      "optional": true
+    },
+    "drizzle-orm": {
+      "optional": true
+    },
+    "knex": {
+      "optional": true
+    },
+    "pg": {
+      "optional": true
+    },
+    "mysql2": {
+      "optional": true
+    },
+    "better-sqlite3": {
+      "optional": true
+    }
   }
 }

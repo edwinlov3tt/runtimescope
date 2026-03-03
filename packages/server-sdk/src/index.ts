@@ -24,7 +24,7 @@ import type { MiddlewareOptions } from './interceptors/middleware.js';
 // to the RuntimeScope collector via WebSocket
 // ============================================================
 
-const SDK_VERSION = '0.6.1';
+const SDK_VERSION = '0.6.2';
 
 // Re-export _log for integration modules (lives in utils/log.js to avoid circular deps)
 export { _log } from './utils/log.js';
@@ -36,11 +36,16 @@ class RuntimeScopeServer {
   private sampler: Sampler | null = null;
   private restoreFunctions: (() => void)[] = [];
 
+  /** Alias for `connect` — mirrors the browser SDK's init() API */
+  init(config: ServerSdkConfig = {}): void {
+    return this.connect(config);
+  }
+
   connect(config: ServerSdkConfig = {}): void {
     this.config = config;
     this.sessionId = config.sessionId ?? generateSessionId();
 
-    const serverUrl = config.serverUrl ?? 'ws://127.0.0.1:9090';
+    const serverUrl = config.serverUrl ?? config.endpoint ?? 'ws://127.0.0.1:9090';
 
     this.transport = new ServerTransport({
       url: serverUrl,
@@ -86,8 +91,8 @@ class RuntimeScopeServer {
       } catch { /* non-fatal: continue without error capture */ }
     }
 
-    // HTTP request interceptor (default: disabled — opt-in)
-    if (config.captureHttp) {
+    // HTTP request interceptor (default: enabled)
+    if (config.captureHttp !== false) {
       try {
         this.restoreFunctions.push(
           interceptHttp(emit, this.sessionId, {
@@ -102,8 +107,8 @@ class RuntimeScopeServer {
       } catch { /* non-fatal: continue without HTTP capture */ }
     }
 
-    // Performance metrics (default: disabled — opt-in)
-    if (config.capturePerformance) {
+    // Performance metrics (default: enabled)
+    if (config.capturePerformance !== false) {
       try {
         this.restoreFunctions.push(
           startPerfMetrics(emit, this.sessionId, {

@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/mcp-server",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "MCP server for RuntimeScope — 46 tools for Claude Code runtime analysis",
   "type": "module",
   "main": "./dist/index.js",

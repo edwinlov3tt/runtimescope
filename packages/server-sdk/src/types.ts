@@ -112,6 +112,8 @@ export type ServerRuntimeEvent = DatabaseEvent | ConsoleEvent | NetworkEvent | P
 
 export interface ServerSdkConfig {
   serverUrl?: string;
+  /** Alias for serverUrl — matches the browser SDK's config */
+  endpoint?: string;
   appName?: string;
   sessionId?: string;
   /** API key for authenticated connections to the collector */

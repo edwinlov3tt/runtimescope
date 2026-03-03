@@ -9,7 +9,7 @@ import { interceptErrors } from './interceptors/errors.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent } from './types.js';
 
-const SDK_VERSION = '0.6.1';
+const SDK_VERSION = '0.6.2';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
@@ -36,8 +36,8 @@ export class RuntimeScope {
       captureXhr: config.captureXhr ?? true,
       captureBody: config.captureBody ?? false,
       maxBodySize: config.maxBodySize ?? 65536,
-      capturePerformance: config.capturePerformance ?? false,
-      captureRenders: config.captureRenders ?? false,
+      capturePerformance: config.capturePerformance ?? true,
+      captureRenders: config.captureRenders ?? true,
       stores: config.stores ?? {},
       beforeSend: config.beforeSend,
       redactHeaders: config.redactHeaders ?? ['authorization', 'cookie'],

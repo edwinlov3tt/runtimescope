@@ -10,6 +10,7 @@ import type {
   PerformanceEvent,
   DomSnapshotEvent,
   DatabaseEvent,
+  CustomEvent,
 } from '@runtimescope/collector';
 
 export function registerTimelineTools(server: McpServer, store: EventStore): void {
@@ -22,7 +23,7 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
         .optional()
         .describe('Only return events from the last N seconds (default: 60)'),
       event_types: z
-        .array(z.enum(['network', 'console', 'session', 'state', 'render', 'performance', 'dom_snapshot', 'database']))
+        .array(z.enum(['network', 'console', 'session', 'state', 'render', 'performance', 'dom_snapshot', 'database', 'custom']))
         .optional()
         .describe('Filter by event types (default: all)'),
       limit: z
@@ -165,6 +166,14 @@ function formatTimelineEvent(event: RuntimeEvent): Record<string, unknown> {
         tables: de.tablesAccessed,
         source: de.source,
         error: de.error ?? null,
+      };
+    }
+    case 'custom': {
+      const ce = event as CustomEvent;
+      return {
+        ...base,
+        name: ce.name,
+        properties: ce.properties ?? null,
       };
     }
     default:

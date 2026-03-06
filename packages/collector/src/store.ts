@@ -10,6 +10,8 @@ import type {
   RenderEvent,
   PerformanceEvent,
   DatabaseEvent,
+  CustomEvent,
+  CustomEventFilter,
   ReconMetadataEvent,
   ReconDesignTokensEvent,
   ReconFontsEvent,
@@ -252,6 +254,21 @@ export class EventStore {
       if (filter.source && de.source !== filter.source) return false;
       return true;
     }) as DatabaseEvent[];
+  }
+
+  getCustomEvents(filter: CustomEventFilter = {}): CustomEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'custom') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      const ce = e as CustomEvent;
+      if (ce.timestamp < since) return false;
+      if (filter.name && ce.name !== filter.name) return false;
+      return true;
+    }) as CustomEvent[];
   }
 
   // ============================================================

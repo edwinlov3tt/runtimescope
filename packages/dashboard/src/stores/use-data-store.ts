@@ -8,7 +8,7 @@ import type {
   DatabaseEvent,
   DevProcess,
   PortUsage,
-} from '@/mock/types';
+} from '@/lib/runtime-types';
 
 type RuntimeEvent = NetworkEvent | ConsoleEvent | StateEvent | RenderEvent | PerformanceEvent | DatabaseEvent;
 
@@ -48,7 +48,7 @@ interface DataState {
   clearAll: () => void;
 }
 
-export const useDataStore = create<DataState>((set) => ({
+export const useDataStore = create<DataState>((set, get) => ({
   source: 'mock',
   connected: false,
 
@@ -64,14 +64,14 @@ export const useDataStore = create<DataState>((set) => ({
   setSource: (s) => set({ source: s }),
   setConnected: (v) => set({ connected: v }),
 
-  setNetwork: (events) => set({ network: events }),
-  setConsole: (events) => set({ console: events }),
-  setState: (events) => set({ state: events }),
-  setRenders: (events) => set({ renders: events }),
-  setPerformance: (events) => set({ performance: events }),
-  setDatabase: (events) => set({ database: events }),
-  setProcesses: (p) => set({ processes: p }),
-  setPorts: (p) => set({ ports: p }),
+  setNetwork: (events) => { if (events.length !== get().network.length) set({ network: events }); },
+  setConsole: (events) => { if (events.length !== get().console.length) set({ console: events }); },
+  setState: (events) => { if (events.length !== get().state.length) set({ state: events }); },
+  setRenders: (events) => { if (events.length !== get().renders.length) set({ renders: events }); },
+  setPerformance: (events) => { if (events.length !== get().performance.length) set({ performance: events }); },
+  setDatabase: (events) => { if (events.length !== get().database.length) set({ database: events }); },
+  setProcesses: (p) => { if (p.length !== get().processes.length) set({ processes: p }); },
+  setPorts: (p) => { if (p.length !== get().ports.length) set({ ports: p }); },
 
   appendEvent: (event) =>
     set((s) => {

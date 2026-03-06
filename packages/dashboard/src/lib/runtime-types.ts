@@ -1,7 +1,7 @@
 // Re-defined types matching packages/collector/src/types.ts
 // Kept in dashboard to avoid cross-package dependency
 
-export type EventType = 'network' | 'console' | 'session' | 'state' | 'render' | 'dom_snapshot' | 'performance' | 'database';
+export type EventType = 'network' | 'console' | 'session' | 'state' | 'render' | 'dom_snapshot' | 'performance' | 'database' | 'custom';
 
 export interface BaseEvent {
   eventId: string;
@@ -99,6 +99,12 @@ export interface DatabaseEvent extends BaseEvent {
   label?: string;
   error?: string;
   params?: string;
+}
+
+export interface CustomEvent extends BaseEvent {
+  eventType: 'custom';
+  name: string;
+  properties?: Record<string, unknown>;
 }
 
 export type IssueSeverity = 'high' | 'medium' | 'low';

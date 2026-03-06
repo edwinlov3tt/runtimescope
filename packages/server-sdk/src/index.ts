@@ -1,4 +1,5 @@
 import { ServerTransport } from './transport.js';
+import { HttpTransport } from './http-transport.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import { parseOperation, parseTablesAccessed, normalizeQuery, redactParams } from './utils/sql-parser.js';
 import { captureStack } from './utils/stack.js';
@@ -24,13 +25,14 @@ import type { MiddlewareOptions } from './interceptors/middleware.js';
 // to the RuntimeScope collector via WebSocket
 // ============================================================
 
-const SDK_VERSION = '0.6.2';
+const SDK_VERSION = '0.7.0';
 
 // Re-export _log for integration modules (lives in utils/log.js to avoid circular deps)
 export { _log } from './utils/log.js';
 
 class RuntimeScopeServer {
   private transport: ServerTransport | null = null;
+  private httpTransport: HttpTransport | null = null;
   private sessionId: string = '';
   private config: ServerSdkConfig = {};
   private sampler: Sampler | null = null;
@@ -47,16 +49,39 @@ class RuntimeScopeServer {
 
     const serverUrl = config.serverUrl ?? config.endpoint ?? 'ws://127.0.0.1:9090';
 
-    this.transport = new ServerTransport({
-      url: serverUrl,
-      sessionId: this.sessionId,
-      appName: config.appName ?? 'server-app',
-      sdkVersion: SDK_VERSION,
-      authToken: config.authToken,
-      maxQueueSize: config.maxQueueSize,
-    });
+    if (config.transport === 'http') {
+      // HTTP transport for serverless environments (Lambda, Vercel, Cloudflare Workers)
+      let httpUrl = config.httpEndpoint;
+      if (!httpUrl) {
+        const wsUrl = new URL(serverUrl);
+        wsUrl.protocol = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
+        wsUrl.port = '9091';
+        wsUrl.pathname = '/api/events';
+        httpUrl = wsUrl.toString();
+      }
 
-    this.transport.connect();
+      this.httpTransport = new HttpTransport({
+        url: httpUrl,
+        sessionId: this.sessionId,
+        appName: config.appName ?? 'server-app',
+        sdkVersion: SDK_VERSION,
+        authToken: config.authToken,
+        maxQueueSize: config.maxQueueSize,
+        flushIntervalMs: config.httpFlushIntervalMs,
+      });
+    } else {
+      // Default: WebSocket transport
+      this.transport = new ServerTransport({
+        url: serverUrl,
+        sessionId: this.sessionId,
+        appName: config.appName ?? 'server-app',
+        sdkVersion: SDK_VERSION,
+        authToken: config.authToken,
+        maxQueueSize: config.maxQueueSize,
+      });
+
+      this.transport.connect();
+    }
 
     // Set up sampler if rate limiting or sampling is configured
     if (config.sampleRate !== undefined || config.maxEventsPerSecond !== undefined) {
@@ -100,7 +125,10 @@ class RuntimeScopeServer {
             maxBodySize: config.maxBodySize,
             redactHeaders: config.redactHeaders,
             // Auto-ignore the collector URL to prevent recursion
-            ignoreUrls: [serverUrl.replace('ws://', '').replace('wss://', '')],
+            ignoreUrls: [
+              serverUrl.replace('ws://', '').replace('wss://', ''),
+              ...(config.httpEndpoint ? [config.httpEndpoint.replace(/^https?:\/\//, '')] : []),
+            ],
             beforeSend: config.beforeSend,
           })
         );
@@ -126,6 +154,10 @@ class RuntimeScopeServer {
     }
     this.restoreFunctions = [];
     this.sampler = null;
+    if (this.httpTransport) {
+      this.httpTransport.disconnect();
+      this.httpTransport = null;
+    }
     this.transport?.disconnect();
     this.transport = null;
   }
@@ -138,12 +170,15 @@ class RuntimeScopeServer {
     // Apply sampling/rate limiting
     if (this.sampler && !this.sampler.shouldSample(event)) return;
 
-    if (this.config.beforeSend) {
-      const filtered = this.config.beforeSend(event);
-      if (!filtered) return;
-      this.transport?.sendEvent(filtered);
+    const filtered = this.config.beforeSend
+      ? this.config.beforeSend(event)
+      : event;
+    if (!filtered) return;
+
+    if (this.httpTransport) {
+      this.httpTransport.sendEvent(filtered);
     } else {
-      this.transport?.sendEvent(event);
+      this.transport?.sendEvent(filtered);
     }
   }
 
@@ -296,3 +331,5 @@ export { parseOperation, parseTablesAccessed, normalizeQuery, redactParams } fro
 export { runtimeScopeMiddleware } from './interceptors/middleware.js';
 export { runWithContext, getRequestContext, getSessionId } from './context.js';
 export { Sampler } from './sampler.js';
+export { HttpTransport } from './http-transport.js';
+export type { HttpTransportOptions } from './http-transport.js';

@@ -34,4 +34,8 @@ export { SessionManager } from './session-manager.js';
 export { compareSessions } from './session-differ.js';
 export { HttpServer } from './http-server.js';
 export type { HttpServerOptions } from './http-server.js';
+export { PmStore } from './pm/pm-store.js';
+export { ProjectDiscovery } from './pm/project-discovery.js';
+export { parseSessionJsonl, calculateActiveMinutes, calculateCostMicrodollars } from './pm/session-parser.js';
+export * from './pm/pm-types.js';
 export * from './types.js';

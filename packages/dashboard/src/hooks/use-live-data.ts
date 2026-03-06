@@ -14,13 +14,20 @@ import {
 
 const POLL_INTERVAL = 2000;
 
-/** Resolve selectedProject → session_id for API filtering */
+/**
+ * Resolve selectedProject → session_id for API filtering.
+ * Returns:
+ *   - A real session_id when the project is connected with sessions
+ *   - '__none__' sentinel when a project is selected but has no sessions
+ *     (ensures API returns zero results instead of everything)
+ *   - undefined when no project is selected (legacy unfiltered mode)
+ */
 function getSessionIdFilter(): string | undefined {
   const { selectedProject, projects } = useAppStore.getState();
   if (!selectedProject) return undefined;
 
   const project = projects.find((p) => p.appName === selectedProject);
-  if (!project || project.sessions.length === 0) return undefined;
+  if (!project || project.sessions.length === 0) return '__none__';
   return project.sessions[0];
 }
 
@@ -102,6 +109,9 @@ async function fetchAllFiltered(): Promise<void> {
 
 export function useLiveData(): void {
   const activeTab = useAppStore((s) => s.activeTab);
+  const activeView = useAppStore((s) => s.activeView);
+  const activeProjectTab = useAppStore((s) => s.activeProjectTab);
+  const runtimeSubTab = useAppStore((s) => s.runtimeSubTab);
   const selectedProject = useAppStore((s) => s.selectedProject);
   const source = useDataStore((s) => s.source);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -109,8 +119,16 @@ export function useLiveData(): void {
   useEffect(() => {
     if (source !== 'live') return;
 
+    // When viewing a PM project, only poll runtime data if on the Runtime tab
+    if (activeView === 'project' && activeProjectTab !== 'runtime') {
+      return;
+    }
+
+    // Determine which tab to poll for
+    const effectiveTab = activeView === 'project' ? runtimeSubTab : activeTab;
+
     const fetchers = makeFetchers();
-    const fetcher = fetchers[activeTab] ?? fetchAllFiltered;
+    const fetcher = fetchers[effectiveTab] ?? fetchAllFiltered;
 
     // Fetch immediately on tab switch or project change
     fetcher();
@@ -136,5 +154,5 @@ export function useLiveData(): void {
       if (intervalRef.current) clearInterval(intervalRef.current);
       document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [activeTab, source, selectedProject]);
+  }, [activeTab, activeView, activeProjectTab, runtimeSubTab, source, selectedProject]);
 }

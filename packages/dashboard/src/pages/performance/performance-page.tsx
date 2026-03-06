@@ -1,11 +1,10 @@
 import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { Gauge, Sparkline, Badge } from '@/components/ui';
-import { MOCK_PERFORMANCE, MOCK_PERF_HISTORY } from '@/mock/performance';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
-import type { PerformanceEvent } from '@/mock/types';
+import type { PerformanceEvent } from '@/lib/runtime-types';
 
 const METRIC_MAX: Record<string, number> = { LCP: 4000, FCP: 3000, TTFB: 800, CLS: 0.5, FID: 300, INP: 500 };
 const METRIC_UNIT: Record<string, string> = { LCP: 'ms', FCP: 'ms', TTFB: 'ms', CLS: '', FID: 'ms', INP: 'ms' };
@@ -13,35 +12,32 @@ const METRIC_UNIT: Record<string, string> = { LCP: 'ms', FCP: 'ms', TTFB: 'ms', 
 export function PerformancePage() {
   const [selectedMetric, setSelectedMetric] = useState<string>('LCP');
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const livePerformance = useDataStore((s) => s.performance);
 
-  // In live mode, use latest event per metric; otherwise use mock
   const metrics = useMemo(() => {
-    if (source !== 'live' || livePerformance.length === 0) return MOCK_PERFORMANCE;
+    if (livePerformance.length === 0) return [];
     const latest = new Map<string, PerformanceEvent>();
     for (const e of livePerformance) {
       const existing = latest.get(e.metricName);
       if (!existing || e.timestamp > existing.timestamp) latest.set(e.metricName, e);
     }
     return Array.from(latest.values());
-  }, [source, livePerformance]);
+  }, [livePerformance]);
 
-  // Build history per metric from live data
   const perfHistory = useMemo(() => {
-    if (source !== 'live' || livePerformance.length === 0) return MOCK_PERF_HISTORY;
+    if (livePerformance.length === 0) return {};
     const history: Record<string, number[]> = {};
     for (const e of livePerformance) {
       if (!history[e.metricName]) history[e.metricName] = [];
       history[e.metricName].push(e.value);
     }
     return history;
-  }, [source, livePerformance]);
+  }, [livePerformance]);
 
   const selected = metrics.find((e) => e.metricName === selectedMetric);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar title="Performance" connected={connected} />
 
       <div className="flex-1 overflow-y-auto">

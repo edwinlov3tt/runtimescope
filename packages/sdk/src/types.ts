@@ -9,7 +9,8 @@ export type EventType =
   | 'render'
   | 'dom_snapshot'
   | 'performance'
-  | 'database';
+  | 'database'
+  | 'custom';
 
 export interface BaseEvent {
   eventId: string;
@@ -140,6 +141,12 @@ export interface PerformanceEvent extends BaseEvent {
   entries?: unknown[];
 }
 
+export interface CustomEvent extends BaseEvent {
+  eventType: 'custom';
+  name: string;
+  properties?: Record<string, unknown>;
+}
+
 export type RuntimeEvent =
   | NetworkEvent
   | ConsoleEvent
@@ -147,7 +154,8 @@ export type RuntimeEvent =
   | StateEvent
   | RenderEvent
   | DomSnapshotEvent
-  | PerformanceEvent;
+  | PerformanceEvent
+  | CustomEvent;
 
 export interface RuntimeScopeConfig {
   enabled?: boolean;

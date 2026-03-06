@@ -124,22 +124,35 @@ export class SessionManager {
     };
   }
 
-  createSnapshot(sessionId: string, project: string): SessionSnapshot {
+  createSnapshot(sessionId: string, project: string, label?: string): SessionSnapshot {
     const events = this.store.getAllEvents();
     const metrics = this.computeMetrics(sessionId, project, events);
 
     // Save to SQLite
     const sqliteStore = this.sqliteStores.get(project);
     if (sqliteStore) {
-      sqliteStore.saveSessionMetrics(sessionId, project, metrics);
+      sqliteStore.saveSessionMetrics(sessionId, project, metrics, label);
     }
 
     return {
       sessionId,
       project,
+      label,
       metrics,
       createdAt: Date.now(),
     };
+  }
+
+  getSessionSnapshots(project: string, sessionId: string): SessionSnapshot[] {
+    const sqliteStore = this.sqliteStores.get(project);
+    if (!sqliteStore) return [];
+    return sqliteStore.getSessionSnapshots(sessionId);
+  }
+
+  getSnapshotById(project: string, snapshotId: number): SessionSnapshot | null {
+    const sqliteStore = this.sqliteStores.get(project);
+    if (!sqliteStore) return null;
+    return sqliteStore.getSnapshotById(snapshotId);
   }
 
   getSessionHistory(project: string, limit = 20): SessionSnapshot[] {
@@ -155,7 +168,7 @@ export class SessionManager {
         snapshots.push({
           sessionId: session.sessionId,
           project,
-          metrics: metricsData as SessionMetrics,
+          metrics: metricsData,
           buildMeta: session.buildMeta,
           createdAt: session.disconnectedAt ?? session.connectedAt,
         });

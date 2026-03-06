@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DetailPanel, Badge } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { MOCK_ISSUES } from '@/mock/issues';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { detectIssues } from '@/lib/issue-detector';
@@ -18,7 +17,6 @@ export function IssuesPage() {
   const [activeTab, setActiveTab] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const network = useDataStore((s) => s.network);
   const consoleMsgs = useDataStore((s) => s.console);
   const stateEvents = useDataStore((s) => s.state);
@@ -27,11 +25,10 @@ export function IssuesPage() {
   const dbEvents = useDataStore((s) => s.database);
 
   const allIssues = useMemo(() => {
-    if (source !== 'live') return MOCK_ISSUES;
     const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
-    if (allEvents.length === 0) return MOCK_ISSUES;
+    if (allEvents.length === 0) return [];
     return detectIssues(allEvents);
-  }, [source, network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
 
   const filtered = useMemo(() => {
     if (activeTab === 'all') return allIssues;
@@ -41,7 +38,7 @@ export function IssuesPage() {
   const selected = selectedId ? allIssues.find((i) => i.id === selectedId) : null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
         title="Issues"
         tabs={[
@@ -55,7 +52,7 @@ export function IssuesPage() {
         connected={connected}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 overflow-y-auto">
           <div className="divide-y divide-border-muted">
             {filtered.map((issue) => {

@@ -5,9 +5,10 @@ import type {
   RenderEvent,
   PerformanceEvent,
   DatabaseEvent,
+  CustomEvent,
   DevProcess,
   PortUsage,
-} from '@/mock/types';
+} from '@/lib/runtime-types';
 
 // Base URL is empty — Vite proxy forwards /api/* to the collector
 const BASE = '';
@@ -51,6 +52,37 @@ export async function checkHealth(): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/**
+ * Find the runtime project matching a PM project.
+ * Strategy: exact match on runtimescopeProject → case-insensitive → PM project name fallback.
+ */
+export function findRuntimeProject(
+  runtimeProjects: ProjectInfo[],
+  opts: { runtimescopeProject?: string; name?: string },
+): ProjectInfo | undefined {
+  if (!runtimeProjects.length) return undefined;
+
+  // 1. Exact match on configured runtimescopeProject
+  if (opts.runtimescopeProject) {
+    const exact = runtimeProjects.find((r) => r.appName === opts.runtimescopeProject);
+    if (exact) return exact;
+
+    // 2. Case-insensitive match
+    const lower = opts.runtimescopeProject.toLowerCase();
+    const ci = runtimeProjects.find((r) => r.appName.toLowerCase() === lower);
+    if (ci) return ci;
+  }
+
+  // 3. Match by PM project name (handles when runtimescopeProject isn't set or was renamed)
+  if (opts.name) {
+    const nameLower = opts.name.toLowerCase();
+    const byName = runtimeProjects.find((r) => r.appName.toLowerCase() === nameLower);
+    if (byName) return byName;
+  }
+
+  return undefined;
 }
 
 // --- Event endpoints (all support session_id filtering) ---
@@ -107,6 +139,14 @@ export async function fetchDatabaseEvents(params?: {
   return get<DatabaseEvent>(`${BASE}/api/events/database`, params);
 }
 
+export async function fetchCustomEvents(params?: {
+  since_seconds?: number;
+  name?: string;
+  session_id?: string;
+}): Promise<CustomEvent[] | null> {
+  return get<CustomEvent>(`${BASE}/api/events/custom`, params);
+}
+
 export async function fetchTimelineEvents(params?: {
   since_seconds?: number;
   event_types?: string;
@@ -138,6 +178,21 @@ export async function fetchPorts(params?: {
   port?: number;
 }): Promise<PortUsage[] | null> {
   return get<PortUsage>(`${BASE}/api/ports`, params);
+}
+
+export async function killProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): Promise<{ success: boolean; error?: string } | null> {
+  try {
+    const res = await fetch(`${BASE}/api/processes`, {
+      method: 'DELETE',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ pid, signal }),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.data ?? null;
+  } catch {
+    return null;
+  }
 }
 
 // --- Bulk operations ---

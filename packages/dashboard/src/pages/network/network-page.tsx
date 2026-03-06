@@ -10,7 +10,6 @@ import {
   CodeBlock,
   WaterfallBar,
 } from '@/components/ui';
-import { MOCK_NETWORK } from '@/mock/network';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { useKeyboardNav } from '@/hooks/use-keyboard-nav';
@@ -19,7 +18,7 @@ import {
   formatBytes,
   getStatusColor,
 } from '@/lib/format';
-import type { NetworkEvent } from '@/mock/types';
+import type { NetworkEvent } from '@/lib/runtime-types';
 
 const STATUS_TEXT: Record<string, string> = {
   green: 'text-green',
@@ -53,9 +52,8 @@ export function NetworkPage() {
   const [detailTab, setDetailTab] = useState('headers');
   const [search, setSearch] = useState('');
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const liveNetwork = useDataStore((s) => s.network);
-  const allData = source === 'live' ? liveNetwork : MOCK_NETWORK;
+  const allData = liveNetwork;
 
   const filtered = useMemo(() => {
     let data = allData;
@@ -84,7 +82,7 @@ export function NetworkPage() {
   const selectedRow = detailIndex !== null ? filtered[detailIndex] : null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
         title="Network"
         tabs={[
@@ -98,8 +96,8 @@ export function NetworkPage() {
         connected={connected}
       />
 
-      <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           <FilterBar
             search={search}
             onSearchChange={setSearch}

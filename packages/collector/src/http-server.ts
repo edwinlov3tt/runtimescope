@@ -8,7 +8,11 @@ import type { EventStore } from './store.js';
 import type { ProcessMonitor } from './engines/process-monitor.js';
 import type { RuntimeEvent, DevProcessType } from './types.js';
 import { AuthManager } from './auth.js';
+import type { SessionRateLimiter } from './rate-limiter.js';
 import { loadTlsOptions, type TlsConfig } from './tls.js';
+import type { PmStore } from './pm/pm-store.js';
+import type { ProjectDiscovery } from './pm/project-discovery.js';
+import { createPmRouter } from './pm/pm-routes.js';
 
 // ============================================================
 // HTTP API Server for Dashboard
@@ -35,9 +39,11 @@ export class HttpServer {
   private processMonitor: ProcessMonitor | null;
   private authManager: AuthManager | null;
   private allowedOrigins: string[] | null;
+  private rateLimiter: SessionRateLimiter | null;
   private dashboardClients: Set<WebSocket> = new Set();
   private eventListener: ((event: RuntimeEvent) => void) | null = null;
   private routes: Map<string, RouteHandler> = new Map();
+  private pmRouter: ReturnType<typeof createPmRouter> | null = null;
   private sdkBundlePath: string | null = null;
   private activePort = 9091;
   private startedAt = Date.now();
@@ -45,13 +51,28 @@ export class HttpServer {
   constructor(
     store: EventStore,
     processMonitor?: ProcessMonitor,
-    options?: { authManager?: AuthManager; allowedOrigins?: string[] }
+    options?: {
+      authManager?: AuthManager;
+      allowedOrigins?: string[];
+      rateLimiter?: SessionRateLimiter;
+      pmStore?: PmStore;
+      discovery?: ProjectDiscovery;
+    }
   ) {
     this.store = store;
     this.processMonitor = processMonitor ?? null;
     this.authManager = options?.authManager ?? null;
     this.allowedOrigins = options?.allowedOrigins ?? null;
+    this.rateLimiter = options?.rateLimiter ?? null;
     this.registerRoutes();
+
+    // Register PM routes if PM store is available
+    if (options?.pmStore && options?.discovery) {
+      this.pmRouter = createPmRouter(options.pmStore, options.discovery, {
+        json: (res, data, status) => this.json(res, data, status),
+        readBody: (req, maxBytes) => this.readBody(req, maxBytes),
+      }, (msg) => this.broadcastDevServer(msg));
+    }
   }
 
   private registerRoutes(): void {
@@ -107,6 +128,30 @@ export class HttpServer {
       const project = params.get('project') ?? undefined;
       const processes = this.processMonitor.getProcesses({ type, project });
       this.json(res, { data: processes, count: processes.length });
+    });
+
+    // Kill a process by PID
+    this.routes.set('DELETE /api/processes', async (req, res, params) => {
+      if (!this.processMonitor) {
+        this.json(res, { error: 'Process monitor not available' }, 500);
+        return;
+      }
+      const pid = numParam(params, 'pid');
+      if (!pid) {
+        // Try reading from body
+        const body = await this.readBody(req, 1024);
+        const parsed = body ? JSON.parse(body) : {};
+        if (!parsed.pid) {
+          this.json(res, { error: 'pid is required' }, 400);
+          return;
+        }
+        const result = this.processMonitor.killProcess(parsed.pid, parsed.signal ?? 'SIGTERM');
+        this.json(res, { data: result });
+        return;
+      }
+      const signal = (params.get('signal') as 'SIGTERM' | 'SIGKILL') ?? 'SIGTERM';
+      const result = this.processMonitor.killProcess(pid, signal);
+      this.json(res, { data: result });
     });
 
     // Port usage (served from background scan cache)
@@ -195,10 +240,102 @@ export class HttpServer {
       this.json(res, { data: events, count: events.length });
     });
 
+    this.routes.set('GET /api/events/custom', (_req, res, params) => {
+      const events = this.store.getCustomEvents({
+        name: params.get('name') ?? undefined,
+        sinceSeconds: numParam(params, 'since_seconds'),
+        sessionId: params.get('session_id') ?? undefined,
+      });
+      this.json(res, { data: events, count: events.length });
+    });
+
     // Clear events
     this.routes.set('DELETE /api/events', (_req, res) => {
       const result = this.store.clear();
       this.json(res, result);
+    });
+
+    // POST event ingestion — HTTP alternative to WebSocket for serverless environments
+    this.routes.set('POST /api/events', async (req, res) => {
+      const body = await this.readBody(req, 1_048_576); // 1MB limit
+      if (!body) {
+        this.json(res, { error: 'Request body required', code: 'EMPTY_BODY' }, 400);
+        return;
+      }
+
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        this.json(res, { error: 'Invalid JSON', code: 'PARSE_ERROR' }, 400);
+        return;
+      }
+
+      const payload = parsed as {
+        sessionId?: string;
+        appName?: string;
+        sdkVersion?: string;
+        events?: unknown[];
+      };
+
+      if (!payload.sessionId || !Array.isArray(payload.events) || payload.events.length === 0) {
+        this.json(res, {
+          error: 'Required: sessionId (string), events (non-empty array)',
+          code: 'INVALID_PAYLOAD',
+        }, 400);
+        return;
+      }
+
+      // Auto-register session on first event from this sessionId
+      const sessions = this.store.getSessionInfo();
+      const knownSession = sessions.find(s => s.sessionId === payload.sessionId);
+      if (!knownSession && payload.appName) {
+        this.store.addEvent({
+          eventId: `session-${payload.sessionId}`,
+          sessionId: payload.sessionId,
+          timestamp: Date.now(),
+          eventType: 'session',
+          appName: payload.appName,
+          connectedAt: Date.now(),
+          sdkVersion: payload.sdkVersion ?? 'http',
+        } as RuntimeEvent);
+      }
+
+      const VALID_EVENT_TYPES = new Set([
+        'network', 'console', 'session', 'state', 'render',
+        'dom_snapshot', 'performance', 'database',
+        'recon_metadata', 'recon_design_tokens', 'recon_fonts',
+        'recon_layout_tree', 'recon_accessibility', 'recon_computed_styles',
+        'recon_element_snapshot', 'recon_asset_inventory',
+      ]);
+
+      let accepted = 0;
+      let dropped = 0;
+      let rejected = 0;
+
+      for (const raw of payload.events) {
+        const event = raw as RuntimeEvent;
+
+        // Validate event shape
+        if (!event.eventType || !VALID_EVENT_TYPES.has(event.eventType)) {
+          rejected++;
+          continue;
+        }
+
+        if (!event.eventId) event.eventId = `http-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+        if (!event.sessionId) event.sessionId = payload.sessionId!;
+        if (!event.timestamp) event.timestamp = Date.now();
+
+        if (this.rateLimiter && !this.rateLimiter.allow(payload.sessionId!)) {
+          dropped++;
+          continue;
+        }
+
+        this.store.addEvent(event);
+        accepted++;
+      }
+
+      this.json(res, { accepted, dropped, rejected, sessionId: payload.sessionId }, accepted > 0 ? 200 : 429);
     });
   }
 
@@ -255,7 +392,17 @@ export class HttpServer {
 
       // Set up WebSocket server for real-time event streaming
       this.wss = new WebSocketServer({ server, path: '/api/ws/events' });
-      this.wss.on('connection', (ws) => {
+      this.wss.on('connection', (ws, req) => {
+        // Authenticate WebSocket upgrade requests when auth is enabled
+        if (this.authManager?.isEnabled()) {
+          const wsUrl = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
+          const token = wsUrl.searchParams.get('token')
+            ?? AuthManager.extractBearer(req.headers.authorization);
+          if (!this.authManager.isAuthorized(token)) {
+            ws.close(4001, 'Authentication required');
+            return;
+          }
+        }
         this.dashboardClients.add(ws);
         ws.on('close', () => this.dashboardClients.delete(ws));
         ws.on('error', () => this.dashboardClients.delete(ws));
@@ -331,6 +478,31 @@ export class HttpServer {
     }
   }
 
+  broadcastSessionChange(type: 'session_connected' | 'session_disconnected', sessionId: string, appName: string): void {
+    if (this.dashboardClients.size === 0) return;
+    const message = JSON.stringify({ type, sessionId, appName });
+    for (const ws of this.dashboardClients) {
+      if (ws.readyState === 1) {
+        try { ws.send(message); } catch { this.dashboardClients.delete(ws); }
+      }
+    }
+  }
+
+  private broadcastDevServer(msg: unknown): void {
+    if (this.dashboardClients.size === 0) return;
+
+    const message = JSON.stringify(msg);
+    for (const ws of this.dashboardClients) {
+      if (ws.readyState === 1 /* OPEN */) {
+        try {
+          ws.send(message);
+        } catch {
+          this.dashboardClients.delete(ws);
+        }
+      }
+    }
+  }
+
   private handleRequest(req: IncomingMessage, res: ServerResponse): void {
     const url = new URL(req.url ?? '/', `http://${req.headers.host ?? 'localhost'}`);
 
@@ -375,7 +547,7 @@ export class HttpServer {
 
     // Serve a ready-to-paste snippet for any tech stack
     if (req.method === 'GET' && url.pathname === '/snippet') {
-      const appName = url.searchParams.get('app') || 'my-app';
+      const appName = (url.searchParams.get('app') || 'my-app').replace(/[^a-zA-Z0-9_-]/g, '');
       const wsPort = process.env.RUNTIMESCOPE_PORT ?? '9090';
       const snippet = `<!-- RuntimeScope SDK — paste before </body> -->
 <script src="http://localhost:${this.activePort}/runtimescope.js"></script>
@@ -406,9 +578,32 @@ export class HttpServer {
       } catch (err) {
         this.json(res, { error: (err as Error).message }, 500);
       }
-    } else {
-      this.json(res, { error: 'Not found', path: url.pathname }, 404);
+      return;
     }
+
+    // Try PM pattern routes (e.g. /api/pm/projects/:id)
+    if (this.pmRouter && url.pathname.startsWith('/api/pm/')) {
+      const match = this.pmRouter.match(req.method!, url.pathname);
+      if (match) {
+        // Merge path params into search params
+        for (const [k, v] of Object.entries(match.pathParams)) {
+          url.searchParams.set(k, v);
+        }
+        try {
+          const result = match.handler(req, res, url.searchParams);
+          if (result instanceof Promise) {
+            result.catch((err) => {
+              this.json(res, { error: (err as Error).message }, 500);
+            });
+          }
+        } catch (err) {
+          this.json(res, { error: (err as Error).message }, 500);
+        }
+        return;
+      }
+    }
+
+    this.json(res, { error: 'Not found', path: url.pathname }, 404);
   }
 
   private setCorsHeaders(req: IncomingMessage, res: ServerResponse): void {
@@ -426,8 +621,46 @@ export class HttpServer {
       res.setHeader('Access-Control-Allow-Origin', '*');
     }
 
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  }
+
+  private readBody(req: IncomingMessage, maxBytes: number): Promise<string | null> {
+    return new Promise((resolve) => {
+      const chunks: Buffer[] = [];
+      let size = 0;
+      let resolved = false;
+
+      const done = (result: string | null) => {
+        if (resolved) return;
+        resolved = true;
+        clearTimeout(timer);
+        resolve(result);
+      };
+
+      // 30s timeout to prevent slow-read DoS
+      const timer = setTimeout(() => {
+        req.destroy();
+        done(null);
+      }, 30_000);
+
+      req.on('data', (chunk: Buffer) => {
+        size += chunk.length;
+        if (size > maxBytes) {
+          req.destroy();
+          done(null);
+          return;
+        }
+        chunks.push(chunk);
+      });
+
+      req.on('end', () => {
+        if (size === 0) { done(null); return; }
+        done(Buffer.concat(chunks).toString('utf-8'));
+      });
+
+      req.on('error', () => done(null));
+    });
   }
 
   private json(res: ServerResponse, data: unknown, status = 200): void {

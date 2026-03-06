@@ -24,7 +24,7 @@ export function Topbar({
   tabs,
   activeTab,
   onTabChange,
-  connected = true,
+  connected = false,
   showSearch = false,
   searchValue,
   onSearchChange,

@@ -14,6 +14,7 @@ export type EventType =
   | 'dom_snapshot'
   | 'performance'
   | 'database'
+  | 'custom'
   | 'recon_metadata'
   | 'recon_design_tokens'
   | 'recon_fonts'
@@ -196,6 +197,22 @@ export interface DatabaseEvent extends BaseEvent {
   label?: string;
   error?: string;
   params?: string;
+}
+
+// --- Custom Events (user-defined business/product events) ---
+
+export interface CustomEvent extends BaseEvent {
+  eventType: 'custom';
+  name: string;
+  properties?: Record<string, unknown>;
+}
+
+// --- Custom Event Filters ---
+
+export interface CustomEventFilter {
+  name?: string;
+  sinceSeconds?: number;
+  sessionId?: string;
 }
 
 // ============================================================
@@ -563,6 +580,7 @@ export type RuntimeEvent =
   | DomSnapshotEvent
   | PerformanceEvent
   | DatabaseEvent
+  | CustomEvent
   | ReconMetadataEvent
   | ReconDesignTokensEvent
   | ReconFontsEvent
@@ -702,9 +720,10 @@ export interface SessionDiffResult {
 }
 
 export interface SessionSnapshot {
+  id?: number;
   sessionId: string;
   project: string;
-  snapshotPath?: string;
+  label?: string;
   metrics: SessionMetrics;
   buildMeta?: BuildMeta;
   createdAt: number;

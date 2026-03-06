@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/dashboard",
-  "version": "0.6.2",
+  "version": "0.7.0",
   "private": true,
   "type": "module",
   "scripts": {
@@ -16,7 +16,8 @@
     "react-dom": "^19.0.0",
     "recharts": "^3.7.0",
     "tailwind-merge": "^2.6.0",
-    "zustand": "^5.0.11"
+    "zustand": "^5.0.11",
+    "@runtimescope/sdk": "*"
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.0",

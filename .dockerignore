@@ -1,0 +1,20 @@
+node_modules/
+dist/
+.git/
+.DS_Store
+*.tsbuildinfo
+
+# Packages not needed for standalone collector
+packages/mcp-server/
+packages/extension/
+packages/dashboard/
+packages/server-sdk/
+
+# Dev files
+.claude/
+.github/
+docs/
+sessions/
+*.md
+!packages/collector/README.md
+!packages/sdk/README.md

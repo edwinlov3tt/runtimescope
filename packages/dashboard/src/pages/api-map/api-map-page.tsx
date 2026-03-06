@@ -1,7 +1,6 @@
 import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, StatusDot } from '@/components/ui';
-import { MOCK_ENDPOINTS, MOCK_ENDPOINT_HEALTH, MOCK_SERVICES } from '@/mock/api-map';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { computeEndpoints, computeEndpointHealth, computeServices } from '@/lib/api-discovery';
@@ -14,28 +13,27 @@ export function ApiMapPage() {
   const [activeTab, setActiveTab] = useState('endpoints');
   const [selectedPath, setSelectedPath] = useState<string | null>(null);
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const liveNetwork = useDataStore((s) => s.network);
 
   const endpoints = useMemo(() => {
-    if (source !== 'live' || liveNetwork.length === 0) return MOCK_ENDPOINTS;
+    if (liveNetwork.length === 0) return [];
     return computeEndpoints(liveNetwork);
-  }, [source, liveNetwork]);
+  }, [liveNetwork]);
 
   const endpointHealth = useMemo(() => {
-    if (source !== 'live' || liveNetwork.length === 0) return MOCK_ENDPOINT_HEALTH;
+    if (liveNetwork.length === 0) return [];
     return computeEndpointHealth(liveNetwork);
-  }, [source, liveNetwork]);
+  }, [liveNetwork]);
 
   const services = useMemo(() => {
-    if (source !== 'live' || liveNetwork.length === 0) return MOCK_SERVICES;
+    if (liveNetwork.length === 0) return [];
     return computeServices(liveNetwork);
-  }, [source, liveNetwork]);
+  }, [liveNetwork]);
 
   const selectedHealth = selectedPath ? endpointHealth.find((h) => `${h.method} ${h.normalizedPath}` === selectedPath) : null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
         title="API Map"
         tabs={[{ id: 'endpoints', label: 'Endpoints' }, { id: 'services', label: 'Services' }]}
@@ -44,7 +42,7 @@ export function ApiMapPage() {
         connected={connected}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 overflow-auto">
           {activeTab === 'endpoints' && (
             <DataTable

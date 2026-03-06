@@ -16,5 +16,7 @@ export { MetricCard } from './metric-card';
 export { Sparkline } from './sparkline';
 export { StackTrace } from './stack-trace';
 export { StatusDot } from './status-dot';
+export { Select } from './select';
 export { Tabs } from './tabs';
+export { Textarea } from './textarea';
 export { WaterfallBar } from './waterfall-bar';

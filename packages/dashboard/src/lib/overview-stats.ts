@@ -2,7 +2,7 @@ import type {
   NetworkEvent,
   RenderEvent,
   DetectedIssue,
-} from '@/mock/types';
+} from '@/lib/runtime-types';
 
 export interface OverviewStats {
   requests: { value: number; change: number; label: string; sparkline: number[] };

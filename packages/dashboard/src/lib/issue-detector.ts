@@ -10,7 +10,7 @@ import type {
   PerformanceEvent,
   DatabaseEvent,
   DetectedIssue,
-} from '@/mock/types';
+} from '@/lib/runtime-types';
 
 type RuntimeEvent = NetworkEvent | ConsoleEvent | RenderEvent | StateEvent | PerformanceEvent | DatabaseEvent;
 

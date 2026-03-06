@@ -2,7 +2,6 @@ import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DetailPanel, Badge, JsonViewer, Tabs } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { MOCK_STATE } from '@/mock/state';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { formatTimestamp } from '@/lib/format';
@@ -11,9 +10,8 @@ export function StatePage() {
   const [activeTab, setActiveTab] = useState('mutations');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const connected = useConnected();
-  const dataSource = useDataStore((s) => s.source);
   const liveState = useDataStore((s) => s.state);
-  const allData = dataSource === 'live' ? liveState : MOCK_STATE;
+  const allData = liveState;
 
   const stores = useMemo(() => {
     const map = new Map<string, { id: string; library: string; count: number; lastUpdate: number }>();
@@ -33,7 +31,7 @@ export function StatePage() {
   const selected = selectedId ? allData.find((e) => e.eventId === selectedId) : null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
         title="State"
         tabs={[{ id: 'stores', label: 'Stores' }, { id: 'mutations', label: 'Mutations' }]}
@@ -42,7 +40,7 @@ export function StatePage() {
         connected={connected}
       />
 
-      <div className="flex-1 flex overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 overflow-y-auto">
           {activeTab === 'stores' && (
             <div className="p-5 space-y-3">

@@ -2,6 +2,7 @@ import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
+import { join } from 'node:path';
 import {
   CollectorServer,
   ProjectManager,
@@ -17,6 +18,8 @@ import {
   AuthManager,
   Redactor,
   resolveTlsConfig,
+  PmStore,
+  ProjectDiscovery,
 } from '@runtimescope/collector';
 
 // --- Existing M1/M2 tool registrations ---
@@ -53,6 +56,9 @@ import { registerReconStyleDiffTools } from './tools/recon-style-diff.js';
 // --- Playwright scanner ---
 import { PlaywrightScanner } from './scanner/index.js';
 import { registerScannerTools } from './tools/scanner.js';
+
+// --- Custom event tracking ---
+import { registerCustomEventTools } from './tools/custom-events.js';
 
 // --- Historical event persistence ---
 import { registerHistoryTools } from './tools/history.js';
@@ -163,12 +169,30 @@ async function main() {
   // Auto-snapshot session metrics on SDK disconnect
   collector.onDisconnect((sessionId, projectName) => {
     try {
-      sessionManager.createSnapshot(sessionId, projectName);
+      sessionManager.createSnapshot(sessionId, projectName, 'auto-disconnect');
       console.error(`[RuntimeScope] Session ${sessionId} metrics saved to SQLite`);
     } catch {
       // Non-fatal: snapshot failure shouldn't break anything
     }
   });
+
+  // Periodic auto-snapshot for long-running sessions (every 5 minutes)
+  const AUTO_SNAPSHOT_INTERVAL_MS = 5 * 60 * 1000;
+  let autoSnapshotCount = 0;
+  const autoSnapshotTimer = setInterval(() => {
+    const sessions = collector.getConnectedSessions();
+    if (sessions.length === 0) return;
+
+    autoSnapshotCount++;
+    const minutes = autoSnapshotCount * 5;
+    for (const { sessionId, projectName } of sessions) {
+      try {
+        sessionManager.createSnapshot(sessionId, projectName, `auto-${minutes}m`);
+      } catch {
+        // Non-fatal
+      }
+    }
+  }, AUTO_SNAPSHOT_INTERVAL_MS);
 
   // Retention policy: prune events older than N days on startup
   const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
@@ -189,10 +213,25 @@ async function main() {
     }
   }
 
-  // 5. Start HTTP API for dashboard
+  // 5. Project Management layer
+  const pmDbPath = join(projectManager.rootDir, 'pm.db');
+  const pmStore = new PmStore({ dbPath: pmDbPath });
+  const discovery = new ProjectDiscovery(pmStore, projectManager);
+
+  // Run discovery in background (non-blocking)
+  discovery.discoverAll().then((result) => {
+    console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
+  }).catch((err) => {
+    console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
+  });
+
+  // 6. Start HTTP API for dashboard
   const httpServer = new HttpServer(store, processMonitor, {
     authManager,
     allowedOrigins: corsOrigins,
+    rateLimiter: collector.getRateLimiter(),
+    pmStore,
+    discovery,
   });
   try {
     await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
@@ -200,6 +239,14 @@ async function main() {
     console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
     // Non-fatal: MCP tools still work without HTTP API
   }
+
+  // Push session connect/disconnect to dashboard in real-time
+  collector.onConnect((sessionId, projectName) => {
+    httpServer.broadcastSessionChange('session_connected', sessionId, projectName);
+  });
+  collector.onDisconnect((sessionId, projectName) => {
+    httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName);
+  });
 
   // 6. Create Playwright scanner (lazy — browser launches on first scan)
   const scanner = new PlaywrightScanner();
@@ -237,8 +284,8 @@ async function main() {
   // --- Infrastructure (4 new) ---
   registerInfraTools(mcp, infraConnector);
 
-  // --- Session Diffing (2 new) ---
-  registerSessionDiffTools(mcp, sessionManager);
+  // --- Session Diffing (4 — compare, history, create snapshot, list snapshots) ---
+  registerSessionDiffTools(mcp, sessionManager, collector);
 
   // --- Recon / UI Analysis (9 new — extension-powered) ---
   registerReconMetadataTools(mcp, store, collector);
@@ -253,6 +300,9 @@ async function main() {
 
   // --- Playwright Scanner + SDK Snippet (2 new) ---
   registerScannerTools(mcp, store, scanner);
+
+  // --- Custom Event Tracking (2 new) ---
+  registerCustomEventTools(mcp, store);
 
   // --- Historical Persistence (2 new) ---
   registerHistoryTools(mcp, collector, projectManager);
@@ -272,11 +322,13 @@ async function main() {
     if (shuttingDown) return;
     shuttingDown = true;
 
+    clearInterval(autoSnapshotTimer);
     processMonitor.stop();
     await scanner.shutdown();
     await connectionManager.closeAll();
     await httpServer.stop();
     collector.stop();
+    pmStore.close();
 
     process.exit(0);
   };

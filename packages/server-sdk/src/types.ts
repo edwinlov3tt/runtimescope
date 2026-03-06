@@ -136,6 +136,13 @@ export interface ServerSdkConfig {
   sampleRate?: number;
   maxEventsPerSecond?: number;
   maxQueueSize?: number;
+  // Transport
+  /** Transport type: 'ws' (WebSocket, default) or 'http' (HTTP POST for serverless) */
+  transport?: 'ws' | 'http';
+  /** HTTP endpoint URL for HTTP transport (e.g., 'http://collector:9091/api/events') */
+  httpEndpoint?: string;
+  /** HTTP batch flush interval in ms (default: 1000) */
+  httpFlushIntervalMs?: number;
 }
 
 export interface WSMessage {

@@ -40,6 +40,15 @@ export class SessionRateLimiter {
   allow(sessionId: string): boolean {
     if (!this.isEnabled()) return true;
 
+    // Global cap: prevent memory exhaustion from unlimited unique session IDs
+    if (this.windows.size > 10_000 && !this.windows.has(sessionId)) {
+      this.prune(60_000);
+      if (this.windows.size > 10_000) {
+        this._droppedTotal++;
+        return false;
+      }
+    }
+
     const now = Date.now();
     let w = this.windows.get(sessionId);
 

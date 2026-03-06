@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, useId } from 'react';
 import { cn } from '@/lib/cn';
 
 interface SparklineProps {
@@ -17,6 +17,8 @@ export function Sparkline({
   color = 'var(--color-brand)',
   className,
 }: SparklineProps) {
+  const gradientId = useId();
+
   const { linePath, areaPath } = useMemo(() => {
     if (data.length < 2) return { linePath: '', areaPath: '' };
 
@@ -38,8 +40,6 @@ export function Sparkline({
   }, [data, width, height]);
 
   if (data.length < 2) return null;
-
-  const gradientId = `sparkline-${useMemo(() => Math.random().toString(36).slice(2, 8), [])}`;
 
   return (
     <svg

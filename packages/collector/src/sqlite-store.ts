@@ -3,6 +3,8 @@ import type {
   RuntimeEvent,
   HistoricalFilter,
   SessionInfoExtended,
+  SessionMetrics,
+  SessionSnapshot,
   EventType,
 } from './types.js';
 
@@ -93,14 +95,22 @@ export class SqliteStore {
 
       CREATE INDEX IF NOT EXISTS idx_sessions_project ON sessions(project);
 
-      CREATE TABLE IF NOT EXISTS session_metrics (
-        session_id TEXT PRIMARY KEY,
+      CREATE TABLE IF NOT EXISTS session_snapshots (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        session_id TEXT NOT NULL,
         project TEXT NOT NULL,
+        label TEXT,
         metrics TEXT NOT NULL,
         created_at INTEGER NOT NULL,
         FOREIGN KEY (session_id) REFERENCES sessions(session_id)
       );
+
+      CREATE INDEX IF NOT EXISTS idx_snapshots_session ON session_snapshots(session_id);
+      CREATE INDEX IF NOT EXISTS idx_snapshots_project ON session_snapshots(project, created_at);
     `);
+
+    // Migrate from old session_metrics table if it exists
+    this.migrateSessionMetrics();
   }
 
   // --- Write Operations ---
@@ -157,11 +167,11 @@ export class SqliteStore {
     this.updateSessionDisconnectedStmt.run(disconnectedAt, sessionId);
   }
 
-  saveSessionMetrics(sessionId: string, project: string, metrics: unknown): void {
+  saveSessionMetrics(sessionId: string, project: string, metrics: unknown, label?: string): void {
     this.db.prepare(`
-      INSERT OR REPLACE INTO session_metrics (session_id, project, metrics, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(sessionId, project, JSON.stringify(metrics), Date.now());
+      INSERT INTO session_snapshots (session_id, project, label, metrics, created_at)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(sessionId, project, label ?? null, JSON.stringify(metrics), Date.now());
   }
 
   // --- Read Operations ---
@@ -193,11 +203,11 @@ export class SqliteStore {
     }
 
     const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
-    const limit = filter.limit ? `LIMIT ${filter.limit}` : 'LIMIT 1000';
-    const offset = filter.offset ? `OFFSET ${filter.offset}` : '';
+    params.push(filter.limit ?? 1000);
+    params.push(filter.offset ?? 0);
 
     const rows = this.db
-      .prepare(`SELECT data FROM events ${where} ORDER BY timestamp ASC ${limit} ${offset}`)
+      .prepare(`SELECT data FROM events ${where} ORDER BY timestamp ASC LIMIT ? OFFSET ?`)
       .all(...params) as { data: string }[];
 
     return rows.map((row) => JSON.parse(row.data) as RuntimeEvent);
@@ -272,12 +282,62 @@ export class SqliteStore {
     }));
   }
 
-  getSessionMetrics(sessionId: string): unknown | null {
+  getSessionMetrics(sessionId: string): SessionMetrics | null {
     const row = this.db
-      .prepare('SELECT metrics FROM session_metrics WHERE session_id = ?')
+      .prepare('SELECT metrics FROM session_snapshots WHERE session_id = ? ORDER BY created_at DESC LIMIT 1')
       .get(sessionId) as { metrics: string } | undefined;
 
-    return row ? JSON.parse(row.metrics) : null;
+    return row ? JSON.parse(row.metrics) as SessionMetrics : null;
+  }
+
+  getSessionSnapshots(sessionId: string): SessionSnapshot[] {
+    const rows = this.db
+      .prepare(`
+        SELECT id, session_id, project, label, metrics, created_at
+        FROM session_snapshots
+        WHERE session_id = ?
+        ORDER BY created_at ASC
+      `)
+      .all(sessionId) as {
+        id: number;
+        session_id: string;
+        project: string;
+        label: string | null;
+        metrics: string;
+        created_at: number;
+      }[];
+
+    return rows.map((row) => ({
+      id: row.id,
+      sessionId: row.session_id,
+      project: row.project,
+      label: row.label ?? undefined,
+      metrics: JSON.parse(row.metrics) as SessionMetrics,
+      createdAt: row.created_at,
+    }));
+  }
+
+  getSnapshotById(snapshotId: number): SessionSnapshot | null {
+    const row = this.db
+      .prepare('SELECT id, session_id, project, label, metrics, created_at FROM session_snapshots WHERE id = ?')
+      .get(snapshotId) as {
+        id: number;
+        session_id: string;
+        project: string;
+        label: string | null;
+        metrics: string;
+        created_at: number;
+      } | undefined;
+
+    if (!row) return null;
+    return {
+      id: row.id,
+      sessionId: row.session_id,
+      project: row.project,
+      label: row.label ?? undefined,
+      metrics: JSON.parse(row.metrics) as SessionMetrics,
+      createdAt: row.created_at,
+    };
   }
 
   getEventsByType(project: string, eventType: EventType, sinceMs?: number): RuntimeEvent[] {
@@ -295,6 +355,23 @@ export class SqliteStore {
       .all(...params) as { data: string }[];
 
     return rows.map((row) => JSON.parse(row.data) as RuntimeEvent);
+  }
+
+  // --- Migration ---
+
+  private migrateSessionMetrics(): void {
+    const hasOldTable = this.db.prepare(
+      "SELECT name FROM sqlite_master WHERE type='table' AND name='session_metrics'"
+    ).get();
+
+    if (hasOldTable) {
+      this.db.exec(`
+        INSERT OR IGNORE INTO session_snapshots (session_id, project, label, metrics, created_at)
+        SELECT session_id, project, 'auto-disconnect', metrics, created_at
+        FROM session_metrics
+      `);
+      this.db.exec('DROP TABLE session_metrics');
+    }
   }
 
   // --- Maintenance ---

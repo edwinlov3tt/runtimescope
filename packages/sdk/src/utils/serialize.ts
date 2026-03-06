@@ -28,9 +28,22 @@ export function safeSerialize(value: unknown, maxDepth = 5): unknown {
     }
 
     const result: Record<string, unknown> = {};
-    for (const key of Object.keys(val as Record<string, unknown>)) {
-      result[key] = walk((val as Record<string, unknown>)[key], depth + 1);
+    let keys: string[];
+    try {
+      keys = Object.keys(val as Record<string, unknown>);
+    } catch {
+      return '[Object]';
     }
+    // Limit keys to avoid huge React fiber-like objects
+    const maxKeys = 50;
+    for (let i = 0; i < Math.min(keys.length, maxKeys); i++) {
+      try {
+        result[keys[i]] = walk((val as Record<string, unknown>)[keys[i]], depth + 1);
+      } catch {
+        result[keys[i]] = '[Error accessing property]';
+      }
+    }
+    if (keys.length > maxKeys) result['...'] = `${keys.length - maxKeys} more keys`;
     return result;
   }
 

@@ -2,7 +2,7 @@
  * Simplified browser port of packages/collector/src/engines/api-discovery.ts
  * Pure functions over NetworkEvent arrays.
  */
-import type { NetworkEvent, ApiEndpoint, ApiEndpointHealth, ServiceInfo } from '@/mock/types';
+import type { NetworkEvent, ApiEndpoint, ApiEndpointHealth, ServiceInfo } from '@/lib/runtime-types';
 
 // --- URL Normalization ---
 

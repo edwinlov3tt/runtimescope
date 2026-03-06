@@ -1,23 +1,23 @@
-import { useState } from 'react';
+import { useState, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, Badge, StatusDot } from '@/components/ui';
-import { MOCK_PROCESSES, MOCK_PORTS } from '@/mock/processes';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
+import { killProcess } from '@/lib/api';
+import { Square } from 'lucide-react';
 
 export function ProcessesPage() {
   const [activeTab, setActiveTab] = useState('processes');
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const liveProcesses = useDataStore((s) => s.processes);
   const livePorts = useDataStore((s) => s.ports);
 
-  const processes = source === 'live' && liveProcesses.length > 0 ? liveProcesses : MOCK_PROCESSES;
-  const ports = source === 'live' && livePorts.length > 0 ? livePorts : MOCK_PORTS;
+  const processes = liveProcesses;
+  const ports = livePorts;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
         title="Processes"
         tabs={[{ id: 'processes', label: 'Processes' }, { id: 'ports', label: 'Ports' }]}
@@ -41,6 +41,21 @@ export function ProcessesPage() {
                 render: (row) => (row.isOrphaned as boolean)
                   ? <span className="flex items-center gap-1.5"><StatusDot color="red" size="sm" pulse /><span className="text-red text-[12px]">Orphaned</span></span>
                   : <span className="flex items-center gap-1.5"><StatusDot color="green" size="sm" /><span className="text-green text-[12px]">Running</span></span>,
+              },
+              {
+                key: 'actions', header: '', width: '60px',
+                render: (row) => (
+                  <button
+                    type="button"
+                    onClick={async () => {
+                      await killProcess(row.pid as number);
+                    }}
+                    className="p-1 rounded hover:bg-bg-hover text-text-muted hover:text-red transition-colors cursor-pointer"
+                    title="Kill process"
+                  >
+                    <Square size={12} />
+                  </button>
+                ),
               },
             ]}
             data={processes as any}

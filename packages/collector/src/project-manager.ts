@@ -85,26 +85,16 @@ export class ProjectManager {
   // --- Directory helpers ---
 
   getProjectDir(projectName: string): string {
-    return join(this.baseDir, 'projects', projectName);
+    // Sanitize to prevent path traversal (e.g., ../../etc)
+    const safe = projectName.replace(/[^a-zA-Z0-9_.-]/g, '_');
+    if (!safe || safe === '.' || safe === '..') {
+      return join(this.baseDir, 'projects', '_invalid');
+    }
+    return join(this.baseDir, 'projects', safe);
   }
 
   getProjectDbPath(projectName: string): string {
     return join(this.getProjectDir(projectName), 'events.db');
-  }
-
-  getSessionsDir(projectName: string): string {
-    return join(this.getProjectDir(projectName), 'sessions');
-  }
-
-  getSessionSnapshotPath(
-    projectName: string,
-    sessionId: string,
-    timestamp: number
-  ): string {
-    const date = new Date(timestamp);
-    const dateStr = date.toISOString().replace(/[:.]/g, '-').slice(0, 19);
-    const shortId = sessionId.slice(0, 8);
-    return join(this.getSessionsDir(projectName), `${dateStr}_${shortId}.db`);
   }
 
   // --- Lifecycle (idempotent) ---
@@ -123,8 +113,6 @@ export class ProjectManager {
   ensureProjectDir(projectName: string): void {
     const projectDir = this.getProjectDir(projectName);
     this.mkdirp(projectDir);
-    this.mkdirp(this.getSessionsDir(projectName));
-
     // Create default project config if it doesn't exist
     const configPath = join(projectDir, 'config.json');
     if (!existsSync(configPath)) {

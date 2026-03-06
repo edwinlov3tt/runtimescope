@@ -1,7 +1,6 @@
 import { useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { MetricCard, Sparkline, ActivityFeed } from '@/components/ui';
-import { MOCK_OVERVIEW_STATS, MOCK_ACTIVITY } from '@/mock/overview';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { computeOverviewStats } from '@/lib/overview-stats';
@@ -11,7 +10,6 @@ import { Globe, Clock, Zap, AlertTriangle } from 'lucide-react';
 
 export function OverviewPage() {
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const network = useDataStore((s) => s.network);
   const consoleMsgs = useDataStore((s) => s.console);
   const stateEvents = useDataStore((s) => s.state);
@@ -19,23 +17,23 @@ export function OverviewPage() {
   const perfEvents = useDataStore((s) => s.performance);
   const dbEvents = useDataStore((s) => s.database);
 
+  const EMPTY_STATS = { requests: { value: 0, change: 0, label: '', sparkline: [] }, latency: { value: 0, change: 0, label: '', sparkline: [] }, renders: { value: 0, change: 0, label: '', sparkline: [] }, issues: { value: 0, change: 0, sparkline: [] } };
+
   const s = useMemo(() => {
-    if (source !== 'live') return MOCK_OVERVIEW_STATS;
     const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
-    if (allEvents.length === 0) return MOCK_OVERVIEW_STATS;
+    if (allEvents.length === 0) return EMPTY_STATS;
     const issues = detectIssues(allEvents);
     return computeOverviewStats(network, renderEvents, issues);
-  }, [source, network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
 
   const activity = useMemo(() => {
-    if (source !== 'live') return MOCK_ACTIVITY;
     const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
-    if (allEvents.length === 0) return MOCK_ACTIVITY;
+    if (allEvents.length === 0) return [];
     return eventsToActivity(allEvents, 20);
-  }, [source, network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar title="Overview" connected={connected} />
 
       <div className="flex-1 overflow-y-auto">

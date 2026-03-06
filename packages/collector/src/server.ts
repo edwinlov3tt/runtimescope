@@ -47,6 +47,7 @@ export class CollectorServer {
   private pendingHandshakes: Set<WebSocket> = new Set();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
+  private connectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
   private disconnectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private tlsConfig: TlsConfig | null = null;
@@ -95,6 +96,10 @@ export class CollectorServer {
 
   getRateLimiter(): SessionRateLimiter {
     return this.rateLimiter;
+  }
+
+  onConnect(cb: (sessionId: string, projectName: string) => void): void {
+    this.connectCallbacks.push(cb);
   }
 
   onDisconnect(cb: (sessionId: string, projectName: string) => void): void {
@@ -322,6 +327,11 @@ export class CollectorServer {
         console.error(
           `[RuntimeScope] Session ${payload.sessionId} connected (${payload.appName} v${payload.sdkVersion})`
         );
+
+        // Notify connect listeners
+        for (const cb of this.connectCallbacks) {
+          try { cb(payload.sessionId, projectName); } catch { /* non-fatal */ }
+        }
         break;
       }
       case 'event': {
@@ -378,6 +388,15 @@ export class CollectorServer {
       if (info.sessionId === sessionId) return info.projectName;
     }
     return undefined;
+  }
+
+  /** Get all connected session IDs with their project names */
+  getConnectedSessions(): { sessionId: string; projectName: string }[] {
+    const sessions: { sessionId: string; projectName: string }[] = [];
+    for (const [, info] of this.clients) {
+      sessions.push({ sessionId: info.sessionId, projectName: info.projectName });
+    }
+    return sessions;
   }
 
   /** Send a command to the SDK and await the response */

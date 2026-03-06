@@ -2,11 +2,10 @@ import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, StatusDot, Sparkline, Tabs } from '@/components/ui';
 import { SearchInput } from '@/components/ui/input';
-import { MOCK_RENDER_PROFILES, MOCK_RENDER_TIMELINE } from '@/mock/renders';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
-import type { RenderComponentProfile } from '@/mock/types';
+import type { RenderComponentProfile } from '@/lib/runtime-types';
 
 const CAUSE_COLORS: Record<string, string> = {
   props: 'var(--color-blue)', state: 'var(--color-green)', context: 'var(--color-purple)', parent: 'var(--color-amber)', unknown: 'var(--color-text-muted)',
@@ -16,12 +15,10 @@ export function RendersPage() {
   const [search, setSearch] = useState('');
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const connected = useConnected();
-  const source = useDataStore((s) => s.source);
   const liveRenders = useDataStore((s) => s.renders);
 
-  // In live mode, flatten profiles from all render events; in mock mode use static data
   const profiles = useMemo(() => {
-    if (source !== 'live' || liveRenders.length === 0) return MOCK_RENDER_PROFILES;
+    if (liveRenders.length === 0) return [];
     const map = new Map<string, RenderComponentProfile>();
     for (const event of liveRenders) {
       for (const p of event.profiles) {
@@ -32,12 +29,12 @@ export function RendersPage() {
       }
     }
     return Array.from(map.values());
-  }, [source, liveRenders]);
+  }, [liveRenders]);
 
   const timeline = useMemo(() => {
-    if (source !== 'live' || liveRenders.length === 0) return MOCK_RENDER_TIMELINE;
+    if (liveRenders.length === 0) return [];
     return liveRenders.map((e) => e.totalRenders);
-  }, [source, liveRenders]);
+  }, [liveRenders]);
 
   const filtered = useMemo(() => {
     if (!search) return profiles;
@@ -48,11 +45,11 @@ export function RendersPage() {
   const selected = detailIndex !== null ? filtered[detailIndex] : null;
 
   return (
-    <div className="flex-1 flex flex-col overflow-hidden">
+    <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar title="Renders" connected={connected} />
 
-      <div className="flex-1 flex overflow-hidden">
-        <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex min-h-0 overflow-hidden">
+        <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Timeline sparkline */}
           <div className="px-5 py-3 border-b border-border-default">
             <div className="flex items-center justify-between mb-2">

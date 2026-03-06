@@ -7,9 +7,9 @@ import { interceptPerformance } from './interceptors/performance.js';
 import { interceptReactRenders } from './interceptors/react-renders.js';
 import { interceptErrors } from './interceptors/errors.js';
 import { generateId, generateSessionId } from './utils/id.js';
-import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent } from './types.js';
+import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent } from './types.js';
 
-const SDK_VERSION = '0.6.2';
+const SDK_VERSION = '0.7.0';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
@@ -191,6 +191,27 @@ export class RuntimeScope {
     return this.connect(config);
   }
 
+  /**
+   * Track a custom business/product event.
+   * Use this to mark meaningful moments in your app (e.g. user actions, conversions).
+   * These events are correlated with all other telemetry (network, console, state)
+   * to build causal chains and detect failures.
+   */
+  static track(name: string, properties?: Record<string, unknown>): void {
+    if (!this.transport || !this._sessionId) return;
+
+    const event: CustomEvent = {
+      eventId: generateId(),
+      sessionId: this._sessionId,
+      timestamp: Date.now(),
+      eventType: 'custom',
+      name,
+      properties,
+    };
+
+    this.transport.send(event);
+  }
+
   static disconnect(): void {
     for (const fn of this.restoreFns) fn();
     this.restoreFns = [];
@@ -211,5 +232,6 @@ export type {
   RenderEvent,
   DomSnapshotEvent,
   PerformanceEvent,
+  CustomEvent,
   RuntimeEvent,
 } from './types.js';

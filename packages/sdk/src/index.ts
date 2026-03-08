@@ -10,7 +10,7 @@ import { interceptNavigation } from './interceptors/navigation.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent } from './types.js';
 
-const SDK_VERSION = '0.7.0';
+const SDK_VERSION = '0.7.1';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.

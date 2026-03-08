@@ -3,7 +3,7 @@ import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useDataStore } from '@/stores/use-data-store';
 import { useDevServerStore } from '@/stores/use-dev-server-store';
-import { findRuntimeProject } from '@/lib/api';
+import { findRuntimeProject, findRuntimeProjects } from '@/lib/api';
 import { Tabs } from '@/components/ui/tabs';
 import { Badge, Button } from '@/components/ui';
 import { StatusDot } from '@/components/ui/status-dot';
@@ -16,11 +16,12 @@ import { MemoryPage } from '@/pages/pm/memory-page';
 import { RulesPage } from '@/pages/pm/rules-page';
 import { CapexPage } from '@/pages/pm/capex-page';
 import { GitPage } from '@/pages/pm/git-page';
-import { Tag, ChevronDown, Play, Square, Loader2, ExternalLink } from 'lucide-react';
+import { Tag, ChevronDown, Play, Square, Loader2, ExternalLink, Link2, Plus, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { startDevServer, stopDevServer, fetchProjectScripts } from '@/lib/pm-api';
 import { boostProjectPoll } from '@/App';
 import type { ProjectTab, PmProject } from '@/lib/pm-types';
+import type { ProjectInfo } from '@/lib/api';
 
 const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
@@ -142,6 +143,7 @@ function DevServerControl({ project }: { project: PmProject }) {
   // Check if live via SDK
   const rp = findRuntimeProject(runtimeProjects, {
     runtimescopeProject: project.runtimescopeProject,
+    runtimeApps: project.runtimeApps,
     name: project.name,
   });
   const isLive = !!rp?.isConnected;
@@ -255,6 +257,179 @@ function DevServerControl({ project }: { project: PmProject }) {
   );
 }
 
+// ---------------------------------------------------------------------------
+// Runtime Apps Badge (grouped SDK instances)
+// ---------------------------------------------------------------------------
+
+function RuntimeAppsBadge({ project }: { project: PmProject }) {
+  const [open, setOpen] = useState(false);
+  const [newApp, setNewApp] = useState('');
+  const runtimeProjects = useAppStore((s) => s.projects);
+  const ref = useRef<HTMLDivElement>(null);
+  const apps = project.runtimeApps ?? (project.runtimescopeProject ? [project.runtimescopeProject] : []);
+  const matchedRps = findRuntimeProjects(runtimeProjects, {
+    runtimescopeProject: project.runtimescopeProject,
+    runtimeApps: project.runtimeApps,
+    name: project.name,
+  });
+
+  useEffect(() => {
+    function handleClick(e: MouseEvent) {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    }
+    if (open) document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [open]);
+
+  const handleAdd = () => {
+    const trimmed = newApp.trim();
+    if (!trimmed || apps.includes(trimmed)) return;
+    const updated = [...apps, trimmed];
+    usePmStore.getState().updateProject(project.id, { runtimeApps: updated });
+    setNewApp('');
+  };
+
+  const handleRemove = (app: string) => {
+    const updated = apps.filter((a) => a !== app);
+    usePmStore.getState().updateProject(project.id, { runtimeApps: updated.length ? updated : undefined });
+  };
+
+  const connectedApps = matchedRps.filter((r) => r.isConnected);
+
+  // Available runtime projects not yet added
+  const unlinkedRps = runtimeProjects.filter(
+    (r) => !apps.some((a) => a.toLowerCase() === r.appName.toLowerCase()),
+  );
+
+  // PM projects with sdkInstalled or runtimescopeProject that aren't already linked
+  const pmProjects = usePmStore.getState().projects;
+  const pmSuggestions = pmProjects
+    .filter((p) => p.id !== project.id && (p.sdkInstalled || p.runtimescopeProject))
+    .map((p) => p.runtimescopeProject ?? p.name)
+    .filter((name) =>
+      !apps.some((a) => a.toLowerCase() === name.toLowerCase()) &&
+      !unlinkedRps.some((r) => r.appName.toLowerCase() === name.toLowerCase()),
+    );
+
+  if (apps.length === 0 && !open) {
+    return (
+      <button
+        type="button"
+        onClick={() => setOpen(true)}
+        className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium bg-bg-surface text-text-muted hover:bg-bg-hover transition-colors cursor-pointer"
+      >
+        <Link2 size={10} />
+        Link Apps
+      </button>
+    );
+  }
+
+  return (
+    <div ref={ref} className="relative inline-block">
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className={cn(
+          'inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer',
+          connectedApps.length > 0
+            ? 'bg-green-500/15 text-green-400 hover:bg-green-500/25'
+            : 'bg-bg-surface text-text-muted hover:bg-bg-hover'
+        )}
+      >
+        <Link2 size={10} />
+        {apps.length} app{apps.length !== 1 ? 's' : ''}
+        {connectedApps.length > 0 && ` (${connectedApps.length} live)`}
+        <ChevronDown size={10} />
+      </button>
+
+      {open && (
+        <div className="absolute left-0 top-full mt-1 z-50 w-64 rounded-lg border border-border-default bg-bg-elevated shadow-lg overflow-hidden">
+          <div className="py-1">
+            {apps.map((app) => {
+              const rp = matchedRps.find((r) => r.appName.toLowerCase() === app.toLowerCase());
+              return (
+                <div key={app} className="flex items-center gap-2 px-3 py-1.5">
+                  <StatusDot
+                    color={rp?.isConnected ? 'green' : 'gray'}
+                    size="sm"
+                    pulse={rp?.isConnected}
+                  />
+                  <span className="text-xs text-text-primary flex-1 truncate font-mono">{app}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleRemove(app)}
+                    className="p-0.5 rounded text-text-muted hover:text-red hover:bg-red-muted transition-colors cursor-pointer"
+                  >
+                    <X size={10} />
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Quick-add from discovered runtime projects + PM projects */}
+          {(unlinkedRps.length > 0 || pmSuggestions.length > 0) && (
+            <div className="border-t border-border-muted py-1">
+              <p className="px-3 py-1 text-[10px] text-text-muted uppercase tracking-wider">Available</p>
+              {unlinkedRps.map((rp) => (
+                <button
+                  key={rp.appName}
+                  type="button"
+                  onClick={() => {
+                    const updated = [...apps, rp.appName];
+                    usePmStore.getState().updateProject(project.id, { runtimeApps: updated });
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-text-secondary hover:bg-bg-hover cursor-pointer"
+                >
+                  <Plus size={10} className="text-text-tertiary" />
+                  <span className="font-mono truncate">{rp.appName}</span>
+                  {rp.isConnected && <StatusDot color="green" size="sm" pulse />}
+                </button>
+              ))}
+              {pmSuggestions.map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  onClick={() => {
+                    const updated = [...apps, name];
+                    usePmStore.getState().updateProject(project.id, { runtimeApps: updated });
+                  }}
+                  className="w-full flex items-center gap-2 px-3 py-1.5 text-xs text-text-muted hover:bg-bg-hover cursor-pointer"
+                >
+                  <Plus size={10} className="text-text-tertiary" />
+                  <span className="font-mono truncate">{name}</span>
+                  <span className="text-[10px] text-text-tertiary">SDK</span>
+                </button>
+              ))}
+            </div>
+          )}
+
+          {/* Manual entry */}
+          <div className="border-t border-border-muted px-3 py-2 flex gap-1.5">
+            <input
+              type="text"
+              value={newApp}
+              onChange={(e) => setNewApp(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && handleAdd()}
+              placeholder="Add app name..."
+              className="flex-1 bg-transparent text-xs text-text-primary placeholder:text-text-muted outline-none font-mono"
+            />
+            {newApp.trim() && (
+              <button
+                type="button"
+                onClick={handleAdd}
+                className="text-xs text-brand font-medium cursor-pointer"
+              >
+                Add
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function ProjectView() {
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
   const activeProjectTab = useAppStore((s) => s.activeProjectTab);
@@ -272,6 +447,7 @@ export function ProjectView() {
         <div className="flex items-center gap-2">
           <h1 className="text-lg font-semibold text-text-primary">{project.name}</h1>
           <HeaderCategoryBadge projectId={project.id} category={project.category} />
+          <RuntimeAppsBadge project={project} />
           <DevServerControl project={project} />
         </div>
         {project.path && (

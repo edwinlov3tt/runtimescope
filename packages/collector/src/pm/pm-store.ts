@@ -159,6 +159,8 @@ export class PmStore {
     // Add category and sdk_installed columns (added in v2)
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN category TEXT DEFAULT NULL'); } catch { /* already exists */ }
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN sdk_installed INTEGER DEFAULT 0'); } catch { /* already exists */ }
+    // Add runtime_apps column (added in v3) — JSON array of associated SDK appNames
+    try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN runtime_apps TEXT DEFAULT NULL'); } catch { /* already exists */ }
   }
 
   // ============================================================
@@ -169,15 +171,16 @@ export class PmStore {
     this.db.prepare(`
       INSERT INTO pm_projects (id, name, path, claude_project_key, runtimescope_project,
         phase, management_authorized, probable_to_complete, project_status,
-        category, sdk_installed,
+        category, sdk_installed, runtime_apps,
         created_at, updated_at, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
         name = excluded.name,
         path = COALESCE(excluded.path, pm_projects.path),
         claude_project_key = COALESCE(excluded.claude_project_key, pm_projects.claude_project_key),
         runtimescope_project = COALESCE(excluded.runtimescope_project, pm_projects.runtimescope_project),
         sdk_installed = CASE WHEN excluded.sdk_installed = 1 THEN 1 ELSE pm_projects.sdk_installed END,
+        runtime_apps = COALESCE(excluded.runtime_apps, pm_projects.runtime_apps),
         updated_at = excluded.updated_at,
         metadata = COALESCE(excluded.metadata, pm_projects.metadata)
     `).run(
@@ -192,6 +195,7 @@ export class PmStore {
       project.projectStatus,
       project.category ?? null,
       project.sdkInstalled ? 1 : 0,
+      project.runtimeApps?.length ? JSON.stringify(project.runtimeApps) : null,
       project.createdAt,
       project.updatedAt,
       project.metadata ? JSON.stringify(project.metadata) : null,
@@ -223,6 +227,8 @@ export class PmStore {
     if (updates.projectStatus !== undefined) { sets.push('project_status = ?'); params.push(updates.projectStatus); }
     if (updates.category !== undefined) { sets.push('category = ?'); params.push(updates.category); }
     if (updates.sdkInstalled !== undefined) { sets.push('sdk_installed = ?'); params.push(updates.sdkInstalled ? 1 : 0); }
+    if (updates.runtimeApps !== undefined) { sets.push('runtime_apps = ?'); params.push(updates.runtimeApps.length ? JSON.stringify(updates.runtimeApps) : null); }
+    if (updates.runtimescopeProject !== undefined) { sets.push('runtimescope_project = ?'); params.push(updates.runtimescopeProject ?? null); }
     if (updates.metadata !== undefined) { sets.push('metadata = ?'); params.push(JSON.stringify(updates.metadata)); }
 
     if (sets.length === 0) return;
@@ -248,6 +254,7 @@ export class PmStore {
       path: row.path ?? undefined,
       claudeProjectKey: row.claude_project_key ?? undefined,
       runtimescopeProject: row.runtimescope_project ?? undefined,
+      runtimeApps: row.runtime_apps ? JSON.parse(row.runtime_apps) : undefined,
       phase: row.phase as ProjectPhase,
       managementAuthorized: row.management_authorized === 1,
       probableToComplete: row.probable_to_complete === 1,
@@ -929,6 +936,7 @@ interface PmProjectRow {
   project_status: string;
   category: string | null;
   sdk_installed: number;
+  runtime_apps: string | null;
   created_at: number;
   updated_at: number;
   metadata: string | null;

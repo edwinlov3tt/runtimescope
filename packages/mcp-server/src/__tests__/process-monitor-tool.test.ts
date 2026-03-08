@@ -96,7 +96,7 @@ describe('process monitor MCP tools', () => {
     it('returns success message on kill', async () => {
       const { server, callTool: ct } = createMcpStub();
       registerProcessMonitorTools(server, stubProcessMonitor({ killResult: { success: true } }));
-      const result = await ct('kill_process', { pid: 12345 });
+      const result: any = await ct('kill_process', { pid: 12345 });
       expect(result.summary).toContain('terminated');
       expect(result.summary).toContain('12345');
       expect(result.data.success).toBe(true);
@@ -105,7 +105,7 @@ describe('process monitor MCP tools', () => {
     it('returns error on failed kill', async () => {
       const { server, callTool: ct } = createMcpStub();
       registerProcessMonitorTools(server, stubProcessMonitor({ killResult: { success: false, error: 'EPERM' } }));
-      const result = await ct('kill_process', { pid: 99999 });
+      const result: any = await ct('kill_process', { pid: 99999 });
       expect(result.summary).toContain('Failed');
       expect(result.issues).toContain('EPERM');
     });
@@ -123,7 +123,7 @@ describe('process monitor MCP tools', () => {
     it('returns response envelope', async () => {
       const { server, callTool: ct } = createMcpStub();
       registerProcessMonitorTools(server, stubProcessMonitor());
-      const result = await ct('get_port_usage', {});
+      const result: any = await ct('get_port_usage', {});
       expect(result).toHaveProperty('summary');
       expect(result).toHaveProperty('data');
     });
@@ -136,7 +136,7 @@ describe('process monitor MCP tools', () => {
           { port: 5432, pid: 456, process: 'postgres', type: 'postgres', project: null },
         ],
       }));
-      const result = await ct('get_port_usage', {});
+      const result: any = await ct('get_port_usage', {});
       expect(result.data).toHaveLength(2);
       expect(result.data[0].port).toBe(3000);
       expect(result.data[0].process).toBe('next-server');
@@ -148,7 +148,7 @@ describe('process monitor MCP tools', () => {
       registerProcessMonitorTools(server, stubProcessMonitor({
         portUsage: [{ port: 3000, pid: 1, process: 'node', type: 'node', project: null }],
       }));
-      const result = await ct('get_port_usage', {});
+      const result: any = await ct('get_port_usage', {});
       expect(result.summary).toContain('1 port binding');
     });
   });

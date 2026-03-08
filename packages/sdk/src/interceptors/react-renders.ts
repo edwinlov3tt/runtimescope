@@ -147,7 +147,7 @@ function processNode(fiber: Fiber, trackers: Map<string, ComponentTracker>): voi
   tracker.totalDuration += duration;
   tracker.lastRenderTime = now;
   tracker.lastRenderPhase = isMount ? 'mount' : 'update';
-  tracker.lastRenderCause = cause;
+  tracker.lastRenderCause = cause ?? 'unknown';
   tracker.renderTimestamps.push(now);
 
   // Trim old timestamps

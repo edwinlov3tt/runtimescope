@@ -9,7 +9,7 @@ function makeConsoleEvent(overrides: Record<string, unknown> = {}) {
     sessionId: 'session-1',
     timestamp: Date.now(),
     eventType: 'console' as const,
-    level: 'log',
+    level: 'log' as const,
     message: 'test message',
     args: [],
     ...overrides,

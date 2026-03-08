@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { CollectorServer, ProjectManager } from '@runtimescope/collector';
+import type { CollectorServer, ProjectManager, EventType } from '@runtimescope/collector';
 
 const EVENT_TYPES = [
   'network', 'console', 'session', 'state', 'render',
@@ -102,7 +102,7 @@ export function registerHistoryTools(
       const events = sqliteStore.getEvents({
         project,
         sessionId: session_id,
-        eventTypes: event_types as string[] | undefined,
+        eventTypes: event_types as EventType[] | undefined,
         since: sinceMs,
         until: untilMs,
         limit: cappedLimit,
@@ -112,7 +112,7 @@ export function registerHistoryTools(
       const totalCount = sqliteStore.getEventCount({
         project,
         sessionId: session_id,
-        eventTypes: event_types as string[] | undefined,
+        eventTypes: event_types as EventType[] | undefined,
         since: sinceMs,
         until: untilMs,
       });

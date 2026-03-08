@@ -2,7 +2,7 @@ import { useState, memo } from 'react';
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
-import { findRuntimeProject } from '@/lib/api';
+import { findRuntimeProjects } from '@/lib/api';
 import { StatusDot } from '@/components/ui/status-dot';
 import {
   Home,
@@ -91,12 +91,15 @@ export const Sidebar = memo(function Sidebar() {
           <div className="space-y-0.5">
             {filteredProjects.map((project) => {
               const isActive = activeView === 'project' && selectedPmProject === project.id;
-              const rp = findRuntimeProject(runtimeProjects, {
+              const rps = findRuntimeProjects(runtimeProjects, {
                 runtimescopeProject: project.runtimescopeProject,
+                runtimeApps: project.runtimeApps,
                 name: project.name,
               });
-              const isLive = rp?.isConnected;
-              const isInstalled = !isLive && (project.sdkInstalled || !!rp);
+              const isLive = rps.some((r) => r.isConnected);
+              const connectedCount = rps.filter((r) => r.isConnected).length;
+              const isInstalled = !isLive && (project.sdkInstalled || rps.length > 0);
+              const isGrouped = (project.runtimeApps?.length ?? 0) > 1;
               return (
                 <button
                   key={project.id}
@@ -114,7 +117,16 @@ export const Sidebar = memo(function Sidebar() {
                     className={cn(isActive ? 'text-brand' : 'text-text-tertiary')}
                   />
                   <span className="truncate flex-1 text-left">{project.name}</span>
-                  {isLive && <StatusDot color="green" size="sm" pulse />}
+                  {isLive && (
+                    <>
+                      <StatusDot color="green" size="sm" pulse />
+                      {isGrouped && (
+                        <span className="text-[10px] text-green font-medium">
+                          {connectedCount}/{rps.length}
+                        </span>
+                      )}
+                    </>
+                  )}
                   {isInstalled && <StatusDot color="blue" size="sm" />}
                   {isActive && (
                     <div className="ml-auto w-1 h-4 rounded-full bg-brand" />

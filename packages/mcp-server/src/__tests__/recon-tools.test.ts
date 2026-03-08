@@ -511,7 +511,7 @@ describe('get_computed_styles tool', () => {
     store = new EventStore(100);
     const { server, callTool: ct } = createMcpStub();
     callTool = ct;
-    registerReconComputedStyleTools(server, store, collectorStub);
+    registerReconComputedStyleTools(server, store, collectorStub, null as any);
   });
 
   it('returns computed styles for a selector', async () => {
@@ -541,7 +541,7 @@ describe('get_element_snapshot tool', () => {
     store = new EventStore(100);
     const { server, callTool: ct } = createMcpStub();
     callTool = ct;
-    registerReconElementSnapshotTools(server, store, collectorStub);
+    registerReconElementSnapshotTools(server, store, collectorStub, null as any);
   });
 
   it('returns element snapshot with children', async () => {

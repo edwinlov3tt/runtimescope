@@ -7,6 +7,7 @@ export { ProjectManager } from './project-manager.js';
 export type { GlobalConfig, ProjectConfig, InfrastructureConfig } from './project-manager.js';
 export { SqliteStore } from './sqlite-store.js';
 export type { SqliteStoreOptions } from './sqlite-store.js';
+export { isSqliteAvailable } from './sqlite-check.js';
 export { AuthManager, generateApiKey } from './auth.js';
 export type { ApiKeyEntry, AuthConfig } from './auth.js';
 export { SessionRateLimiter } from './rate-limiter.js';

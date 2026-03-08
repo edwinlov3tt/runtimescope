@@ -33,12 +33,13 @@ function useSdkState(project: PmProject): SdkState {
   return useMemo(() => {
     const rp = findRuntimeProject(runtimeProjects, {
       runtimescopeProject: project.runtimescopeProject,
+      runtimeApps: project.runtimeApps,
       name: project.name,
     });
     if (rp?.isConnected) return 'live';
     if (project.sdkInstalled || rp) return 'installed';
     return 'not-installed';
-  }, [project.runtimescopeProject, project.name, project.sdkInstalled, runtimeProjects]);
+  }, [project.runtimescopeProject, project.runtimeApps, project.name, project.sdkInstalled, runtimeProjects]);
 }
 
 const RUNTIME_TABS = [

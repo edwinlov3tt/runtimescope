@@ -31,7 +31,7 @@ export function registerIssueTools(
       // Merge engine-contributed issues
       if (apiDiscovery) {
         try {
-          allIssues.push(...apiDiscovery.detectIssues(events));
+          allIssues.push(...apiDiscovery.detectIssues());
         } catch { /* engine may not have data yet */ }
       }
       if (processMonitor) {

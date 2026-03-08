@@ -47,6 +47,7 @@ export class HttpServer {
   private sdkBundlePath: string | null = null;
   private activePort = 9091;
   private startedAt = Date.now();
+  private connectedSessionsGetter: (() => { sessionId: string; projectName: string }[]) | null = null;
 
   constructor(
     store: EventStore,
@@ -57,6 +58,7 @@ export class HttpServer {
       rateLimiter?: SessionRateLimiter;
       pmStore?: PmStore;
       discovery?: ProjectDiscovery;
+      getConnectedSessions?: () => { sessionId: string; projectName: string }[];
     }
   ) {
     this.store = store;
@@ -64,6 +66,7 @@ export class HttpServer {
     this.authManager = options?.authManager ?? null;
     this.allowedOrigins = options?.allowedOrigins ?? null;
     this.rateLimiter = options?.rateLimiter ?? null;
+    this.connectedSessionsGetter = options?.getConnectedSessions ?? null;
     this.registerRoutes();
 
     // Register PM routes if PM store is available
@@ -93,7 +96,7 @@ export class HttpServer {
       this.json(res, { data: sessions, count: sessions.length });
     });
 
-    // Projects (sessions grouped by appName)
+    // Projects (sessions grouped by appName, merged with live WS clients)
     this.routes.set('GET /api/projects', (_req, res) => {
       const sessions = this.store.getSessionInfo();
       const projectMap = new Map<string, { appName: string; sessions: string[]; isConnected: boolean; eventCount: number }>();
@@ -111,6 +114,26 @@ export class HttpServer {
             isConnected: s.isConnected,
             eventCount: s.eventCount,
           });
+        }
+      }
+
+      // Merge live WebSocket clients (safety net — ensures connected SDKs always appear)
+      if (this.connectedSessionsGetter) {
+        for (const cs of this.connectedSessionsGetter()) {
+          const existing = projectMap.get(cs.projectName);
+          if (existing) {
+            if (!existing.sessions.includes(cs.sessionId)) {
+              existing.sessions.push(cs.sessionId);
+            }
+            existing.isConnected = true;
+          } else {
+            projectMap.set(cs.projectName, {
+              appName: cs.projectName,
+              sessions: [cs.sessionId],
+              isConnected: true,
+              eventCount: 0,
+            });
+          }
         }
       }
 

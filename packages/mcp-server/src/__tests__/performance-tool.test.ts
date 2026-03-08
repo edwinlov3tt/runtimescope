@@ -9,9 +9,9 @@ function makePerformanceEvent(overrides: Record<string, unknown> = {}) {
     sessionId: 'session-1',
     timestamp: Date.now(),
     eventType: 'performance' as const,
-    metricName: 'LCP',
+    metricName: 'LCP' as const,
     value: 2500,
-    rating: 'good',
+    rating: 'good' as const,
     ...overrides,
   };
 }

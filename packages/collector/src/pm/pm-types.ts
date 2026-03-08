@@ -14,6 +14,7 @@ export interface PmProject {
   path?: string;
   claudeProjectKey?: string;
   runtimescopeProject?: string;
+  runtimeApps?: string[];
   phase: ProjectPhase;
   managementAuthorized: boolean;
   probableToComplete: boolean;

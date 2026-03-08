@@ -107,21 +107,21 @@ describe('scan_website tool', () => {
   });
 
   it('returns summary with tech stack info', async () => {
-    const result = await callTool('scan_website', { url: 'https://example.com' });
+    const result: any = await callTool('scan_website', { url: 'https://example.com' });
     expect(result.summary).toContain('Scanned');
     expect(result.data.techStack).toHaveLength(2);
     expect(result.data.techStack[0].name).toBe('React');
   });
 
   it('returns available tool hints', async () => {
-    const result = await callTool('scan_website', { url: 'https://example.com' });
+    const result: any = await callTool('scan_website', { url: 'https://example.com' });
     expect(result.data.availableTools).toBeDefined();
     expect(result.data.availableTools.length).toBeGreaterThan(0);
     expect(result.data.availableTools.some((t: string) => t.includes('get_design_tokens'))).toBe(true);
   });
 
   it('returns metadata with scan duration', async () => {
-    const result = await callTool('scan_website', { url: 'https://example.com' });
+    const result: any = await callTool('scan_website', { url: 'https://example.com' });
     expect(result.metadata.scanDurationMs).toBe(3500);
     expect(result.metadata.eventCount).toBe(6);
   });
@@ -136,7 +136,7 @@ describe('scan_website tool', () => {
     registerScannerTools(server, store, failScanner);
 
     // callTool already parses the JSON response
-    const result = await ct('scan_website', { url: 'https://nonexistent.example' });
+    const result: any = await ct('scan_website', { url: 'https://nonexistent.example' });
     expect(result.summary).toContain('Scan failed');
     expect(result.summary).toContain('net::ERR_');
     expect(result.summary).toContain('unreachable');
@@ -151,7 +151,7 @@ describe('scan_website tool', () => {
     const { server, callTool: ct } = createMcpStub();
     registerScannerTools(server, store, failScanner);
 
-    const result = await ct('scan_website', { url: 'https://example.com' });
+    const result: any = await ct('scan_website', { url: 'https://example.com' });
     expect(result.summary).toContain('npx playwright install chromium');
   });
 
@@ -164,7 +164,7 @@ describe('scan_website tool', () => {
     const { server, callTool: ct } = createMcpStub();
     registerScannerTools(server, store, failScanner);
 
-    const result = await ct('scan_website', { url: 'https://example.com' });
+    const result: any = await ct('scan_website', { url: 'https://example.com' });
     expect(result.summary).toContain('wait_for');
   });
 
@@ -175,7 +175,7 @@ describe('scan_website tool', () => {
     const { server, callTool: ct } = createMcpStub();
     registerScannerTools(server, store, emptyScanner);
 
-    const result = await ct('scan_website', { url: 'https://example.com' });
+    const result: any = await ct('scan_website', { url: 'https://example.com' });
     expect(result.issues).toHaveLength(1);
     expect(result.issues[0]).toContain('No technologies detected');
   });
@@ -195,7 +195,7 @@ describe('scan_website tool', () => {
     const { server, callTool: ct } = createMcpStub();
     registerScannerTools(server, store, manyScanner);
 
-    const result = await ct('scan_website', { url: 'https://example.com' });
+    const result: any = await ct('scan_website', { url: 'https://example.com' });
     expect(result.data.techStack.length).toBeLessThanOrEqual(15);
     expect(result.data.totalTechnologiesDetected).toBe(25);
   });

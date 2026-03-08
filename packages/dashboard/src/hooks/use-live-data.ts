@@ -80,9 +80,7 @@ function makeFetchers(): Record<string, Fetcher> {
       if (data) useDataStore.getState().setNetwork(data);
     },
     sessions: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchNetworkEvents({ session_id: sid });
-      if (data) useDataStore.getState().setNetwork(data);
+      // Sessions page manages its own polling — no-op here
     },
   };
 }

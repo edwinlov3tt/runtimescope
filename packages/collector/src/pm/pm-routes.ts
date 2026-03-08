@@ -326,7 +326,7 @@ export function createPmRouter(
     const session = pmStore.getSession(id);
     if (!session) { helpers.json(res, { error: 'Session not found' }, 404); return; }
     try {
-      await discovery.indexSession(id, session.projectId, session.jsonlPath);
+      await discovery.indexProjectSessions(session.projectId);
       const updated = pmStore.getSession(id);
       helpers.json(res, updated);
     } catch (err) {

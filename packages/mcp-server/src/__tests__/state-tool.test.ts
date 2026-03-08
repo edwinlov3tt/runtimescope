@@ -10,8 +10,8 @@ function makeStateEvent(overrides: Record<string, unknown> = {}) {
     timestamp: Date.now(),
     eventType: 'state' as const,
     storeId: 'main-store',
-    library: 'zustand',
-    phase: 'update',
+    library: 'zustand' as const,
+    phase: 'update' as const,
     state: { count: 1 },
     ...overrides,
   };

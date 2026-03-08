@@ -97,14 +97,14 @@ export function buildReconEvents(
   events.push(metadataEvent);
 
   // 2. ReconDesignTokensEvent
-  const designTokensEvent: ReconDesignTokensEvent = {
+  const designTokensEvent = {
     eventId: makeEventId(),
     sessionId,
     timestamp,
-    eventType: 'recon_design_tokens',
+    eventType: 'recon_design_tokens' as const,
     url,
     ...tokens,
-  };
+  } as ReconDesignTokensEvent;
   events.push(designTokensEvent);
 
   // 3. ReconLayoutTreeEvent
@@ -134,14 +134,14 @@ export function buildReconEvents(
   events.push(a11yEvent);
 
   // 5. ReconFontsEvent
-  const fontsEvent: ReconFontsEvent = {
+  const fontsEvent = {
     eventId: makeEventId(),
     sessionId,
     timestamp,
-    eventType: 'recon_fonts',
+    eventType: 'recon_fonts' as const,
     url,
     ...fonts,
-  };
+  } as unknown as ReconFontsEvent;
   events.push(fontsEvent);
 
   // 6. ReconAssetInventoryEvent

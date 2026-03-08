@@ -55,34 +55,46 @@ export async function checkHealth(): Promise<boolean> {
 }
 
 /**
- * Find the runtime project matching a PM project.
- * Strategy: exact match on runtimescopeProject → case-insensitive → PM project name fallback.
+ * Find all runtime projects matching a PM project.
+ * When runtimeApps is set (grouped project), returns all matching apps.
+ * Otherwise falls back to legacy single-match strategy.
  */
-export function findRuntimeProject(
+export function findRuntimeProjects(
   runtimeProjects: ProjectInfo[],
-  opts: { runtimescopeProject?: string; name?: string },
-): ProjectInfo | undefined {
-  if (!runtimeProjects.length) return undefined;
+  opts: { runtimescopeProject?: string; runtimeApps?: string[]; name?: string },
+): ProjectInfo[] {
+  if (!runtimeProjects.length) return [];
 
-  // 1. Exact match on configured runtimescopeProject
-  if (opts.runtimescopeProject) {
-    const exact = runtimeProjects.find((r) => r.appName === opts.runtimescopeProject);
-    if (exact) return exact;
-
-    // 2. Case-insensitive match
-    const lower = opts.runtimescopeProject.toLowerCase();
-    const ci = runtimeProjects.find((r) => r.appName.toLowerCase() === lower);
-    if (ci) return ci;
+  // Grouped project: match all listed app names
+  if (opts.runtimeApps?.length) {
+    const appSet = new Set(opts.runtimeApps.map((a) => a.toLowerCase()));
+    return runtimeProjects.filter((r) => appSet.has(r.appName.toLowerCase()));
   }
 
-  // 3. Match by PM project name (handles when runtimescopeProject isn't set or was renamed)
+  // Legacy single-match: exact → case-insensitive → name fallback
+  if (opts.runtimescopeProject) {
+    const exact = runtimeProjects.find((r) => r.appName === opts.runtimescopeProject);
+    if (exact) return [exact];
+    const lower = opts.runtimescopeProject.toLowerCase();
+    const ci = runtimeProjects.find((r) => r.appName.toLowerCase() === lower);
+    if (ci) return [ci];
+  }
+
   if (opts.name) {
     const nameLower = opts.name.toLowerCase();
     const byName = runtimeProjects.find((r) => r.appName.toLowerCase() === nameLower);
-    if (byName) return byName;
+    if (byName) return [byName];
   }
 
-  return undefined;
+  return [];
+}
+
+/** Find the first runtime project matching a PM project (backward-compatible). */
+export function findRuntimeProject(
+  runtimeProjects: ProjectInfo[],
+  opts: { runtimescopeProject?: string; runtimeApps?: string[]; name?: string },
+): ProjectInfo | undefined {
+  return findRuntimeProjects(runtimeProjects, opts)[0];
 }
 
 // --- Event endpoints (all support session_id filtering) ---

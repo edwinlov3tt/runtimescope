@@ -20,6 +20,7 @@ import { PmStore } from './pm/pm-store.js';
 import { ProjectDiscovery } from './pm/project-discovery.js';
 import { SessionManager } from './session-manager.js';
 import { SqliteStore } from './sqlite-store.js';
+import { isSqliteAvailable } from './sqlite-check.js';
 import { AuthManager } from './auth.js';
 import { Redactor } from './redactor.js';
 import { resolveTlsConfig } from './tls.js';
@@ -100,35 +101,42 @@ async function main() {
     }
   });
 
-  // 5. Retention pruning
-  const cutoffMs = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
-  for (const projectName of projectManager.listProjects()) {
-    const dbPath = projectManager.getProjectDbPath(projectName);
-    if (existsSync(dbPath)) {
-      try {
-        const tempStore = new SqliteStore({ dbPath });
-        const deleted = tempStore.deleteOldEvents(cutoffMs);
-        if (deleted > 0) {
-          console.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
+  // 5. Retention pruning (only if SQLite is available)
+  if (isSqliteAvailable()) {
+    const cutoffMs = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
+    for (const projectName of projectManager.listProjects()) {
+      const dbPath = projectManager.getProjectDbPath(projectName);
+      if (existsSync(dbPath)) {
+        try {
+          const tempStore = new SqliteStore({ dbPath });
+          const deleted = tempStore.deleteOldEvents(cutoffMs);
+          if (deleted > 0) {
+            console.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
+          }
+          tempStore.close();
+        } catch {
+          // Non-fatal
         }
-        tempStore.close();
-      } catch {
-        // Non-fatal
       }
     }
   }
 
-  // 6. Project Management layer
-  const pmDbPath = join(projectManager.rootDir, 'pm.db');
-  const pmStore = new PmStore({ dbPath: pmDbPath });
-  const discovery = new ProjectDiscovery(pmStore, projectManager);
+  // 6. Project Management layer (requires SQLite)
+  let pmStore: PmStore | undefined;
+  let discovery: ProjectDiscovery | undefined;
 
-  // Run discovery in background (non-blocking)
-  discovery.discoverAll().then((result) => {
-    console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
-  }).catch((err) => {
-    console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
-  });
+  if (isSqliteAvailable()) {
+    const pmDbPath = join(projectManager.rootDir, 'pm.db');
+    pmStore = new PmStore({ dbPath: pmDbPath });
+    discovery = new ProjectDiscovery(pmStore, projectManager);
+
+    // Run discovery in background (non-blocking)
+    discovery.discoverAll().then((result) => {
+      console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
+    }).catch((err) => {
+      console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
+    });
+  }
 
   // 7. Start HTTP API server (with POST /api/events + PM routes)
   const httpServer = new HttpServer(store, undefined, {
@@ -137,6 +145,7 @@ async function main() {
     rateLimiter: collector.getRateLimiter(),
     pmStore,
     discovery,
+    getConnectedSessions: () => collector.getConnectedSessions(),
   });
 
   try {
@@ -171,7 +180,7 @@ async function main() {
 
     await httpServer.stop();
     collector.stop();
-    pmStore.close();
+    pmStore?.close();
 
     process.exit(0);
   };

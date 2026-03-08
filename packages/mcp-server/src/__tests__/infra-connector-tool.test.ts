@@ -22,7 +22,7 @@ describe('infrastructure MCP tools', () => {
     it('returns response envelope structure', async () => {
       const { server, callTool } = createMcpStub();
       registerInfraTools(server, stubInfraConnector());
-      const result = await callTool('get_deploy_logs', {});
+      const result: any = await callTool('get_deploy_logs', {});
       expect(result).toHaveProperty('summary');
       expect(result).toHaveProperty('data');
       expect(result).toHaveProperty('issues');
@@ -32,7 +32,7 @@ describe('infrastructure MCP tools', () => {
     it('returns empty data when no deployments', async () => {
       const { server, callTool } = createMcpStub();
       registerInfraTools(server, stubInfraConnector());
-      const result = await callTool('get_deploy_logs', {});
+      const result: any = await callTool('get_deploy_logs', {});
       expect(result.data).toEqual([]);
       expect(result.summary).toContain('0 deployment');
     });
@@ -52,7 +52,7 @@ describe('infrastructure MCP tools', () => {
           errorMessage: null,
         }],
       }));
-      const result = await callTool('get_deploy_logs', {});
+      const result: any = await callTool('get_deploy_logs', {});
       expect(result.data).toHaveLength(1);
       const d = result.data[0];
       expect(d.id).toBe('dpl_abc123def456');
@@ -78,7 +78,7 @@ describe('infrastructure MCP tools', () => {
           errorMessage: 'Build failed',
         }],
       }));
-      const result = await callTool('get_deploy_logs', {});
+      const result: any = await callTool('get_deploy_logs', {});
       expect(result.issues.some((i: string) => i.includes('failed'))).toBe(true);
     });
   });
@@ -87,7 +87,7 @@ describe('infrastructure MCP tools', () => {
     it('returns response envelope', async () => {
       const { server, callTool } = createMcpStub();
       registerInfraTools(server, stubInfraConnector());
-      const result = await callTool('get_runtime_logs', {});
+      const result: any = await callTool('get_runtime_logs', {});
       expect(result).toHaveProperty('summary');
       expect(result).toHaveProperty('data');
     });
@@ -101,7 +101,7 @@ describe('infrastructure MCP tools', () => {
           { timestamp: now - 1000, level: 'info', message: 'Server started', source: null, platform: 'vercel' },
         ],
       }));
-      const result = await callTool('get_runtime_logs', {});
+      const result: any = await callTool('get_runtime_logs', {});
       expect(result.data).toHaveLength(2);
       expect(result.data[0].level).toBe('error');
       expect(result.data[0].message).toBe('Unhandled rejection');
@@ -114,7 +114,7 @@ describe('infrastructure MCP tools', () => {
           { timestamp: Date.now(), level: 'error', message: 'Error!', source: null, platform: 'vercel' },
         ],
       }));
-      const result = await callTool('get_runtime_logs', {});
+      const result: any = await callTool('get_runtime_logs', {});
       expect(result.issues.some((i: string) => i.includes('error'))).toBe(true);
     });
   });
@@ -127,7 +127,7 @@ describe('infrastructure MCP tools', () => {
           { platform: 'vercel', project: 'myapp', status: 'ready', url: 'https://myapp.vercel.app', lastDeployed: Date.now(), latestDeployId: 'dpl_123' },
         ],
       }));
-      const result = await callTool('get_build_status', {});
+      const result: any = await callTool('get_build_status', {});
       expect(result.data).toHaveLength(1);
       expect(result.data[0].platform).toBe('vercel');
       expect(result.data[0].status).toBe('ready');
@@ -140,7 +140,7 @@ describe('infrastructure MCP tools', () => {
           { platform: 'cloudflare', project: 'myapp', status: 'error', url: null, lastDeployed: Date.now(), latestDeployId: 'dpl_456' },
         ],
       }));
-      const result = await callTool('get_build_status', {});
+      const result: any = await callTool('get_build_status', {});
       expect(result.issues.some((i: string) => i.includes('cloudflare'))).toBe(true);
     });
   });
@@ -155,7 +155,7 @@ describe('infrastructure MCP tools', () => {
           detectedFromTraffic: ['Supabase', 'Stripe'],
         }],
       }));
-      const result = await callTool('get_infra_overview', {});
+      const result: any = await callTool('get_infra_overview', {});
       expect(result.data).toHaveLength(1);
       expect(result.summary).toContain('1 configured platform');
       expect(result.summary).toContain('2 detected from traffic');
@@ -164,7 +164,7 @@ describe('infrastructure MCP tools', () => {
     it('handles empty overview', async () => {
       const { server, callTool } = createMcpStub();
       registerInfraTools(server, stubInfraConnector());
-      const result = await callTool('get_infra_overview', {});
+      const result: any = await callTool('get_infra_overview', {});
       expect(result.summary).toContain('No infrastructure information');
     });
   });

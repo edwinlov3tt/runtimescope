@@ -3,6 +3,7 @@ import { WebSocketServer, type WebSocket } from 'ws';
 import { EventStore } from './store.js';
 import { ProjectManager } from './project-manager.js';
 import { SqliteStore } from './sqlite-store.js';
+import { isSqliteAvailable } from './sqlite-check.js';
 import { AuthManager } from './auth.js';
 import { SessionRateLimiter, type RateLimitConfig } from './rate-limiter.js';
 import { loadTlsOptions, type TlsConfig } from './tls.js';
@@ -12,6 +13,7 @@ import type {
   EventBatchPayload,
   CommandResponse,
   SessionInfoExtended,
+  RuntimeEvent,
 } from './types.js';
 
 export interface CollectorServerOptions {
@@ -190,6 +192,7 @@ export class CollectorServer {
 
   private ensureSqliteStore(projectName: string): SqliteStore | null {
     if (!this.projectManager) return null;
+    if (!isSqliteAvailable()) return null;
 
     let sqliteStore = this.sqliteStores.get(projectName);
     if (!sqliteStore) {
@@ -323,6 +326,17 @@ export class CollectorServer {
           };
           sqliteStore.saveSession(sessionInfo);
         }
+
+        // Register session in EventStore so /api/projects can list it
+        this.store.addEvent({
+          eventId: `session-${payload.sessionId}`,
+          sessionId: payload.sessionId,
+          timestamp: msg.timestamp,
+          eventType: 'session',
+          appName: payload.appName,
+          connectedAt: msg.timestamp,
+          sdkVersion: payload.sdkVersion,
+        } as RuntimeEvent);
 
         console.error(
           `[RuntimeScope] Session ${payload.sessionId} connected (${payload.appName} v${payload.sdkVersion})`

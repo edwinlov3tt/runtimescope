@@ -10,7 +10,8 @@ export type EventType =
   | 'dom_snapshot'
   | 'performance'
   | 'database'
-  | 'custom';
+  | 'custom'
+  | 'navigation';
 
 export interface BaseEvent {
   eventId: string;
@@ -141,6 +142,13 @@ export interface PerformanceEvent extends BaseEvent {
   entries?: unknown[];
 }
 
+export interface NavigationEvent extends BaseEvent {
+  eventType: 'navigation';
+  from: string;
+  to: string;
+  trigger: 'pushState' | 'replaceState' | 'popstate' | 'hashchange' | 'initial';
+}
+
 export interface CustomEvent extends BaseEvent {
   eventType: 'custom';
   name: string;
@@ -155,6 +163,7 @@ export type RuntimeEvent =
   | RenderEvent
   | DomSnapshotEvent
   | PerformanceEvent
+  | NavigationEvent
   | CustomEvent;
 
 export interface RuntimeScopeConfig {
@@ -173,6 +182,7 @@ export interface RuntimeScopeConfig {
   maxBodySize?: number;
   capturePerformance?: boolean;
   captureRenders?: boolean;
+  captureNavigation?: boolean;
   stores?: Record<string, unknown>;
   beforeSend?: (event: RuntimeEvent) => RuntimeEvent | null;
   redactHeaders?: string[];

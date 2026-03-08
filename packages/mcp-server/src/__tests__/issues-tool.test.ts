@@ -32,8 +32,8 @@ function makeDatabaseEvent(overrides: Record<string, unknown> = {}) {
     normalizedQuery: 'SELECT * FROM users WHERE id = ?',
     duration: 50,
     tablesAccessed: ['users'],
-    operation: 'SELECT',
-    source: 'prisma',
+    operation: 'SELECT' as const,
+    source: 'prisma' as const,
     ...overrides,
   };
 }

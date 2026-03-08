@@ -15,6 +15,7 @@ export type EventType =
   | 'performance'
   | 'database'
   | 'custom'
+  | 'navigation'
   | 'recon_metadata'
   | 'recon_design_tokens'
   | 'recon_fonts'
@@ -200,6 +201,13 @@ export interface DatabaseEvent extends BaseEvent {
 }
 
 // --- Custom Events (user-defined business/product events) ---
+
+export interface NavigationEvent extends BaseEvent {
+  eventType: 'navigation';
+  from: string;
+  to: string;
+  trigger: 'pushState' | 'replaceState' | 'popstate' | 'hashchange' | 'initial';
+}
 
 export interface CustomEvent extends BaseEvent {
   eventType: 'custom';
@@ -580,6 +588,7 @@ export type RuntimeEvent =
   | DomSnapshotEvent
   | PerformanceEvent
   | DatabaseEvent
+  | NavigationEvent
   | CustomEvent
   | ReconMetadataEvent
   | ReconDesignTokensEvent

@@ -6,6 +6,7 @@ import { interceptStateStores } from './interceptors/state-stores.js';
 import { interceptPerformance } from './interceptors/performance.js';
 import { interceptReactRenders } from './interceptors/react-renders.js';
 import { interceptErrors } from './interceptors/errors.js';
+import { interceptNavigation } from './interceptors/navigation.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent } from './types.js';
 
@@ -38,6 +39,7 @@ export class RuntimeScope {
       maxBodySize: config.maxBodySize ?? 65536,
       capturePerformance: config.capturePerformance ?? true,
       captureRenders: config.captureRenders ?? true,
+      captureNavigation: config.captureNavigation ?? true,
       stores: config.stores ?? {},
       beforeSend: config.beforeSend,
       redactHeaders: config.redactHeaders ?? ['authorization', 'cookie'],
@@ -141,6 +143,13 @@ export class RuntimeScope {
       );
     }
 
+    // Navigation / routing events (pushState, popstate, hashchange)
+    if (resolved.captureNavigation) {
+      this.restoreFns.push(
+        interceptNavigation(emit, this._sessionId)
+      );
+    }
+
     const features = [
       resolved.captureNetwork && 'fetch',
       resolved.captureXhr && 'xhr',
@@ -148,6 +157,7 @@ export class RuntimeScope {
       Object.keys(resolved.stores).length > 0 && 'state',
       resolved.capturePerformance && 'performance',
       resolved.captureRenders && 'renders',
+      resolved.captureNavigation && 'navigation',
     ].filter(Boolean);
     _log(`[RuntimeScope] Interceptors active — ${features.join(', ')}`);
   }
@@ -232,6 +242,7 @@ export type {
   RenderEvent,
   DomSnapshotEvent,
   PerformanceEvent,
+  NavigationEvent,
   CustomEvent,
   RuntimeEvent,
 } from './types.js';

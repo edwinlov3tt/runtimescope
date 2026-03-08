@@ -25,9 +25,12 @@ export class Transport {
   private stopped = false;
   private config: TransportConfig;
   private commandHandler: ((cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => void) | null = null;
+  private hasEverConnected = false;
+  private connectionWarningTimer: ReturnType<typeof setTimeout> | null = null;
 
   private static readonly MAX_OFFLINE_QUEUE = 1000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
+  private static readonly CONNECTION_WARNING_DELAY = 10_000;
 
   constructor(config: TransportConfig) {
     this.config = config;
@@ -36,6 +39,16 @@ export class Transport {
   connect(): void {
     this.stopped = false;
     this.doConnect();
+
+    // Warn if we never establish a connection within 10 seconds
+    this.connectionWarningTimer = setTimeout(() => {
+      if (!this.hasEverConnected && !this.stopped) {
+        console.warn(
+          `[RuntimeScope] SDK has not connected to ${this.config.serverUrl} after 10s. ` +
+          `Is the collector running? Start it with: npx @runtimescope/collector`
+        );
+      }
+    }, Transport.CONNECTION_WARNING_DELAY);
   }
 
   private doConnect(): void {
@@ -66,6 +79,7 @@ export class Transport {
 
     this.ws.onopen = () => {
       this.connected = true;
+      this.hasEverConnected = true;
       this.reconnectDelay = 1000;
       _log(`[RuntimeScope] Connected to ${this.config.serverUrl}`);
 
@@ -184,6 +198,11 @@ export class Transport {
   disconnect(): void {
     this.stopped = true;
     this.clearFlushTimer();
+
+    if (this.connectionWarningTimer) {
+      clearTimeout(this.connectionWarningTimer);
+      this.connectionWarningTimer = null;
+    }
 
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);

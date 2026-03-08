@@ -1,0 +1,52 @@
+{
+  "name": "runtimescope",
+  "version": "0.7.0",
+  "description": "RuntimeScope — runtime observability for web apps. One install, full visibility.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.ts",
+      "import": "./dist/server.js",
+      "require": "./dist/server.cjs"
+    }
+  },
+  "bin": {
+    "runtimescope": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "runtime",
+    "profiler",
+    "telemetry",
+    "observability",
+    "sdk",
+    "monitoring",
+    "debugging",
+    "mcp",
+    "claude-code"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@runtimescope/sdk": "*",
+    "@runtimescope/server-sdk": "*",
+    "@runtimescope/collector": "*"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
+}

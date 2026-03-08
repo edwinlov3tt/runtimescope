@@ -78,7 +78,7 @@ describe('get_historical_events tool', () => {
     });
 
     it('returns helpful error with available projects', async () => {
-      const result = await callTool('get_historical_events', {
+      const result: any = await callTool('get_historical_events', {
         project: 'nonexistent',
       });
       expect(result.summary).toContain('No historical data');
@@ -92,7 +92,7 @@ describe('get_historical_events tool', () => {
       const { server, callTool: ct } = createMcpStub();
       registerHistoryTools(server, collector, pm);
 
-      const result = await ct('get_historical_events', { project: 'foo' });
+      const result: any = await ct('get_historical_events', { project: 'foo' });
       expect(result.summary).toContain('No projects have connected');
     });
   });
@@ -118,7 +118,7 @@ describe('get_historical_events tool', () => {
     });
 
     it('returns events with pagination info', async () => {
-      const result = await callTool('get_historical_events', {
+      const result: any = await callTool('get_historical_events', {
         project: 'my-app',
         limit: 200,
         offset: 0,
@@ -130,7 +130,7 @@ describe('get_historical_events tool', () => {
     });
 
     it('includes type breakdown in summary', async () => {
-      const result = await callTool('get_historical_events', {
+      const result: any = await callTool('get_historical_events', {
         project: 'my-app',
       });
       expect(result.summary).toContain('network: 2');
@@ -170,7 +170,7 @@ describe('get_historical_events tool', () => {
 
     it('indicates hasMore when total exceeds page', async () => {
       mockStore.getEventCount.mockReturnValue(500);
-      const result = await callTool('get_historical_events', {
+      const result: any = await callTool('get_historical_events', {
         project: 'my-app',
         limit: 200,
         offset: 0,
@@ -257,7 +257,7 @@ describe('list_projects tool', () => {
     const { server, callTool } = createMcpStub();
     registerHistoryTools(server, collector, pm);
 
-    const result = await callTool('list_projects');
+    const result: any = await callTool('list_projects');
     expect(result.data).toEqual([]);
     expect(result.summary).toContain('0 project(s)');
   });
@@ -277,7 +277,7 @@ describe('list_projects tool', () => {
     const { server, callTool } = createMcpStub();
     registerHistoryTools(server, collector, pm);
 
-    const result = await callTool('list_projects');
+    const result: any = await callTool('list_projects');
     expect(result.data).toHaveLength(1);
 
     const project = result.data[0];
@@ -294,7 +294,7 @@ describe('list_projects tool', () => {
     const { server, callTool } = createMcpStub();
     registerHistoryTools(server, collector, pm);
 
-    const result = await callTool('list_projects');
+    const result: any = await callTool('list_projects');
     const project = result.data[0];
     expect(project.name).toBe('stale-app');
     expect(project.eventCount).toBe(0);
@@ -316,7 +316,7 @@ describe('list_projects tool', () => {
     const { server, callTool } = createMcpStub();
     registerHistoryTools(server, collector, pm);
 
-    const result = await callTool('list_projects');
+    const result: any = await callTool('list_projects');
     expect(result.summary).toContain('2 project(s)');
     expect(result.summary).toContain('300 total events');
     expect(result.summary).toContain('1 currently connected');

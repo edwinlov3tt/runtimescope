@@ -20,17 +20,23 @@ export class Transport {
   private offlineQueue: RuntimeEvent[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private reconnectTimer: ReturnType<typeof setTimeout> | null = null;
-  private reconnectDelay = 1000;
+  private reconnectDelay = 500;
+  private reconnectAttempt = 0;
   private connected = false;
   private stopped = false;
   private config: TransportConfig;
   private commandHandler: ((cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => void) | null = null;
   private hasEverConnected = false;
   private connectionWarningTimer: ReturnType<typeof setTimeout> | null = null;
+  private visibilityHandler: (() => void) | null = null;
+  private onlineHandler: (() => void) | null = null;
 
   private static readonly MAX_OFFLINE_QUEUE = 1000;
   private static readonly MAX_RECONNECT_DELAY = 30_000;
   private static readonly CONNECTION_WARNING_DELAY = 10_000;
+  /** First N retries use a fast 500ms delay before switching to exponential backoff */
+  private static readonly FAST_RETRY_COUNT = 3;
+  private static readonly FAST_RETRY_DELAY = 500;
 
   constructor(config: TransportConfig) {
     this.config = config;
@@ -49,6 +55,38 @@ export class Transport {
         );
       }
     }, Transport.CONNECTION_WARNING_DELAY);
+
+    // When the user switches back to this tab, try to reconnect immediately
+    if (typeof document !== 'undefined') {
+      this.visibilityHandler = () => {
+        if (document.visibilityState === 'visible' && !this.connected && !this.stopped) {
+          _log('[RuntimeScope] Tab visible — attempting immediate reconnect');
+          this.resetReconnectState();
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          this.doConnect();
+        }
+      };
+      document.addEventListener('visibilitychange', this.visibilityHandler);
+    }
+
+    // Reconnect immediately when network comes back online
+    if (typeof window !== 'undefined') {
+      this.onlineHandler = () => {
+        if (!this.connected && !this.stopped) {
+          _log('[RuntimeScope] Network online — attempting immediate reconnect');
+          this.resetReconnectState();
+          if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+          }
+          this.doConnect();
+        }
+      };
+      window.addEventListener('online', this.onlineHandler);
+    }
   }
 
   private doConnect(): void {
@@ -67,6 +105,11 @@ export class Transport {
         if (msg.type === 'command' && msg.payload && this.commandHandler) {
           this.commandHandler(msg.payload);
         }
+        // Handle server restart notice — reset backoff for immediate reconnect
+        if (msg.type === '__server_restart') {
+          _log('[RuntimeScope] Server restart notice received — will reconnect immediately');
+          this.resetReconnectState();
+        }
         // Handle auth rejection — stop reconnecting
         if (msg.type === 'error' && msg.payload?.code === 'AUTH_FAILED') {
           _log('[RuntimeScope] Authentication failed — stopping reconnection');
@@ -80,7 +123,7 @@ export class Transport {
     this.ws.onopen = () => {
       this.connected = true;
       this.hasEverConnected = true;
-      this.reconnectDelay = 1000;
+      this.resetReconnectState();
       _log(`[RuntimeScope] Connected to ${this.config.serverUrl}`);
 
       // Send handshake
@@ -162,15 +205,28 @@ export class Transport {
   private scheduleReconnect(): void {
     if (this.stopped || this.reconnectTimer) return;
 
-    // Exponential backoff with jitter
-    const jitter = this.reconnectDelay * 0.25 * (Math.random() * 2 - 1);
-    const delay = Math.min(this.reconnectDelay + jitter, Transport.MAX_RECONNECT_DELAY);
+    this.reconnectAttempt++;
+
+    // Fast retries for the first few attempts (collector restart gap is typically 1-3s)
+    let delay: number;
+    if (this.reconnectAttempt <= Transport.FAST_RETRY_COUNT) {
+      delay = Transport.FAST_RETRY_DELAY;
+    } else {
+      // Exponential backoff with jitter after fast retries exhausted
+      const jitter = this.reconnectDelay * 0.25 * (Math.random() * 2 - 1);
+      delay = Math.min(this.reconnectDelay + jitter, Transport.MAX_RECONNECT_DELAY);
+      this.reconnectDelay = Math.min(this.reconnectDelay * 2, Transport.MAX_RECONNECT_DELAY);
+    }
 
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.reconnectDelay = Math.min(this.reconnectDelay * 2, Transport.MAX_RECONNECT_DELAY);
       this.doConnect();
     }, delay);
+  }
+
+  private resetReconnectState(): void {
+    this.reconnectDelay = 500;
+    this.reconnectAttempt = 0;
   }
 
   private clearFlushTimer(): void {
@@ -207,6 +263,16 @@ export class Transport {
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
+    }
+
+    if (this.visibilityHandler && typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', this.visibilityHandler);
+      this.visibilityHandler = null;
+    }
+
+    if (this.onlineHandler && typeof window !== 'undefined') {
+      window.removeEventListener('online', this.onlineHandler);
+      this.onlineHandler = null;
     }
 
     // Final flush before closing

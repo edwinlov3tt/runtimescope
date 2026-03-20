@@ -10,8 +10,34 @@ export interface FetchInterceptorOptions {
 }
 
 // Track URLs intercepted by fetch to prevent XHR double-counting (fetch polyfill case).
-// Uses a Set of request identifiers instead of a custom HTTP header to avoid triggering CORS.
-export const fetchInterceptedRequests = new Set<string>();
+// Uses a Map with timestamps + single sweeper instead of per-request setTimeout.
+const MAX_INFLIGHT = 1000;
+const INFLIGHT_TTL_MS = 10_000;
+const SWEEP_INTERVAL_MS = 5_000;
+
+export const fetchInterceptedRequests = new Map<string, number>();
+let sweepTimer: ReturnType<typeof setInterval> | null = null;
+let sweepRefCount = 0;
+
+function startSweeper(): void {
+  sweepRefCount++;
+  if (sweepTimer) return;
+  sweepTimer = setInterval(() => {
+    const cutoff = Date.now() - INFLIGHT_TTL_MS;
+    for (const [key, ts] of fetchInterceptedRequests) {
+      if (ts < cutoff) fetchInterceptedRequests.delete(key);
+    }
+  }, SWEEP_INTERVAL_MS);
+}
+
+function stopSweeper(): void {
+  sweepRefCount--;
+  if (sweepRefCount <= 0 && sweepTimer) {
+    clearInterval(sweepTimer);
+    sweepTimer = null;
+    sweepRefCount = 0;
+  }
+}
 
 export function interceptFetch(
   emit: EmitFn,
@@ -23,6 +49,8 @@ export function interceptFetch(
   const redactSet = new Set(redactHeaders.map((h) => h.toLowerCase()));
   const captureBody = options?.captureBody ?? false;
   const maxBodySize = options?.maxBodySize ?? 65536;
+
+  startSweeper();
 
   window.fetch = async function (
     input: RequestInfo | URL,
@@ -49,9 +77,12 @@ export function interceptFetch(
 
     // Mark request to prevent XHR interceptor double-counting (fetch polyfill case)
     const requestKey = `${method}:${url}:${startTime}`;
-    fetchInterceptedRequests.add(requestKey);
-    // Clean up after a short delay to prevent memory leaks
-    setTimeout(() => fetchInterceptedRequests.delete(requestKey), 5000);
+    // Evict oldest entry if at capacity
+    if (fetchInterceptedRequests.size >= MAX_INFLIGHT) {
+      const oldest = fetchInterceptedRequests.keys().next().value;
+      if (oldest !== undefined) fetchInterceptedRequests.delete(oldest);
+    }
+    fetchInterceptedRequests.set(requestKey, Date.now());
 
     try {
       const response = await originalFetch.call(window, input, init);
@@ -150,6 +181,7 @@ export function interceptFetch(
 
   return () => {
     window.fetch = originalFetch;
+    stopSweeper();
   };
 }
 

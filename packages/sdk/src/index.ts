@@ -10,24 +10,69 @@ import { interceptNavigation } from './interceptors/navigation.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent } from './types.js';
 
-const SDK_VERSION = '0.7.1';
+const SDK_VERSION = '0.7.2';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
 const _log = console.debug.bind(console);
 
+// --- Double-init safety: Symbol.for() originals store ---
+// Survives HMR module reloads because Symbol.for() returns the same symbol across realms.
+// True originals are saved exactly once — never overwritten by subsequent connect() calls.
+const ORIGINALS_KEY = Symbol.for('__runtimescope_originals__');
+
+interface SavedOriginals {
+  fetch: typeof globalThis.fetch;
+  xhrOpen: typeof XMLHttpRequest.prototype.open;
+  xhrSend: typeof XMLHttpRequest.prototype.send;
+  xhrSetRequestHeader: typeof XMLHttpRequest.prototype.setRequestHeader;
+  consoleMethods: Record<string, (...args: unknown[]) => void>;
+}
+
+function getOrSaveOriginals(): SavedOriginals {
+  const g = globalThis as Record<symbol, SavedOriginals>;
+  if (!g[ORIGINALS_KEY]) {
+    g[ORIGINALS_KEY] = {
+      fetch: window.fetch,
+      xhrOpen: XMLHttpRequest.prototype.open,
+      xhrSend: XMLHttpRequest.prototype.send,
+      xhrSetRequestHeader: XMLHttpRequest.prototype.setRequestHeader,
+      consoleMethods: {
+        log: console.log.bind(console),
+        warn: console.warn.bind(console),
+        error: console.error.bind(console),
+        info: console.info.bind(console),
+        debug: console.debug.bind(console),
+        trace: console.trace.bind(console),
+      },
+    };
+  }
+  return g[ORIGINALS_KEY];
+}
+
 export class RuntimeScope {
   private static transport: Transport | null = null;
   private static restoreFns: (() => void)[] = [];
   private static _sessionId: string | null = null;
+  private static _state: 'stopped' | 'started' = 'stopped';
 
   static get sessionId(): string | null {
     return this._sessionId;
   }
 
+  /** Returns true if the SDK is currently connected */
+  static get isConnected(): boolean {
+    return this._state === 'started';
+  }
+
   static connect(config: RuntimeScopeConfig = {}): void {
     if (config.enabled === false) return;
-    if (this.transport) this.disconnect();
+
+    // Guard against double-init: disconnect cleanly first
+    if (this._state === 'started') {
+      _log('[RuntimeScope] Already connected — disconnecting before re-init');
+      this.disconnect();
+    }
 
     const resolved = {
       serverUrl: config.serverUrl ?? config.endpoint ?? 'ws://localhost:9090',
@@ -47,7 +92,11 @@ export class RuntimeScope {
       flushIntervalMs: config.flushIntervalMs ?? 100,
     };
 
+    // Save true originals before any patching (idempotent — only saves on first call ever)
+    getOrSaveOriginals();
+
     this._sessionId = generateSessionId();
+    this._state = 'started';
 
     this.transport = new Transport({
       serverUrl: resolved.serverUrl,
@@ -223,11 +272,32 @@ export class RuntimeScope {
   }
 
   static disconnect(): void {
-    for (const fn of this.restoreFns) fn();
+    // Run all interceptor restore functions
+    for (const fn of this.restoreFns) {
+      try { fn(); } catch { /* ensure all restores run */ }
+    }
     this.restoreFns = [];
+
+    // Safety net: if restore functions didn't fully unwind (e.g. another library
+    // patched over us), fall back to true originals saved via Symbol.for()
+    const originals = (globalThis as Record<symbol, SavedOriginals>)[ORIGINALS_KEY];
+    if (originals) {
+      // Only restore if current value is NOT the original (i.e. we or nobody else patched)
+      if (window.fetch !== originals.fetch) {
+        window.fetch = originals.fetch;
+      }
+      for (const [level, fn] of Object.entries(originals.consoleMethods)) {
+        const c = console as unknown as Record<string, unknown>;
+        if (c[level] !== fn) {
+          c[level] = fn;
+        }
+      }
+    }
+
     this.transport?.disconnect();
     this.transport = null;
     this._sessionId = null;
+    this._state = 'stopped';
   }
 }
 

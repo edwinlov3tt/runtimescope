@@ -24,12 +24,23 @@ function rate(metric: string, value: number): WebVitalRating {
   return 'poor';
 }
 
+// Module-level singleton tracking — prevents duplicate observers on double-init (HMR)
+let activeObservers: PerformanceObserver[] | null = null;
+
 export function interceptPerformance(
   emit: EmitFn,
   sessionId: string,
   options?: PerformanceInterceptorOptions
 ): () => void {
+  // Disconnect any existing observers from a previous init (HMR / double-init safety)
+  if (activeObservers) {
+    for (const obs of activeObservers) {
+      try { obs.disconnect(); } catch { /* already disconnected */ }
+    }
+  }
+
   const observers: PerformanceObserver[] = [];
+  activeObservers = observers;
 
   const emitMetric = (
     metricName: PerformanceEvent['metricName'],
@@ -125,6 +136,9 @@ export function interceptPerformance(
       } catch {
         // Already disconnected
       }
+    }
+    if (activeObservers === observers) {
+      activeObservers = null;
     }
   };
 }

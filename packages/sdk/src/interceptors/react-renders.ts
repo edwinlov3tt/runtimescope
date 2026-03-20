@@ -38,6 +38,8 @@ const FUNCTION_COMPONENT = 0;
 const CLASS_COMPONENT = 1;
 const SNAPSHOT_WINDOW_MS = 10_000;
 const MAX_TIMESTAMPS = 100;
+const TRACKER_TTL_MS = 60_000;
+const MAX_TRACKED_COMPONENTS = 500;
 
 export function interceptReactRenders(
   emit: EmitFn,
@@ -250,9 +252,25 @@ function emitSnapshot(
     emit(event);
   }
 
-  // Reset counters for next snapshot
-  for (const tracker of trackers.values()) {
-    tracker.renderCount = 0;
-    tracker.totalDuration = 0;
+  // Reset counters and prune stale trackers
+  const now = Date.now();
+  for (const [name, tracker] of trackers) {
+    if (now - tracker.lastRenderTime > TRACKER_TTL_MS) {
+      // Component hasn't rendered in 60s — remove to prevent unbounded growth
+      trackers.delete(name);
+    } else {
+      tracker.renderCount = 0;
+      tracker.totalDuration = 0;
+    }
+  }
+
+  // Hard cap: if still over limit after TTL pruning, evict least-recently-rendered
+  if (trackers.size > MAX_TRACKED_COMPONENTS) {
+    const sorted = [...trackers.entries()]
+      .sort((a, b) => a[1].lastRenderTime - b[1].lastRenderTime);
+    const excess = trackers.size - MAX_TRACKED_COMPONENTS;
+    for (let i = 0; i < excess; i++) {
+      trackers.delete(sorted[i][0]);
+    }
   }
 }

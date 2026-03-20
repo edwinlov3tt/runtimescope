@@ -225,17 +225,31 @@ interface EndpointData {
 export class ApiDiscoveryEngine {
   private endpoints: Map<string, EndpointData> = new Map();
   private store: EventStore;
+  private lastRebuildEventCount = 0;
+  private isDirty = true;
 
   constructor(store: EventStore) {
     this.store = store;
   }
 
+  /** Mark the cache dirty so the next read triggers a rebuild */
+  markDirty(): void {
+    this.isDirty = true;
+  }
+
   rebuild(): void {
-    this.endpoints.clear();
     const events = this.store.getNetworkRequests();
+    // Skip rebuild if no new events since last rebuild
+    if (!this.isDirty && events.length === this.lastRebuildEventCount) {
+      return;
+    }
+
+    this.endpoints.clear();
     for (const event of events) {
       this.ingestEvent(event);
     }
+    this.lastRebuildEventCount = events.length;
+    this.isDirty = false;
   }
 
   private ingestEvent(event: NetworkEvent): void {

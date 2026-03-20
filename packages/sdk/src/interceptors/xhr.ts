@@ -29,6 +29,9 @@ export function interceptXhr(
   const captureBody = options?.captureBody ?? false;
   const maxBodySize = options?.maxBodySize ?? 65536;
 
+  // Global AbortController for teardown — aborts all outstanding XHR listeners on disconnect
+  const globalAbort = new AbortController();
+
   const origOpen = XMLHttpRequest.prototype.open;
   const origSetRequestHeader = XMLHttpRequest.prototype.setRequestHeader;
   const origSend = XMLHttpRequest.prototype.send;
@@ -66,7 +69,10 @@ export function interceptXhr(
     const method = this.__rs_method ?? 'GET';
     const url = this.__rs_url ?? '';
     const requestKey = `${method}:${url}`;
-    const alreadyIntercepted = Array.from(fetchInterceptedRequests).some((k) => k.startsWith(requestKey));
+    let alreadyIntercepted = false;
+    for (const k of fetchInterceptedRequests.keys()) {
+      if (k.startsWith(requestKey)) { alreadyIntercepted = true; break; }
+    }
     if (alreadyIntercepted) {
       this.__rs_fetchIntercepted = true;
       return origSend.call(this, body);
@@ -131,65 +137,63 @@ export function interceptXhr(
       }
     };
 
-    this.addEventListener('load', () => {
+    // Single loadend listener covers all terminal states (load, error, abort, timeout).
+    // { once: true } auto-removes per-request; globalAbort.signal enables bulk teardown.
+    this.addEventListener('loadend', () => {
       const duration = performance.now() - startTime;
-      const responseHeaders = parseResponseHeaders(this.getAllResponseHeaders(), redactSet);
-      const responseBodySize = parseInt(
-        this.getResponseHeader('content-length') || '0',
-        10
-      );
 
-      let responseBody: string | undefined;
-      if (captureBody && this.responseType === '' || this.responseType === 'text') {
-        try {
-          const text = this.responseText;
-          responseBody = text.length > maxBodySize ? text.slice(0, maxBodySize) : text;
-        } catch {
-          // responseText not available for non-text types
+      if (this.status > 0) {
+        // Successful completion (includes HTTP errors like 4xx/5xx)
+        const responseHeaders = parseResponseHeaders(this.getAllResponseHeaders(), redactSet);
+        const responseBodySize = parseInt(
+          this.getResponseHeader('content-length') || '0',
+          10
+        );
+
+        let responseBody: string | undefined;
+        if (captureBody && (this.responseType === '' || this.responseType === 'text')) {
+          try {
+            const text = this.responseText;
+            responseBody = text.length > maxBodySize ? text.slice(0, maxBodySize) : text;
+          } catch {
+            // responseText not available for non-text types
+          }
         }
+
+        emitEvent({
+          status: this.status,
+          responseHeaders,
+          responseBodySize,
+          responseBody,
+          duration,
+          ttfb: duration,
+        });
+      } else {
+        // Network error, abort, or timeout — status is 0
+        let errorPhase: 'error' | 'abort' | 'timeout' = 'error';
+        let errorMessage = 'Network error';
+
+        if (this.readyState === 0 || (this as XMLHttpRequest).status === 0) {
+          // Distinguish abort vs timeout vs network error
+          // XHR sets readyState to UNSENT (0) on abort
+        }
+
+        // Check specific failure modes
+        if (this.timeout > 0 && duration >= this.timeout) {
+          errorPhase = 'timeout';
+          errorMessage = `Request timed out after ${this.timeout}ms`;
+        }
+
+        emitEvent({ duration, errorPhase, errorMessage });
       }
-
-      emitEvent({
-        status: this.status,
-        responseHeaders,
-        responseBodySize,
-        responseBody,
-        duration,
-        ttfb: duration,
-      });
-    });
-
-    this.addEventListener('error', () => {
-      const duration = performance.now() - startTime;
-      emitEvent({
-        duration,
-        errorPhase: 'error',
-        errorMessage: 'Network error',
-      });
-    });
-
-    this.addEventListener('abort', () => {
-      const duration = performance.now() - startTime;
-      emitEvent({
-        duration,
-        errorPhase: 'abort',
-        errorMessage: 'Request aborted',
-      });
-    });
-
-    this.addEventListener('timeout', () => {
-      const duration = performance.now() - startTime;
-      emitEvent({
-        duration,
-        errorPhase: 'timeout',
-        errorMessage: `Request timed out after ${this.timeout}ms`,
-      });
-    });
+    }, { once: true, signal: globalAbort.signal });
 
     return origSend.call(this, body);
   };
 
   return () => {
+    // Abort all outstanding XHR listeners from this interceptor instance
+    globalAbort.abort();
     XMLHttpRequest.prototype.open = origOpen;
     XMLHttpRequest.prototype.setRequestHeader = origSetRequestHeader;
     XMLHttpRequest.prototype.send = origSend;

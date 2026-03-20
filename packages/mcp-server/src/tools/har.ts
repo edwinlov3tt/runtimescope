@@ -12,11 +12,16 @@ export function registerHarTools(server: McpServer, store: EventStore): void {
         .number()
         .optional()
         .describe('Only include requests from the last N seconds'),
+      limit: z.number().optional().describe('Max entries to include (default 200, max 1000)'),
     },
-    async ({ since_seconds }) => {
-      const events = store.getNetworkRequests({
+    async ({ since_seconds, limit }) => {
+      const allEvents = store.getNetworkRequests({
         sinceSeconds: since_seconds,
       });
+
+      const maxLimit = Math.min(limit ?? 200, 1000);
+      const truncated = allEvents.length > maxLimit;
+      const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
       const sessions = store.getSessionInfo();
       const sessionId = sessions[0]?.sessionId ?? null;
@@ -24,7 +29,7 @@ export function registerHarTools(server: McpServer, store: EventStore): void {
       const har = buildHar(events);
 
       const response = {
-        summary: `HAR export: ${events.length} request(s)${since_seconds ? ` from the last ${since_seconds}s` : ''}. Import into Chrome DevTools or any HAR viewer.`,
+        summary: `HAR export: ${events.length} request(s)${truncated ? ` (showing ${maxLimit} of ${allEvents.length})` : ''}${since_seconds ? ` from the last ${since_seconds}s` : ''}. Import into Chrome DevTools or any HAR viewer.`,
         data: har,
         issues: [],
         metadata: {
@@ -33,6 +38,8 @@ export function registerHarTools(server: McpServer, store: EventStore): void {
             to: events.length > 0 ? events[events.length - 1].timestamp : 0,
           },
           eventCount: events.length,
+          totalCount: allEvents.length,
+          truncated,
           sessionId,
         },
       };

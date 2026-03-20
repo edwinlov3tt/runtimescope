@@ -15,12 +15,17 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
         .number()
         .optional()
         .describe('Only return events from the last N seconds'),
+      limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ store_name, since_seconds }) => {
-      const events = store.getStateEvents({
+    async ({ store_name, since_seconds, limit }) => {
+      const allEvents = store.getStateEvents({
         storeId: store_name,
         sinceSeconds: since_seconds,
       });
+
+      const maxLimit = Math.min(limit ?? 200, 1000);
+      const truncated = allEvents.length > maxLimit;
+      const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
       const sessions = store.getSessionInfo();
       const sessionId = sessions[0]?.sessionId ?? null;
@@ -47,7 +52,7 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
       }
 
       const response = {
-        summary: `Found ${events.length} state event(s)${since_seconds ? ` in the last ${since_seconds}s` : ''}${store_name ? ` for store "${store_name}"` : ''}.`,
+        summary: `Found ${events.length} state event(s)${truncated ? ` (showing ${maxLimit} of ${allEvents.length})` : ''}${since_seconds ? ` in the last ${since_seconds}s` : ''}${store_name ? ` for store "${store_name}"` : ''}.`,
         data: events.map((e) => ({
           storeId: e.storeId,
           library: e.library,
@@ -65,6 +70,8 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
             to: events.length > 0 ? events[events.length - 1].timestamp : 0,
           },
           eventCount: events.length,
+          totalCount: allEvents.length,
+          truncated,
           sessionId,
         },
       };

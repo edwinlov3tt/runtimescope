@@ -11,14 +11,19 @@ export function registerNetworkTools(server: McpServer, store: EventStore): void
       url_pattern: z.string().optional().describe('Filter by URL substring match'),
       status: z.number().optional().describe('Filter by HTTP status code'),
       method: z.string().optional().describe('Filter by HTTP method (GET, POST, etc.)'),
+      limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ since_seconds, url_pattern, status, method }) => {
-      const events = store.getNetworkRequests({
+    async ({ since_seconds, url_pattern, status, method, limit }) => {
+      const allEvents = store.getNetworkRequests({
         sinceSeconds: since_seconds,
         urlPattern: url_pattern,
         status,
         method,
       });
+
+      const maxLimit = Math.min(limit ?? 200, 1000);
+      const truncated = allEvents.length > maxLimit;
+      const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
       const timeRange =
         events.length > 0
@@ -59,7 +64,7 @@ export function registerNetworkTools(server: McpServer, store: EventStore): void
       }
 
       const response = {
-        summary: `Found ${events.length} network request(s)${since_seconds ? ` in the last ${since_seconds}s` : ''}. Average duration: ${avgDuration}ms.`,
+        summary: `Found ${events.length} network request(s)${truncated ? ` (showing ${maxLimit} of ${allEvents.length})` : ''}${since_seconds ? ` in the last ${since_seconds}s` : ''}. Average duration: ${avgDuration}ms.`,
         data: events.map((e) => ({
           url: e.url,
           method: e.method,
@@ -72,7 +77,7 @@ export function registerNetworkTools(server: McpServer, store: EventStore): void
           timestamp: new Date(e.timestamp).toISOString(),
         })),
         issues,
-        metadata: { timeRange, eventCount: events.length, sessionId },
+        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId },
       };
 
       return {

@@ -21,6 +21,33 @@ import {
 import type { RawComputedStyles, RawElementSnapshot } from './recon-collectors.js';
 import { buildReconEvents } from './event-builder.js';
 
+// Simple semaphore to limit concurrent browser contexts
+class Semaphore {
+  private queue: (() => void)[] = [];
+  private active = 0;
+
+  constructor(private readonly max: number) {}
+
+  async acquire(): Promise<void> {
+    if (this.active < this.max) {
+      this.active++;
+      return;
+    }
+    return new Promise<void>((resolve) => {
+      this.queue.push(resolve);
+    });
+  }
+
+  release(): void {
+    this.active--;
+    const next = this.queue.shift();
+    if (next) {
+      this.active++;
+      next();
+    }
+  }
+}
+
 export interface ScanOptions {
   viewportWidth?: number;
   viewportHeight?: number;
@@ -50,6 +77,7 @@ export class PlaywrightScanner {
   private idleTimer: ReturnType<typeof setTimeout> | null = null;
   private static IDLE_TIMEOUT = 60_000; // Close browser after 60s idle
   private lastScannedUrl: string | null = null;
+  private contextSemaphore = new Semaphore(2);
 
   /**
    * Lazily load the technology database.
@@ -136,15 +164,18 @@ export class PlaywrightScanner {
     const { browser } = await this.ensureBrowser();
     const br = browser as import('playwright').Browser;
 
-    // Create a fresh context and page
-    const context = await br.newContext({
-      viewport: { width: viewportWidth, height: viewportHeight },
-      userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-    });
-
-    const page = await context.newPage();
+    await this.contextSemaphore.acquire();
+    let context: import('playwright').BrowserContext | null = null;
 
     try {
+      // Create a fresh context and page
+      context = await br.newContext({
+        viewport: { width: viewportWidth, height: viewportHeight },
+        userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      });
+
+      const page = await context.newPage();
+
       // Capture main document response headers
       let mainResponse: import('playwright').Response | null = null;
       page.on('response', (response) => {
@@ -222,7 +253,8 @@ export class PlaywrightScanner {
         scanDurationMs,
       };
     } finally {
-      await context.close();
+      if (context) await context.close().catch(() => {});
+      this.contextSemaphore.release();
     }
   }
 
@@ -244,15 +276,18 @@ export class PlaywrightScanner {
   ): Promise<RawComputedStyles> {
     const { browser } = await this.ensureBrowser();
     const br = browser as import('playwright').Browser;
-    const context = await br.newContext({
-      viewport: { width: 1280, height: 720 },
-    });
-    const page = await context.newPage();
+    await this.contextSemaphore.acquire();
+    let context: import('playwright').BrowserContext | null = null;
     try {
+      context = await br.newContext({
+        viewport: { width: 1280, height: 720 },
+      });
+      const page = await context.newPage();
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
       return await collectComputedStyles(page, selector, propertyFilter);
     } finally {
-      await context.close();
+      if (context) await context.close().catch(() => {});
+      this.contextSemaphore.release();
     }
   }
 
@@ -267,15 +302,18 @@ export class PlaywrightScanner {
   ): Promise<RawElementSnapshot | null> {
     const { browser } = await this.ensureBrowser();
     const br = browser as import('playwright').Browser;
-    const context = await br.newContext({
-      viewport: { width: 1280, height: 720 },
-    });
-    const page = await context.newPage();
+    await this.contextSemaphore.acquire();
+    let context: import('playwright').BrowserContext | null = null;
     try {
+      context = await br.newContext({
+        viewport: { width: 1280, height: 720 },
+      });
+      const page = await context.newPage();
       await page.goto(url, { waitUntil: 'networkidle', timeout: 60_000 });
       return await collectElementSnapshot(page, selector, depth);
     } finally {
-      await context.close();
+      if (context) await context.close().catch(() => {});
+      this.contextSemaphore.release();
     }
   }
 

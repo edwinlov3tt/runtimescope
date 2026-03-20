@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { renameSync, existsSync } from 'node:fs';
 import type {
   RuntimeEvent,
   HistoricalFilter,
@@ -25,46 +26,94 @@ export class SqliteStore {
   private writeBuffer: { event: RuntimeEvent; project: string }[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private readonly batchSize: number;
+  private readonly dbPath: string;
 
-  private insertEventStmt: Database.Statement;
-  private insertSessionStmt: Database.Statement;
-  private updateSessionDisconnectedStmt: Database.Statement;
+  private static readonly MAX_SNAPSHOTS_PER_SESSION = 50;
+
+  private insertEventStmt!: Database.Statement;
+  private insertSessionStmt!: Database.Statement;
+  private updateSessionDisconnectedStmt!: Database.Statement;
 
   constructor(options: SqliteStoreOptions) {
-    this.db = new Database(options.dbPath);
+    this.dbPath = options.dbPath;
     this.batchSize = options.batchSize ?? 50;
 
-    if (options.walMode !== false) {
-      this.db.pragma('journal_mode = WAL');
-    }
-    this.db.pragma('synchronous = NORMAL');
-
-    this.createSchema();
-
-    // Prepare statements
-    this.insertEventStmt = this.db.prepare(`
-      INSERT INTO events (event_id, session_id, project, event_type, timestamp, data)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
-
-    this.insertSessionStmt = this.db.prepare(`
-      INSERT OR REPLACE INTO sessions (
-        session_id, project, app_name, connected_at, sdk_version,
-        event_count, is_connected, build_meta
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `);
-
-    this.updateSessionDisconnectedStmt = this.db.prepare(`
-      UPDATE sessions SET is_connected = 0, disconnected_at = ? WHERE session_id = ?
-    `);
+    this.db = this.openDatabase(options);
 
     // Start flush timer
     const flushInterval = options.flushIntervalMs ?? 100;
     this.flushTimer = setInterval(() => this.flush(), flushInterval);
   }
 
-  private createSchema(): void {
-    this.db.exec(`
+  private openDatabase(options: SqliteStoreOptions): InstanceType<typeof Database> {
+    try {
+      const db = new Database(options.dbPath);
+      if (options.walMode !== false) {
+        db.pragma('journal_mode = WAL');
+      }
+      db.pragma('synchronous = NORMAL');
+
+      // Quick integrity check — if this fails, the DB is corrupt
+      const check = db.pragma('integrity_check') as { integrity_check: string }[];
+      if (check[0]?.integrity_check !== 'ok') {
+        throw new Error('Integrity check failed');
+      }
+
+      this.createSchema(db);
+      this.prepareStatements(db);
+      return db;
+    } catch (err) {
+      // Corruption recovery: rename the bad DB and create a fresh one
+      console.error(
+        `[RuntimeScope] SQLite database corrupt or unreadable (${(err as Error).message}), recreating...`
+      );
+      try {
+        if (existsSync(options.dbPath)) {
+          const backupPath = `${options.dbPath}.corrupt.${Date.now()}`;
+          renameSync(options.dbPath, backupPath);
+          console.error(`[RuntimeScope] Renamed corrupt DB to ${backupPath}`);
+        }
+        // Also clean up WAL/SHM files
+        for (const suffix of ['-wal', '-shm']) {
+          const p = options.dbPath + suffix;
+          if (existsSync(p)) {
+            renameSync(p, `${p}.corrupt.${Date.now()}`);
+          }
+        }
+      } catch { /* best effort */ }
+
+      const db = new Database(options.dbPath);
+      if (options.walMode !== false) {
+        db.pragma('journal_mode = WAL');
+      }
+      db.pragma('synchronous = NORMAL');
+      this.createSchema(db);
+      this.prepareStatements(db);
+      return db;
+    }
+  }
+
+  private prepareStatements(db: InstanceType<typeof Database>): void {
+    this.insertEventStmt = db.prepare(`
+      INSERT INTO events (event_id, session_id, project, event_type, timestamp, data)
+      VALUES (?, ?, ?, ?, ?, ?)
+    `);
+
+    this.insertSessionStmt = db.prepare(`
+      INSERT OR REPLACE INTO sessions (
+        session_id, project, app_name, connected_at, sdk_version,
+        event_count, is_connected, build_meta
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    this.updateSessionDisconnectedStmt = db.prepare(`
+      UPDATE sessions SET is_connected = 0, disconnected_at = ? WHERE session_id = ?
+    `);
+  }
+
+  private createSchema(db?: InstanceType<typeof Database>): void {
+    const d = db ?? this.db;
+    d.exec(`
       CREATE TABLE IF NOT EXISTS events (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         event_id TEXT NOT NULL UNIQUE,
@@ -110,7 +159,7 @@ export class SqliteStore {
     `);
 
     // Migrate from old session_metrics table if it exists
-    this.migrateSessionMetrics();
+    this.migrateSessionMetrics(d);
   }
 
   // --- Write Operations ---
@@ -172,6 +221,27 @@ export class SqliteStore {
       INSERT INTO session_snapshots (session_id, project, label, metrics, created_at)
       VALUES (?, ?, ?, ?, ?)
     `).run(sessionId, project, label ?? null, JSON.stringify(metrics), Date.now());
+
+    // Enforce retention: keep only the most recent N snapshots per session
+    this.pruneSnapshots(sessionId);
+  }
+
+  /** Remove oldest snapshots for a session beyond the retention limit */
+  private pruneSnapshots(sessionId: string): void {
+    const count = (this.db
+      .prepare('SELECT COUNT(*) as cnt FROM session_snapshots WHERE session_id = ?')
+      .get(sessionId) as { cnt: number }).cnt;
+
+    if (count > SqliteStore.MAX_SNAPSHOTS_PER_SESSION) {
+      this.db.prepare(`
+        DELETE FROM session_snapshots WHERE id IN (
+          SELECT id FROM session_snapshots
+          WHERE session_id = ?
+          ORDER BY created_at ASC
+          LIMIT ?
+        )
+      `).run(sessionId, count - SqliteStore.MAX_SNAPSHOTS_PER_SESSION);
+    }
   }
 
   // --- Read Operations ---
@@ -359,18 +429,18 @@ export class SqliteStore {
 
   // --- Migration ---
 
-  private migrateSessionMetrics(): void {
-    const hasOldTable = this.db.prepare(
+  private migrateSessionMetrics(db: InstanceType<typeof Database>): void {
+    const hasOldTable = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='session_metrics'"
     ).get();
 
     if (hasOldTable) {
-      this.db.exec(`
+      db.exec(`
         INSERT OR IGNORE INTO session_snapshots (session_id, project, label, metrics, created_at)
         SELECT session_id, project, 'auto-disconnect', metrics, created_at
         FROM session_metrics
       `);
-      this.db.exec('DROP TABLE session_metrics');
+      db.exec('DROP TABLE session_metrics');
     }
   }
 

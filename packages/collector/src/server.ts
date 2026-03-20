@@ -52,6 +52,7 @@ export class CollectorServer {
   private connectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
   private disconnectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
+  private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private tlsConfig: TlsConfig | null = null;
 
   constructor(options: CollectorServerOptions = {}) {
@@ -136,6 +137,8 @@ export class CollectorServer {
         httpsServer.on('listening', () => {
           this.wss = wss;
           this.setupConnectionHandler(wss);
+          this.setupPersistentErrorHandler(wss);
+          this.startHeartbeat(wss);
           console.error(`[RuntimeScope] Collector listening on wss://${host}:${port}`);
           resolve();
         });
@@ -153,6 +156,8 @@ export class CollectorServer {
         wss.on('listening', () => {
           this.wss = wss;
           this.setupConnectionHandler(wss);
+          this.setupPersistentErrorHandler(wss);
+          this.startHeartbeat(wss);
           console.error(`[RuntimeScope] Collector listening on ws://${host}:${port}`);
           resolve();
         });
@@ -214,8 +219,35 @@ export class CollectorServer {
     return sqliteStore;
   }
 
+  /** Catch runtime errors on the WSS so an unhandled error doesn't crash the process */
+  private setupPersistentErrorHandler(wss: WebSocketServer): void {
+    wss.on('error', (err) => {
+      console.error('[RuntimeScope] WebSocket server runtime error:', err.message);
+    });
+  }
+
+  /** Ping all connected clients every 15s — terminate those that don't respond */
+  private startHeartbeat(wss: WebSocketServer): void {
+    this.heartbeatTimer = setInterval(() => {
+      for (const ws of wss.clients) {
+        const ext = ws as WebSocket & { _rsAlive?: boolean };
+        if (ext._rsAlive === false) {
+          // Missed a heartbeat — terminate dead connection
+          ws.terminate();
+          continue;
+        }
+        ext._rsAlive = false;
+        ws.ping();
+      }
+    }, 15_000);
+  }
+
   private setupConnectionHandler(wss: WebSocketServer): void {
     wss.on('connection', (ws) => {
+      // Mark alive for heartbeat — pong response resets this
+      const ext = ws as WebSocket & { _rsAlive?: boolean };
+      ext._rsAlive = true;
+      ws.on('pong', () => { ext._rsAlive = true; });
       // If auth is enabled, the connection starts in a pending state.
       // The first message must be a valid handshake with an authToken.
       if (this.authManager?.isEnabled()) {
@@ -449,10 +481,30 @@ export class CollectorServer {
   }
 
   stop(): void {
+    // Stop heartbeat
+    if (this.heartbeatTimer) {
+      clearInterval(this.heartbeatTimer);
+      this.heartbeatTimer = null;
+    }
+
     // Stop rate limiter pruning
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
+    }
+
+    // Notify connected SDKs that the server is restarting — SDK resets backoff for fast reconnect
+    if (this.wss) {
+      for (const client of this.wss.clients) {
+        if (client.readyState === 1 /* OPEN */) {
+          try {
+            client.send(JSON.stringify({
+              type: '__server_restart',
+              timestamp: Date.now(),
+            }));
+          } catch { /* best-effort */ }
+        }
+      }
     }
 
     // Close all SQLite stores

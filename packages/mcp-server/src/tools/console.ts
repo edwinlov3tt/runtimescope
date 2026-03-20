@@ -16,13 +16,18 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
         .string()
         .optional()
         .describe('Search message text (case-insensitive substring match)'),
+      limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ level, since_seconds, search }) => {
-      const events = store.getConsoleMessages({
+    async ({ level, since_seconds, search, limit }) => {
+      const allEvents = store.getConsoleMessages({
         level,
         sinceSeconds: since_seconds,
         search,
       });
+
+      const maxLimit = Math.min(limit ?? 200, 1000);
+      const truncated = allEvents.length > maxLimit;
+      const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
       const timeRange =
         events.length > 0
@@ -64,7 +69,7 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
       }
 
       const response = {
-        summary: `Found ${events.length} console message(s)${since_seconds ? ` in the last ${since_seconds}s` : ''}${levelSummary ? `. Breakdown: ${levelSummary}` : ''}.`,
+        summary: `Found ${events.length} console message(s)${truncated ? ` (showing ${maxLimit} of ${allEvents.length})` : ''}${since_seconds ? ` in the last ${since_seconds}s` : ''}${levelSummary ? `. Breakdown: ${levelSummary}` : ''}.`,
         data: events.map((e) => ({
           level: e.level,
           message: e.message,
@@ -74,7 +79,7 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
           timestamp: new Date(e.timestamp).toISOString(),
         })),
         issues,
-        metadata: { timeRange, eventCount: events.length, sessionId },
+        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId },
       };
 
       return {

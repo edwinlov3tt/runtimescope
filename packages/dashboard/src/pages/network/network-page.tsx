@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import {
   DataTable,
@@ -48,6 +48,78 @@ function getRequestName(req: NetworkEvent): string {
   }
 }
 
+const COLUMNS = [
+  {
+    key: 'name',
+    header: 'Name',
+    width: '180px',
+    render: (row: Record<string, unknown>) => (
+      <span className="font-medium truncate block max-w-[160px]">
+        {getRequestName(row as unknown as NetworkEvent)}
+      </span>
+    ),
+  },
+  {
+    key: 'status',
+    header: 'Status',
+    width: '80px',
+    render: (row: Record<string, unknown>) => {
+      const color = getStatusColor(row.status as number);
+      return (
+        <span className="inline-flex items-center gap-1.5">
+          <StatusDot color={color} size="sm" />
+          <span className={STATUS_TEXT[color]}>
+            {row.status as number}
+          </span>
+        </span>
+      );
+    },
+  },
+  {
+    key: 'method',
+    header: 'Method',
+    width: '90px',
+    render: (row: Record<string, unknown>) => {
+      const method = row.method as string;
+      const variant = METHOD_VARIANT[method] ?? 'default';
+      return (
+        <Badge variant={variant as any} size="sm">
+          {method}
+        </Badge>
+      );
+    },
+  },
+  {
+    key: 'url',
+    header: 'URL',
+    render: (row: Record<string, unknown>) => (
+      <span className="text-text-secondary truncate block max-w-[300px] font-mono text-xs">
+        {row.url as string}
+      </span>
+    ),
+  },
+  {
+    key: 'duration',
+    header: 'Duration',
+    width: '100px',
+    render: (row: Record<string, unknown>) => (
+      <span className="tabular-nums">
+        {formatDuration(row.duration as number)}
+      </span>
+    ),
+  },
+  {
+    key: 'size',
+    header: 'Size',
+    width: '80px',
+    render: (row: Record<string, unknown>) => (
+      <span className="tabular-nums text-text-tertiary">
+        {formatBytes(row.responseBodySize as number)}
+      </span>
+    ),
+  },
+];
+
 export function NetworkPage() {
   const [activeTab, setActiveTab] = useState('all');
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
@@ -84,6 +156,9 @@ export function NetworkPage() {
 
   const selectedRow = detailIndex !== null ? filtered[detailIndex] : null;
 
+  const handleRowClick = useCallback((_: unknown, i: number) => setDetailIndex(i), []);
+  const handleDetailClose = useCallback(() => setDetailIndex(null), []);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
@@ -113,80 +188,10 @@ export function NetworkPage() {
               <TableSkeleton rows={10} />
             ) : (
             <DataTable
-              columns={[
-                {
-                  key: 'name',
-                  header: 'Name',
-                  width: '180px',
-                  render: (row) => (
-                    <span className="font-medium truncate block max-w-[160px]">
-                      {getRequestName(row as unknown as NetworkEvent)}
-                    </span>
-                  ),
-                },
-                {
-                  key: 'status',
-                  header: 'Status',
-                  width: '80px',
-                  render: (row) => {
-                    const color = getStatusColor(row.status as number);
-                    return (
-                      <span className="inline-flex items-center gap-1.5">
-                        <StatusDot color={color} size="sm" />
-                        <span className={STATUS_TEXT[color]}>
-                          {row.status as number}
-                        </span>
-                      </span>
-                    );
-                  },
-                },
-                {
-                  key: 'method',
-                  header: 'Method',
-                  width: '90px',
-                  render: (row) => {
-                    const method = row.method as string;
-                    const variant = METHOD_VARIANT[method] ?? 'default';
-                    return (
-                      <Badge variant={variant as any} size="sm">
-                        {method}
-                      </Badge>
-                    );
-                  },
-                },
-                {
-                  key: 'url',
-                  header: 'URL',
-                  render: (row) => (
-                    <span className="text-text-secondary truncate block max-w-[300px] font-mono text-xs">
-                      {row.url as string}
-                    </span>
-                  ),
-                },
-                {
-                  key: 'duration',
-                  header: 'Duration',
-                  width: '100px',
-                  render: (row) => (
-                    <span className="tabular-nums">
-                      {formatDuration(row.duration as number)}
-                    </span>
-                  ),
-                },
-                {
-                  key: 'size',
-                  header: 'Size',
-                  width: '80px',
-                  render: (row) => (
-                    <span className="tabular-nums text-text-tertiary">
-                      {formatBytes(row.responseBodySize as number)}
-                    </span>
-                  ),
-                },
-              ]}
+              columns={COLUMNS}
               data={filtered as any}
               selectedIndex={detailIndex ?? selectedIndex}
-              onRowClick={(_, i) => setDetailIndex(i)}
+              onRowClick={handleRowClick}
             />
             )}
           </div>
@@ -194,7 +199,7 @@ export function NetworkPage() {
 
         <DetailPanel
           open={selectedRow !== null}
-          onClose={() => setDetailIndex(null)}
+          onClose={handleDetailClose}
           title={selectedRow ? getRequestName(selectedRow) : ''}
           subtitle={
             selectedRow

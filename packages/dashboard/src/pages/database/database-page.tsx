@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, CodeBlock, FilterBar } from '@/components/ui';
 import { ExportButton } from '@/components/ui/export-button';
@@ -123,6 +123,187 @@ const OP_VARIANT: Record<string, 'blue' | 'green' | 'red' | 'amber' | 'purple'> 
   OTHER: 'purple',
 };
 
+// ── Column definitions (stable references – defined outside the component) ──
+
+const QUERY_COLUMNS = [
+  {
+    key: 'query',
+    header: 'Query',
+    render: (row: Record<string, unknown>) => (
+      <span className="font-mono text-[12px] text-text-secondary truncate block max-w-[400px]">
+        {row.query as string}
+      </span>
+    ),
+  },
+  {
+    key: 'duration',
+    header: 'Duration',
+    width: '100px',
+    render: (row: Record<string, unknown>) => (
+      <span className={cn('tabular-nums', (row.duration as number) > 500 ? 'text-red' : (row.duration as number) > 100 ? 'text-amber' : '')}>
+        {formatDuration(row.duration as number)}
+      </span>
+    ),
+  },
+  {
+    key: 'operation',
+    header: 'Op',
+    width: '80px',
+    render: (row: Record<string, unknown>) => (
+      <Badge variant={OP_VARIANT[row.operation as string] ?? 'purple'} size="sm">
+        {row.operation as string}
+      </Badge>
+    ),
+  },
+  {
+    key: 'rows',
+    header: 'Rows',
+    width: '70px',
+    render: (row: Record<string, unknown>) => {
+      const r = row as unknown as DatabaseEvent;
+      return <span className="tabular-nums">{r.rowsReturned ?? r.rowsAffected ?? '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'tables',
+    header: 'Tables',
+    width: '120px',
+    render: (row: Record<string, unknown>) => {
+      const tables = (row as unknown as DatabaseEvent).tablesAccessed;
+      return <span className="text-text-muted text-xs truncate block max-w-[100px]">{tables.join(', ') || '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'source',
+    header: 'Source',
+    width: '80px',
+    render: (row: Record<string, unknown>) => <span className="text-text-muted text-xs">{row.source as string}</span>,
+  },
+];
+
+const PERFORMANCE_COLUMNS = [
+  {
+    key: 'normalizedQuery',
+    header: 'Query Pattern',
+    render: (row: Record<string, unknown>) => (
+      <span className="font-mono text-[12px] text-text-secondary truncate block max-w-[350px]">
+        {row.normalizedQuery as string}
+      </span>
+    ),
+  },
+  {
+    key: 'callCount',
+    header: 'Calls',
+    width: '70px',
+    render: (row: Record<string, unknown>) => (
+      <span className={cn('tabular-nums', (row.callCount as number) > 50 ? 'text-amber' : '')}>
+        {row.callCount as number}
+      </span>
+    ),
+  },
+  {
+    key: 'avgDuration',
+    header: 'Avg',
+    width: '80px',
+    render: (row: Record<string, unknown>) => <span className="tabular-nums">{formatDuration(row.avgDuration as number)}</span>,
+  },
+  {
+    key: 'p95Duration',
+    header: 'P95',
+    width: '80px',
+    render: (row: Record<string, unknown>) => (
+      <span className={cn('tabular-nums', (row.p95Duration as number) > 500 ? 'text-red' : (row.p95Duration as number) > 200 ? 'text-amber' : '')}>
+        {formatDuration(row.p95Duration as number)}
+      </span>
+    ),
+  },
+  {
+    key: 'maxDuration',
+    header: 'Max',
+    width: '80px',
+    render: (row: Record<string, unknown>) => (
+      <span className={cn('tabular-nums', (row.maxDuration as number) > 500 ? 'text-red' : (row.maxDuration as number) > 200 ? 'text-amber' : '')}>
+        {formatDuration(row.maxDuration as number)}
+      </span>
+    ),
+  },
+  {
+    key: 'operation',
+    header: 'Op',
+    width: '80px',
+    render: (row: Record<string, unknown>) => (
+      <Badge variant={OP_VARIANT[row.operation as string] ?? 'purple'} size="sm">
+        {row.operation as string}
+      </Badge>
+    ),
+  },
+  {
+    key: 'totalDuration',
+    header: 'Total',
+    width: '80px',
+    render: (row: Record<string, unknown>) => <span className="tabular-nums text-text-muted">{formatDuration(row.totalDuration as number)}</span>,
+  },
+];
+
+const SCHEMA_COLUMNS = [
+  {
+    key: 'name',
+    header: 'Table',
+    width: '180px',
+    render: (row: Record<string, unknown>) => (
+      <span className="font-mono text-[13px] font-medium text-text-primary">{row.name as string}</span>
+    ),
+  },
+  {
+    key: 'totalQueries',
+    header: 'Queries',
+    width: '80px',
+    render: (row: Record<string, unknown>) => <span className="tabular-nums">{formatNumber(row.totalQueries as number)}</span>,
+  },
+  {
+    key: 'select',
+    header: 'SEL',
+    width: '60px',
+    render: (row: Record<string, unknown>) => {
+      const ops = (row as unknown as TableInfo).operations;
+      return <span className="tabular-nums text-blue">{ops.SELECT || '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'insert',
+    header: 'INS',
+    width: '60px',
+    render: (row: Record<string, unknown>) => {
+      const ops = (row as unknown as TableInfo).operations;
+      return <span className="tabular-nums text-green">{ops.INSERT || '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'update',
+    header: 'UPD',
+    width: '60px',
+    render: (row: Record<string, unknown>) => {
+      const ops = (row as unknown as TableInfo).operations;
+      return <span className="tabular-nums text-amber">{ops.UPDATE || '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'delete',
+    header: 'DEL',
+    width: '60px',
+    render: (row: Record<string, unknown>) => {
+      const ops = (row as unknown as TableInfo).operations;
+      return <span className="tabular-nums text-red">{ops.DELETE || '\u2014'}</span>;
+    },
+  },
+  {
+    key: 'avgDuration',
+    header: 'Avg',
+    width: '80px',
+    render: (row: Record<string, unknown>) => <span className="tabular-nums">{formatDuration(row.avgDuration as number)}</span>,
+  },
+];
+
 // ── Component ─────────────────────────────────────────────────
 
 export function DatabasePage() {
@@ -156,9 +337,28 @@ export function DatabasePage() {
   const selectedTable = activeTab === 'schema' && detailIndex !== null ? schema[detailIndex] : null;
 
   // Summary stats
-  const totalQueries = queries.length;
-  const avgDuration = totalQueries > 0 ? queries.reduce((s, q) => s + q.duration, 0) / totalQueries : 0;
-  const slowCount = queries.filter((q) => q.duration > 500).length;
+  const { totalQueries, avgDuration, slowCount } = useMemo(() => {
+    const total = queries.length;
+    const avg = total > 0 ? queries.reduce((s, q) => s + q.duration, 0) / total : 0;
+    const slow = queries.filter((q) => q.duration > 500).length;
+    return { totalQueries: total, avgDuration: avg, slowCount: slow };
+  }, [queries]);
+
+  // Stable callbacks
+  const handleTabChange = useCallback((t: string) => {
+    setActiveTab(t);
+    setDetailIndex(null);
+    setSearch('');
+    setOpFilter(null);
+  }, []);
+
+  const handleRowClick = useCallback((_: unknown, i: number) => {
+    setDetailIndex(i);
+  }, []);
+
+  const handleCloseDetail = useCallback(() => {
+    setDetailIndex(null);
+  }, []);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -170,7 +370,7 @@ export function DatabasePage() {
           { id: 'schema', label: 'Schema' },
         ]}
         activeTab={activeTab}
-        onTabChange={(t) => { setActiveTab(t); setDetailIndex(null); setSearch(''); setOpFilter(null); }}
+        onTabChange={handleTabChange}
         connected={connected}
       />
 
@@ -223,201 +423,28 @@ export function DatabasePage() {
             <>
             {activeTab === 'queries' && (
               <DataTable
-                columns={[
-                  {
-                    key: 'query',
-                    header: 'Query',
-                    render: (row) => (
-                      <span className="font-mono text-[12px] text-text-secondary truncate block max-w-[400px]">
-                        {row.query as string}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'duration',
-                    header: 'Duration',
-                    width: '100px',
-                    render: (row) => (
-                      <span className={cn('tabular-nums', (row.duration as number) > 500 ? 'text-red' : (row.duration as number) > 100 ? 'text-amber' : '')}>
-                        {formatDuration(row.duration as number)}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'operation',
-                    header: 'Op',
-                    width: '80px',
-                    render: (row) => (
-                      <Badge variant={OP_VARIANT[row.operation as string] ?? 'purple'} size="sm">
-                        {row.operation as string}
-                      </Badge>
-                    ),
-                  },
-                  {
-                    key: 'rows',
-                    header: 'Rows',
-                    width: '70px',
-                    render: (row) => {
-                      const r = row as unknown as DatabaseEvent;
-                      return <span className="tabular-nums">{r.rowsReturned ?? r.rowsAffected ?? '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'tables',
-                    header: 'Tables',
-                    width: '120px',
-                    render: (row) => {
-                      const tables = (row as unknown as DatabaseEvent).tablesAccessed;
-                      return <span className="text-text-muted text-xs truncate block max-w-[100px]">{tables.join(', ') || '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'source',
-                    header: 'Source',
-                    width: '80px',
-                    render: (row) => <span className="text-text-muted text-xs">{row.source as string}</span>,
-                  },
-                ]}
+                columns={QUERY_COLUMNS}
                 data={filtered as unknown as Record<string, unknown>[]}
                 selectedIndex={detailIndex ?? undefined}
-                onRowClick={(_, i) => setDetailIndex(i)}
+                onRowClick={handleRowClick}
               />
             )}
 
             {activeTab === 'performance' && (
               <DataTable
-                columns={[
-                  {
-                    key: 'normalizedQuery',
-                    header: 'Query Pattern',
-                    render: (row) => (
-                      <span className="font-mono text-[12px] text-text-secondary truncate block max-w-[350px]">
-                        {row.normalizedQuery as string}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'callCount',
-                    header: 'Calls',
-                    width: '70px',
-                    render: (row) => (
-                      <span className={cn('tabular-nums', (row.callCount as number) > 50 ? 'text-amber' : '')}>
-                        {row.callCount as number}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'avgDuration',
-                    header: 'Avg',
-                    width: '80px',
-                    render: (row) => <span className="tabular-nums">{formatDuration(row.avgDuration as number)}</span>,
-                  },
-                  {
-                    key: 'p95Duration',
-                    header: 'P95',
-                    width: '80px',
-                    render: (row) => (
-                      <span className={cn('tabular-nums', (row.p95Duration as number) > 500 ? 'text-red' : (row.p95Duration as number) > 200 ? 'text-amber' : '')}>
-                        {formatDuration(row.p95Duration as number)}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'maxDuration',
-                    header: 'Max',
-                    width: '80px',
-                    render: (row) => (
-                      <span className={cn('tabular-nums', (row.maxDuration as number) > 500 ? 'text-red' : (row.maxDuration as number) > 200 ? 'text-amber' : '')}>
-                        {formatDuration(row.maxDuration as number)}
-                      </span>
-                    ),
-                  },
-                  {
-                    key: 'operation',
-                    header: 'Op',
-                    width: '80px',
-                    render: (row) => (
-                      <Badge variant={OP_VARIANT[row.operation as string] ?? 'purple'} size="sm">
-                        {row.operation as string}
-                      </Badge>
-                    ),
-                  },
-                  {
-                    key: 'totalDuration',
-                    header: 'Total',
-                    width: '80px',
-                    render: (row) => <span className="tabular-nums text-text-muted">{formatDuration(row.totalDuration as number)}</span>,
-                  },
-                ]}
+                columns={PERFORMANCE_COLUMNS}
                 data={perfStats as unknown as Record<string, unknown>[]}
                 selectedIndex={detailIndex ?? undefined}
-                onRowClick={(_, i) => setDetailIndex(i)}
+                onRowClick={handleRowClick}
               />
             )}
 
             {activeTab === 'schema' && (
               <DataTable
-                columns={[
-                  {
-                    key: 'name',
-                    header: 'Table',
-                    width: '180px',
-                    render: (row) => (
-                      <span className="font-mono text-[13px] font-medium text-text-primary">{row.name as string}</span>
-                    ),
-                  },
-                  {
-                    key: 'totalQueries',
-                    header: 'Queries',
-                    width: '80px',
-                    render: (row) => <span className="tabular-nums">{formatNumber(row.totalQueries as number)}</span>,
-                  },
-                  {
-                    key: 'select',
-                    header: 'SEL',
-                    width: '60px',
-                    render: (row) => {
-                      const ops = (row as unknown as TableInfo).operations;
-                      return <span className="tabular-nums text-blue">{ops.SELECT || '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'insert',
-                    header: 'INS',
-                    width: '60px',
-                    render: (row) => {
-                      const ops = (row as unknown as TableInfo).operations;
-                      return <span className="tabular-nums text-green">{ops.INSERT || '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'update',
-                    header: 'UPD',
-                    width: '60px',
-                    render: (row) => {
-                      const ops = (row as unknown as TableInfo).operations;
-                      return <span className="tabular-nums text-amber">{ops.UPDATE || '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'delete',
-                    header: 'DEL',
-                    width: '60px',
-                    render: (row) => {
-                      const ops = (row as unknown as TableInfo).operations;
-                      return <span className="tabular-nums text-red">{ops.DELETE || '\u2014'}</span>;
-                    },
-                  },
-                  {
-                    key: 'avgDuration',
-                    header: 'Avg',
-                    width: '80px',
-                    render: (row) => <span className="tabular-nums">{formatDuration(row.avgDuration as number)}</span>,
-                  },
-                ]}
+                columns={SCHEMA_COLUMNS}
                 data={schema as unknown as Record<string, unknown>[]}
                 selectedIndex={detailIndex ?? undefined}
-                onRowClick={(_, i) => setDetailIndex(i)}
+                onRowClick={handleRowClick}
               />
             )}
             </>
@@ -428,7 +455,7 @@ export function DatabasePage() {
         {/* Detail panels */}
         <DetailPanel
           open={selectedQuery !== null}
-          onClose={() => setDetailIndex(null)}
+          onClose={handleCloseDetail}
           title={selectedQuery ? (selectedQuery.label || selectedQuery.operation) : ''}
           subtitle={selectedQuery ? `${formatDuration(selectedQuery.duration)} · ${selectedQuery.source}` : ''}
         >
@@ -476,7 +503,7 @@ export function DatabasePage() {
 
         <DetailPanel
           open={selectedPerf !== null}
-          onClose={() => setDetailIndex(null)}
+          onClose={handleCloseDetail}
           title={selectedPerf ? `${selectedPerf.operation} Pattern` : ''}
           subtitle={selectedPerf ? `${selectedPerf.callCount} calls · ${formatDuration(selectedPerf.totalDuration)} total` : ''}
         >
@@ -510,7 +537,7 @@ export function DatabasePage() {
 
         <DetailPanel
           open={selectedTable !== null}
-          onClose={() => setDetailIndex(null)}
+          onClose={handleCloseDetail}
           title={selectedTable ? selectedTable.name : ''}
           subtitle={selectedTable ? `${formatNumber(selectedTable.totalQueries)} queries · Avg ${formatDuration(selectedTable.avgDuration)}` : ''}
         >

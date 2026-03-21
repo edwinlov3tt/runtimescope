@@ -11,6 +11,37 @@ const CAUSE_COLORS: Record<string, string> = {
   props: 'var(--color-blue)', state: 'var(--color-green)', context: 'var(--color-purple)', parent: 'var(--color-amber)', unknown: 'var(--color-text-muted)',
 };
 
+const BADGE_COLORS: Record<string, string> = { props: 'blue', state: 'green', context: 'purple', parent: 'amber' };
+
+const RENDER_COLUMNS = [
+  {
+    key: 'componentName', header: 'Component', width: '200px',
+    render: (row: any) => (
+      <span className="flex items-center gap-2">
+        {row.suspicious && <StatusDot color="amber" size="sm" pulse />}
+        <span className="font-medium">{row.componentName as string}</span>
+      </span>
+    ),
+  },
+  { key: 'renderCount', header: 'Renders', width: '100px', render: (row: any) => <span className="tabular-nums">{row.renderCount as number}</span> },
+  { key: 'avgDuration', header: 'Avg (ms)', width: '100px', render: (row: any) => <span className="tabular-nums">{(row.avgDuration as number).toFixed(1)}</span> },
+  {
+    key: 'lastRenderCause', header: 'Cause', width: '100px',
+    render: (row: any) => {
+      const cause = (row.lastRenderCause || 'unknown') as string;
+      return <Badge variant={(BADGE_COLORS[cause] || 'default') as any} size="sm">{cause}</Badge>;
+    },
+  },
+  {
+    key: 'renderVelocity', header: 'Velocity/min', width: '120px',
+    render: (row: any) => {
+      const v = row.renderVelocity as number;
+      return <span className={cn('tabular-nums', v > 10 ? 'text-amber' : 'text-text-secondary')}>{v.toFixed(1)}</span>;
+    },
+  },
+  { key: 'lastRenderPhase', header: 'Phase', width: '80px' },
+];
+
 export function RendersPage() {
   const [search, setSearch] = useState('');
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
@@ -69,35 +100,7 @@ export function RendersPage() {
           {/* Table */}
           <div className="flex-1 overflow-auto">
             <DataTable
-              columns={[
-                {
-                  key: 'componentName', header: 'Component', width: '200px',
-                  render: (row) => (
-                    <span className="flex items-center gap-2">
-                      {(row as any).suspicious && <StatusDot color="amber" size="sm" pulse />}
-                      <span className="font-medium">{row.componentName as string}</span>
-                    </span>
-                  ),
-                },
-                { key: 'renderCount', header: 'Renders', width: '100px', render: (row) => <span className="tabular-nums">{row.renderCount as number}</span> },
-                { key: 'avgDuration', header: 'Avg (ms)', width: '100px', render: (row) => <span className="tabular-nums">{(row.avgDuration as number).toFixed(1)}</span> },
-                {
-                  key: 'lastRenderCause', header: 'Cause', width: '100px',
-                  render: (row) => {
-                    const cause = (row.lastRenderCause || 'unknown') as string;
-                    const colors: Record<string, string> = { props: 'blue', state: 'green', context: 'purple', parent: 'amber' };
-                    return <Badge variant={(colors[cause] || 'default') as any} size="sm">{cause}</Badge>;
-                  },
-                },
-                {
-                  key: 'renderVelocity', header: 'Velocity/min', width: '120px',
-                  render: (row) => {
-                    const v = row.renderVelocity as number;
-                    return <span className={cn('tabular-nums', v > 10 ? 'text-amber' : 'text-text-secondary')}>{v.toFixed(1)}</span>;
-                  },
-                },
-                { key: 'lastRenderPhase', header: 'Phase', width: '80px' },
-              ]}
+              columns={RENDER_COLUMNS}
               data={filtered as any}
               selectedIndex={detailIndex ?? undefined}
               onRowClick={(_, i) => setDetailIndex(i)}

@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, StatusDot } from '@/components/ui';
 import { useDataStore } from '@/stores/use-data-store';
@@ -8,6 +8,20 @@ import { cn } from '@/lib/cn';
 import { formatDuration } from '@/lib/format';
 
 const METHOD_COLORS: Record<string, string> = { GET: 'green', POST: 'purple', PUT: 'amber', DELETE: 'red', PATCH: 'orange' };
+
+const ENDPOINT_COLUMNS = [
+  { key: 'method', header: 'Method', width: '90px', render: (row: any) => <Badge variant={(METHOD_COLORS[row.method as string] || 'default') as any} size="sm">{row.method as string}</Badge> },
+  { key: 'normalizedPath', header: 'Path', render: (row: any) => <span className="font-mono text-[13px]">{row.normalizedPath as string}</span> },
+  { key: 'service', header: 'Service', width: '140px', render: (row: any) => <span className="text-text-secondary">{row.service as string}</span> },
+  { key: 'callCount', header: 'Calls', width: '80px', render: (row: any) => <span className="tabular-nums">{row.callCount as number}</span> },
+  {
+    key: 'auth', header: 'Auth', width: '80px',
+    render: (row: any) => {
+      const auth = (row.auth as any)?.type || 'none';
+      return <Badge variant={auth === 'none' ? 'default' : 'green'} size="sm">{auth}</Badge>;
+    },
+  },
+];
 
 export function ApiMapPage() {
   const [activeTab, setActiveTab] = useState('endpoints');
@@ -32,6 +46,20 @@ export function ApiMapPage() {
 
   const selectedHealth = selectedPath ? endpointHealth.find((h) => `${h.method} ${h.normalizedPath}` === selectedPath) : null;
 
+  const healthStats = useMemo(() => {
+    if (!selectedHealth) return [];
+    return [
+      { label: 'Success Rate', value: `${(selectedHealth.successRate * 100).toFixed(0)}%` },
+      { label: 'Error Rate', value: `${(selectedHealth.errorRate * 100).toFixed(1)}%` },
+      { label: 'Avg Latency', value: formatDuration(selectedHealth.avgLatency) },
+      { label: 'P95 Latency', value: formatDuration(selectedHealth.p95Latency) },
+      { label: 'P50 Latency', value: formatDuration(selectedHealth.p50Latency) },
+      { label: 'Total Calls', value: String(selectedHealth.callCount) },
+    ];
+  }, [selectedHealth]);
+
+  const handleCloseDetail = useCallback(() => setSelectedPath(null), []);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
@@ -46,19 +74,7 @@ export function ApiMapPage() {
         <div className="flex-1 overflow-auto">
           {activeTab === 'endpoints' && (
             <DataTable
-              columns={[
-                { key: 'method', header: 'Method', width: '90px', render: (row) => <Badge variant={(METHOD_COLORS[row.method as string] || 'default') as any} size="sm">{row.method as string}</Badge> },
-                { key: 'normalizedPath', header: 'Path', render: (row) => <span className="font-mono text-[13px]">{row.normalizedPath as string}</span> },
-                { key: 'service', header: 'Service', width: '140px', render: (row) => <span className="text-text-secondary">{row.service as string}</span> },
-                { key: 'callCount', header: 'Calls', width: '80px', render: (row) => <span className="tabular-nums">{row.callCount as number}</span> },
-                {
-                  key: 'auth', header: 'Auth', width: '80px',
-                  render: (row) => {
-                    const auth = (row.auth as any)?.type || 'none';
-                    return <Badge variant={auth === 'none' ? 'default' : 'green'} size="sm">{auth}</Badge>;
-                  },
-                },
-              ]}
+              columns={ENDPOINT_COLUMNS}
               data={endpoints as any}
               onRowClick={(row) => setSelectedPath(`${(row as any).method} ${(row as any).normalizedPath}`)}
               selectedIndex={selectedPath ? endpoints.findIndex((e) => `${e.method} ${e.normalizedPath}` === selectedPath) : undefined}
@@ -92,21 +108,14 @@ export function ApiMapPage() {
 
         <DetailPanel
           open={selectedHealth !== null}
-          onClose={() => setSelectedPath(null)}
+          onClose={handleCloseDetail}
           title={selectedHealth ? `${selectedHealth.method} ${selectedHealth.normalizedPath}` : ''}
           subtitle={selectedHealth ? selectedHealth.service : ''}
         >
           {selectedHealth && (
             <div className="p-4 space-y-3">
               <div className="grid grid-cols-2 gap-3">
-                {[
-                  { label: 'Success Rate', value: `${(selectedHealth.successRate * 100).toFixed(0)}%` },
-                  { label: 'Error Rate', value: `${(selectedHealth.errorRate * 100).toFixed(1)}%` },
-                  { label: 'Avg Latency', value: formatDuration(selectedHealth.avgLatency) },
-                  { label: 'P95 Latency', value: formatDuration(selectedHealth.p95Latency) },
-                  { label: 'P50 Latency', value: formatDuration(selectedHealth.p50Latency) },
-                  { label: 'Total Calls', value: String(selectedHealth.callCount) },
-                ].map((item) => (
+                {healthStats.map((item) => (
                   <div key={item.label} className="bg-bg-elevated rounded-md p-3 border border-border-muted">
                     <p className="text-[11px] text-text-muted">{item.label}</p>
                     <p className="text-[15px] font-bold tabular-nums">{item.value}</p>

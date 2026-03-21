@@ -1,10 +1,11 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DetailPanel, Badge, JsonViewer, Tabs } from '@/components/ui';
 import { cn } from '@/lib/cn';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { formatTimestamp } from '@/lib/format';
+import type { StateEvent } from '@/lib/runtime-types';
 
 export function StatePage() {
   const [activeTab, setActiveTab] = useState('mutations');
@@ -27,8 +28,17 @@ export function StatePage() {
     return Array.from(map.values());
   }, [allData]);
 
-  const mutations = allData.filter((e) => e.phase === 'update');
-  const selected = selectedId ? allData.find((e) => e.eventId === selectedId) : null;
+  const latestByStore = useMemo(() => {
+    const map = new Map<string, StateEvent>();
+    for (const e of allData) {
+      map.set(e.storeId, e); // later entries overwrite earlier ones, keeping the latest
+    }
+    return map;
+  }, [allData]);
+
+  const mutations = useMemo(() => allData.filter((e) => e.phase === 'update'), [allData]);
+  const selected = useMemo(() => selectedId ? allData.find((e) => e.eventId === selectedId) ?? null : null, [allData, selectedId]);
+  const clearSelection = useCallback(() => setSelectedId(null), []);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -55,7 +65,7 @@ export function StatePage() {
                   </div>
                   <div className="bg-bg-surface rounded-md p-3 border border-border-muted">
                     <JsonViewer
-                      data={allData.filter((e) => e.storeId === store.id).pop()?.state}
+                      data={latestByStore.get(store.id)?.state}
                       defaultExpanded={false}
                     />
                   </div>
@@ -95,7 +105,7 @@ export function StatePage() {
 
         <DetailPanel
           open={selected !== null}
-          onClose={() => setSelectedId(null)}
+          onClose={clearSelection}
           title={selected ? `${selected.storeId} — ${selected.action?.type || 'update'}` : ''}
           subtitle={selected ? formatTimestamp(selected.timestamp) : ''}
         >

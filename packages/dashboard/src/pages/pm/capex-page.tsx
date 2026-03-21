@@ -11,7 +11,7 @@ import {
   ResponsiveContainer,
   CartesianGrid,
 } from 'recharts';
-import { DollarSign, Download, CheckCircle, TrendingUp } from 'lucide-react';
+import { DollarSign, Download, CheckCircle, TrendingUp, Clock } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { getCapexExportUrl } from '@/lib/pm-api';
 import type {
@@ -27,6 +27,10 @@ import type {
 
 function formatCost(microdollars: number): string {
   return `$${(microdollars / 1_000_000).toFixed(2)}`;
+}
+
+function formatHours(minutes: number): string {
+  return (minutes / 60).toFixed(1);
 }
 
 const classificationVariant: Record<CapexClassification, 'green' | 'default'> = {
@@ -228,6 +232,15 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
         },
       },
       {
+        key: 'activeHours',
+        header: 'Active Hours',
+        sortable: true,
+        render: (row: Record<string, unknown>) => {
+          const mins = (row as unknown as PmCapexEntry).activeMinutes;
+          return mins === 0 ? '0.00' : (mins / 60).toFixed(2);
+        },
+      },
+      {
         key: 'costMicrodollars',
         header: 'Cost',
         sortable: true,
@@ -362,7 +375,12 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
           )}
 
           {/* Summary Metric Cards */}
-          <div className="grid grid-cols-4 gap-4">
+          <div className="grid grid-cols-5 gap-4">
+            <MetricCard
+              label="Active Hours"
+              value={capexSummary ? `${formatHours(capexSummary.totalActiveMinutes)}h` : '0h'}
+              icon={<Clock size={16} />}
+            />
             <MetricCard
               label="Total Cost"
               value={capexSummary ? formatCost(capexSummary.totalCostMicrodollars) : '$0.00'}

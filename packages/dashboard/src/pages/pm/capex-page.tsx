@@ -222,7 +222,10 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
         key: 'activeMinutes',
         header: 'Active Mins',
         sortable: true,
-        render: (row: Record<string, unknown>) => String((row as unknown as PmCapexEntry).activeMinutes),
+        render: (row: Record<string, unknown>) => {
+          const mins = (row as unknown as PmCapexEntry).activeMinutes;
+          return mins === 0 ? '0' : mins.toFixed(1);
+        },
       },
       {
         key: 'costMicrodollars',

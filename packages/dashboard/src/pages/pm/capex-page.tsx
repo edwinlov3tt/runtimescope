@@ -3,13 +3,13 @@ import { usePmStore } from '@/stores/use-pm-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { MetricCard, DataTable, Badge, Button } from '@/components/ui';
 import {
-  BarChart,
-  Bar,
+  AreaChart,
+  Area,
   XAxis,
   YAxis,
   Tooltip,
   ResponsiveContainer,
-  Legend,
+  CartesianGrid,
 } from 'recharts';
 import { DollarSign, Download, CheckCircle, TrendingUp } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -59,18 +59,39 @@ const phaseVariant: Record<ProjectPhase, 'default' | 'blue' | 'green'> = {
 };
 
 // Stable chart style objects (hoisted to avoid re-creating on every render)
-const CHART_TICK = { fill: '#6b7280', fontSize: 11 };
-const CHART_AXIS_LINE = { stroke: '#2a2a4a' };
-const CHART_TOOLTIP_STYLE = {
-  background: '#1a1a2e',
-  border: '1px solid #2a2a4a',
+const CHART_TICK = { fill: 'var(--color-text-muted)', fontSize: 11, fontFamily: 'var(--font-mono, monospace)' };
+const CHART_AXIS_LINE = { stroke: 'var(--color-border-muted)' };
+const CHART_GRID = { stroke: 'var(--color-border-muted)', strokeDasharray: '3 3', strokeOpacity: 0.4 };
+const CHART_TOOLTIP_STYLE: React.CSSProperties = {
+  background: 'var(--color-bg-elevated)',
+  border: '1px solid var(--color-border-default)',
   borderRadius: 8,
+  padding: '10px 14px',
+  boxShadow: '0 4px 12px rgba(0,0,0,0.3)',
 };
-const CHART_TOOLTIP_LABEL_STYLE = { color: '#9ca3af' };
-const CHART_LEGEND_STYLE = { fontSize: 12, color: '#9ca3af' };
+const CHART_TOOLTIP_LABEL_STYLE: React.CSSProperties = { color: 'var(--color-text-muted)', fontSize: 11, marginBottom: 4 };
 const CHART_TICK_FORMATTER = (v: number) => `$${v.toFixed(0)}`;
-const CHART_TOOLTIP_FORMATTER = (value: number | undefined) =>
-  value != null ? `$${value.toFixed(2)}` : '';
+
+/** Get ISO week string (e.g., "Mar 17") from a timestamp */
+function getWeekLabel(ts: number): string {
+  const d = new Date(ts);
+  // Start of week (Monday)
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(d);
+  monday.setDate(diff);
+  return monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** Get week key for grouping (YYYY-Www) */
+function getWeekKey(ts: number): string {
+  const d = new Date(ts);
+  const day = d.getDay();
+  const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(d);
+  monday.setDate(diff);
+  return monday.toISOString().slice(0, 10);
+}
 
 // ---------------------------------------------------------------------------
 // Component
@@ -107,15 +128,28 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
     return map;
   }, [sessions]);
 
-  // Chart data from summary
+  // Weekly breakdown derived from entries
   const chartData = useMemo(() => {
-    if (!capexSummary?.byMonth) return [];
-    return capexSummary.byMonth.map((m) => ({
-      period: m.period,
-      capitalizable: m.capitalizable / 1_000_000,
-      expensed: m.expensed / 1_000_000,
-    }));
-  }, [capexSummary]);
+    if (capexEntries.length === 0) return [];
+    const weeks = new Map<string, { week: string; label: string; capitalizable: number; expensed: number; total: number }>();
+
+    for (const entry of capexEntries) {
+      const ts = entry.createdAt;
+      const key = getWeekKey(ts);
+      const existing = weeks.get(key) ?? { week: key, label: getWeekLabel(ts), capitalizable: 0, expensed: 0, total: 0 };
+      const cost = entry.adjustedCostMicrodollars / 1_000_000;
+      if (entry.classification === 'capitalizable') {
+        existing.capitalizable += cost;
+      } else {
+        existing.expensed += cost;
+      }
+      existing.total += cost;
+      weeks.set(key, existing);
+    }
+
+    return Array.from(weeks.values())
+      .sort((a, b) => a.week.localeCompare(b.week));
+  }, [capexEntries]);
 
   // Confirmed / total counts
   const confirmedCount = capexSummary?.confirmedCount ?? 0;
@@ -341,49 +375,82 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
             />
           </div>
 
-          {/* Monthly Chart */}
+          {/* Weekly Spend Chart */}
           {chartData.length > 0 && (
             <div className="rounded-lg border border-border-default bg-bg-elevated p-5">
-              <h2 className="text-sm font-semibold text-text-primary mb-4">
-                Monthly Breakdown
-              </h2>
-              <ResponsiveContainer width="100%" height={250}>
-                <BarChart data={chartData}>
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h2 className="text-sm font-semibold text-text-primary">
+                    Weekly Breakdown
+                  </h2>
+                  <p className="text-[11px] text-text-tertiary mt-0.5">
+                    Spend by classification per week
+                  </p>
+                </div>
+                <div className="flex items-center gap-4">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-green" />
+                    <span className="text-[11px] text-text-muted">Capitalizable</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 rounded-full bg-text-muted" />
+                    <span className="text-[11px] text-text-muted">Expensed</span>
+                  </div>
+                </div>
+              </div>
+              <ResponsiveContainer width="100%" height={220}>
+                <AreaChart data={chartData} margin={{ top: 4, right: 8, bottom: 0, left: 0 }}>
+                  <defs>
+                    <linearGradient id="gradCap" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#22c55e" stopOpacity={0.25} />
+                      <stop offset="100%" stopColor="#22c55e" stopOpacity={0.02} />
+                    </linearGradient>
+                    <linearGradient id="gradExp" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0%" stopColor="#6b7280" stopOpacity={0.2} />
+                      <stop offset="100%" stopColor="#6b7280" stopOpacity={0.02} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid {...CHART_GRID} vertical={false} />
                   <XAxis
-                    dataKey="period"
+                    dataKey="label"
                     tick={CHART_TICK}
                     axisLine={CHART_AXIS_LINE}
                     tickLine={false}
                   />
                   <YAxis
                     tick={CHART_TICK}
-                    axisLine={CHART_AXIS_LINE}
+                    axisLine={false}
                     tickLine={false}
                     tickFormatter={CHART_TICK_FORMATTER}
+                    width={50}
                   />
                   <Tooltip
                     contentStyle={CHART_TOOLTIP_STYLE}
-                    formatter={CHART_TOOLTIP_FORMATTER}
                     labelStyle={CHART_TOOLTIP_LABEL_STYLE}
+                    formatter={(value: number) => [`$${value.toFixed(2)}`, '']}
+                    separator=""
                   />
-                  <Legend
-                    wrapperStyle={CHART_LEGEND_STYLE}
-                  />
-                  <Bar
+                  <Area
+                    type="monotone"
                     dataKey="capitalizable"
                     name="Capitalizable"
-                    stackId="cost"
-                    fill="#22c55e"
-                    radius={[0, 0, 0, 0]}
+                    stroke="#22c55e"
+                    strokeWidth={2}
+                    fill="url(#gradCap)"
+                    dot={{ r: 3, fill: '#22c55e', strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: '#22c55e', stroke: '#1a1a2e', strokeWidth: 2 }}
                   />
-                  <Bar
+                  <Area
+                    type="monotone"
                     dataKey="expensed"
                     name="Expensed"
-                    stackId="cost"
-                    fill="#6b7280"
-                    radius={[4, 4, 0, 0]}
+                    stroke="#6b7280"
+                    strokeWidth={2}
+                    fill="url(#gradExp)"
+                    dot={{ r: 3, fill: '#6b7280', strokeWidth: 0 }}
+                    activeDot={{ r: 5, fill: '#6b7280', stroke: '#1a1a2e', strokeWidth: 2 }}
                   />
-                </BarChart>
+                </AreaChart>
               </ResponsiveContainer>
             </div>
           )}

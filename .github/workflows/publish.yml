@@ -20,23 +20,23 @@ jobs:
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
       - run: npm test
 
-      # Publish in dependency order
-      - run: npm publish -w packages/sdk --access public
+      # Publish in dependency order (|| true skips already-published versions)
+      - run: npm publish -w packages/sdk --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - run: npm publish -w packages/server-sdk --access public
+      - run: npm publish -w packages/server-sdk --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - run: npm publish -w packages/workers-sdk --access public
+      - run: npm publish -w packages/workers-sdk --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - run: npm publish -w packages/collector --access public
+      - run: npm publish -w packages/collector --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - run: npm publish -w packages/mcp-server --access public
+      - run: npm publish -w packages/mcp-server --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

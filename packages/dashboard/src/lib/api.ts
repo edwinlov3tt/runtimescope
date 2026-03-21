@@ -25,6 +25,7 @@ export interface ProjectInfo {
   sessions: string[];
   isConnected: boolean;
   eventCount: number;
+  projectId?: string;
 }
 
 async function get<T>(path: string, params?: Record<string, string | number | undefined>): Promise<T[] | null> {
@@ -106,6 +107,7 @@ export async function fetchNetworkEvents(params?: {
   url_pattern?: string;
   method?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<NetworkEvent[] | null> {
   return get<NetworkEvent>(`${BASE}/api/events/network`, params);
 }
@@ -115,6 +117,7 @@ export async function fetchConsoleEvents(params?: {
   level?: string;
   search?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<ConsoleEvent[] | null> {
   return get<ConsoleEvent>(`${BASE}/api/events/console`, params);
 }
@@ -123,6 +126,7 @@ export async function fetchStateEvents(params?: {
   since_seconds?: number;
   store_id?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<StateEvent[] | null> {
   return get<StateEvent>(`${BASE}/api/events/state`, params);
 }
@@ -131,6 +135,7 @@ export async function fetchRenderEvents(params?: {
   since_seconds?: number;
   component?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<RenderEvent[] | null> {
   return get<RenderEvent>(`${BASE}/api/events/renders`, params);
 }
@@ -139,6 +144,7 @@ export async function fetchPerformanceEvents(params?: {
   since_seconds?: number;
   metric?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<PerformanceEvent[] | null> {
   return get<PerformanceEvent>(`${BASE}/api/events/performance`, params);
 }
@@ -149,6 +155,7 @@ export async function fetchDatabaseEvents(params?: {
   min_duration_ms?: number;
   search?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<DatabaseEvent[] | null> {
   return get<DatabaseEvent>(`${BASE}/api/events/database`, params);
 }
@@ -157,6 +164,7 @@ export async function fetchCustomEvents(params?: {
   since_seconds?: number;
   name?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<CustomEvent[] | null> {
   return get<CustomEvent>(`${BASE}/api/events/custom`, params);
 }
@@ -165,6 +173,7 @@ export async function fetchUIEvents(params?: {
   since_seconds?: number;
   action?: 'click' | 'breadcrumb';
   session_id?: string;
+  project_id?: string;
 }): Promise<UIInteractionEvent[] | null> {
   return get<UIInteractionEvent>(`${BASE}/api/events/ui`, params);
 }
@@ -173,6 +182,7 @@ export async function fetchTimelineEvents(params?: {
   since_seconds?: number;
   event_types?: string;
   session_id?: string;
+  project_id?: string;
 }): Promise<(NetworkEvent | ConsoleEvent | StateEvent | RenderEvent | PerformanceEvent | DatabaseEvent)[] | null> {
   return get(`${BASE}/api/events/timeline`, params);
 }

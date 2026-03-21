@@ -78,7 +78,12 @@ function doConnect(): void {
           const project = projects.find((p) => p.appName === selectedProject);
           // If the selected project isn't in the runtime list (SDK not connected),
           // drop all events — otherwise they leak from other apps
-          if (!project || !project.sessions.includes(msg.data.sessionId)) {
+          if (!project) return;
+          // Match by projectId (reliable) or sessionId list (fallback)
+          const eventProjectId = msg.data.projectId;
+          if (project.projectId && eventProjectId) {
+            if (eventProjectId !== project.projectId) return;
+          } else if (!project.sessions.includes(msg.data.sessionId)) {
             return;
           }
         }

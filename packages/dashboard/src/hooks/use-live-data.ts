@@ -16,20 +16,22 @@ import {
 const POLL_INTERVAL = 2000;
 
 /**
- * Resolve selectedProject → session_id for API filtering.
- * Returns:
- *   - A real session_id when the project is connected with sessions
- *   - '__none__' sentinel when a project is selected but has no sessions
- *     (ensures API returns zero results instead of everything)
- *   - undefined when no project is selected (legacy unfiltered mode)
+ * Resolve selectedProject → project_id for API filtering.
+ * Uses projectId (proj_xxx) when available for reliable cross-session scoping,
+ * falls back to session_id for backwards compatibility.
  */
-function getSessionIdFilter(): string | undefined {
+function getProjectFilter(): { project_id?: string; session_id?: string } {
   const { selectedProject, projects } = useAppStore.getState();
-  if (!selectedProject) return undefined;
+  if (!selectedProject) return {};
 
   const project = projects.find((p) => p.appName === selectedProject);
-  if (!project || project.sessions.length === 0) return '__none__';
-  return project.sessions[0];
+  if (!project || project.sessions.length === 0) return { session_id: '__none__' };
+
+  // Prefer project_id (scopes all sessions for this project)
+  if (project.projectId) return { project_id: project.projectId };
+
+  // Fallback: use first session_id (legacy, pre-projectId)
+  return { session_id: project.sessions[0] };
 }
 
 type Fetcher = () => Promise<void>;
@@ -37,38 +39,38 @@ type Fetcher = () => Promise<void>;
 function makeFetchers(): Record<string, Fetcher> {
   return {
     network: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchNetworkEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchNetworkEvents(filter);
       if (data) useDataStore.getState().setNetwork(data);
     },
     console: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchConsoleEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchConsoleEvents(filter);
       if (data) useDataStore.getState().setConsole(data);
     },
     state: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchStateEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchStateEvents(filter);
       if (data) useDataStore.getState().setState(data);
     },
     renders: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchRenderEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchRenderEvents(filter);
       if (data) useDataStore.getState().setRenders(data);
     },
     performance: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchPerformanceEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchPerformanceEvents(filter);
       if (data) useDataStore.getState().setPerformance(data);
     },
     database: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchDatabaseEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchDatabaseEvents(filter);
       if (data) useDataStore.getState().setDatabase(data);
     },
     breadcrumbs: async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchUIEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchUIEvents(filter);
       if (data) useDataStore.getState().setUI(data);
     },
     processes: async () => {
@@ -81,8 +83,8 @@ function makeFetchers(): Record<string, Fetcher> {
     overview: fetchAllFiltered,
     issues: fetchAllFiltered,
     'api-map': async () => {
-      const sid = getSessionIdFilter();
-      const data = await fetchNetworkEvents({ session_id: sid });
+      const filter = getProjectFilter();
+      const data = await fetchNetworkEvents(filter);
       if (data) useDataStore.getState().setNetwork(data);
     },
     sessions: async () => {
@@ -92,15 +94,14 @@ function makeFetchers(): Record<string, Fetcher> {
 }
 
 async function fetchAllFiltered(): Promise<void> {
-  const sid = getSessionIdFilter();
-  const params = sid ? { session_id: sid } : undefined;
+  const filter = getProjectFilter();
   const [net, con, st, ren, perf, db] = await Promise.all([
-    fetchNetworkEvents(params),
-    fetchConsoleEvents(params),
-    fetchStateEvents(params),
-    fetchRenderEvents(params),
-    fetchPerformanceEvents(params),
-    fetchDatabaseEvents(params),
+    fetchNetworkEvents(filter),
+    fetchConsoleEvents(filter),
+    fetchStateEvents(filter),
+    fetchRenderEvents(filter),
+    fetchPerformanceEvents(filter),
+    fetchDatabaseEvents(filter),
   ]);
   const s = useDataStore.getState();
   if (net) s.setNetwork(net);

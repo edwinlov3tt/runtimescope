@@ -1,6 +1,6 @@
 ---
 description: Update RuntimeScope SDK to latest — detect installed packages, upgrade, check for new features
-allowed-tools: ["Bash", "Read", "Grep", "Glob", "WebFetch", "mcp__runtimescope__get_session_info", "mcp__runtimescope__get_sdk_snippet"]
+allowed-tools: ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "WebFetch", "mcp__runtimescope__get_session_info", "mcp__runtimescope__get_sdk_snippet", "mcp__runtimescope__get_project_config"]
 ---
 
 # Update RuntimeScope — Upgrade SDK & Discover New Features
@@ -83,20 +83,51 @@ From the README, extract:
 
 ---
 
-## Phase 4: Apply New Features
+## Phase 4: Ensure Project Config
 
-### 4.1 Project ID (v0.9.0+)
-Check if the user's SDK init already has `projectId`. If not, suggest adding it:
+Check if `.runtimescope/config.json` exists:
 
-Search the codebase for RuntimeScope.init or RuntimeScope.connect calls:
 ```bash
-grep -rn "RuntimeScope\.\(init\|connect\)" --include="*.ts" --include="*.tsx" --include="*.js" --include="*.jsx" . 2>/dev/null | grep -v node_modules | grep -v dist/
+cat .runtimescope/config.json 2>/dev/null || echo "NOT_FOUND"
 ```
 
-If `projectId` is missing from their init config:
-- Use `get_sdk_snippet` to generate a snippet with a `projectId` for their app
-- Show the user what to add: just the `projectId: 'proj_xxx',` line to their existing config
-- Explain: "This groups all your SDKs (browser, server, worker) under one project so MCP tools can scope queries per-project"
+### If NOT found — scaffold it:
+
+1. Detect the framework (same as `/setup` Phase 1):
+```bash
+cat package.json 2>/dev/null | grep -E '"(next|react|vue|svelte|angular|nuxt|wrangler)"' | head -5
+ls wrangler.toml 2>/dev/null
+```
+
+2. Determine the app name from `package.json` name field or directory basename:
+```bash
+cat package.json 2>/dev/null | grep '"name"' | head -1
+basename "$PWD"
+```
+
+3. Call `get_sdk_snippet` with `project_dir` set to the current working directory. This auto-creates `.runtimescope/config.json` with:
+   - A stable `projectId`
+   - Detected framework and SDK type
+   - Default capture settings (performance, renders, console, etc.)
+
+4. Check if the SDK init code already has `projectId`. If not, show the user what to add — just the `projectId: 'proj_xxx',` line.
+
+5. Check if global hooks are registered:
+```bash
+cat ~/.claude/settings.json 2>/dev/null | grep -c "9091" || echo "0"
+```
+If hooks are not registered, offer to add them (same as `/setup` Phase 7).
+
+### If found — verify it:
+
+Use `get_project_config` to read it and check:
+- Does it have a `projectId`?
+- Are all installed SDKs listed in `sdks[]`?
+- Are capture settings up to date?
+
+If the SDK init code has a `projectId` that doesn't match the config, flag it.
+
+---
 
 ### 4.2 New Slash Commands
 Check which commands the user has vs what's available:

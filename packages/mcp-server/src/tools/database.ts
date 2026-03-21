@@ -12,6 +12,7 @@ import {
   detectSlowQueries,
   suggestIndexes,
 } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerDatabaseTools(
   server: McpServer,
@@ -25,21 +26,22 @@ export function registerDatabaseTools(
     'get_query_log',
     'Get captured database queries with SQL, timing, rows returned, and source ORM. Requires server-side SDK instrumentation.',
     {
+      project_id: projectIdParam,
       since_seconds: z.number().optional().describe('Only return queries from the last N seconds'),
       table: z.string().optional().describe('Filter by table name'),
       min_duration_ms: z.number().optional().describe('Only return queries slower than N ms'),
       search: z.string().optional().describe('Search query text'),
     },
-    async ({ since_seconds, table, min_duration_ms, search }) => {
+    async ({ project_id, since_seconds, table, min_duration_ms, search }) => {
       const events = store.getDatabaseEvents({
+        projectId: project_id,
         sinceSeconds: since_seconds,
         table,
         minDurationMs: min_duration_ms,
         search,
       });
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const totalDuration = events.reduce((s, e) => s + e.duration, 0);
       const avgDuration = events.length > 0 ? totalDuration / events.length : 0;
@@ -72,6 +74,7 @@ export function registerDatabaseTools(
             : { from: 0, to: 0 },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 
@@ -86,16 +89,16 @@ export function registerDatabaseTools(
     'get_query_performance',
     'Get aggregated database query performance stats: avg/max/p95 duration, call counts, N+1 detection, and slow query analysis.',
     {
+      project_id: projectIdParam,
       since_seconds: z.number().optional().describe('Analyze queries from the last N seconds'),
     },
-    async ({ since_seconds }) => {
-      const events = store.getDatabaseEvents({ sinceSeconds: since_seconds });
+    async ({ project_id, since_seconds }) => {
+      const events = store.getDatabaseEvents({ projectId: project_id, sinceSeconds: since_seconds });
       const stats = aggregateQueryStats(events);
       const n1Issues = detectN1Queries(events);
       const slowIssues = detectSlowQueries(events);
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const issues: string[] = [
         ...n1Issues.map((i) => i.title),
@@ -123,6 +126,7 @@ export function registerDatabaseTools(
           timeRange: { from: 0, to: Date.now() },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 
@@ -375,14 +379,14 @@ export function registerDatabaseTools(
     'suggest_indexes',
     'Analyze captured database queries and suggest missing indexes based on WHERE/ORDER BY columns and query performance.',
     {
+      project_id: projectIdParam,
       since_seconds: z.number().optional().describe('Analyze queries from the last N seconds'),
     },
-    async ({ since_seconds }) => {
-      const events = store.getDatabaseEvents({ sinceSeconds: since_seconds });
+    async ({ project_id, since_seconds }) => {
+      const events = store.getDatabaseEvents({ projectId: project_id, sinceSeconds: since_seconds });
       const suggestions = suggestIndexes(events);
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const response = {
         summary: `${suggestions.length} index suggestion(s) based on ${events.length} captured queries.`,
@@ -399,6 +403,7 @@ export function registerDatabaseTools(
           timeRange: { from: 0, to: Date.now() },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

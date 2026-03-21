@@ -1,21 +1,22 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconAccessibilityTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_accessibility_tree',
     'Get the accessibility structure of the current page: heading hierarchy (h1-h6), ARIA landmarks (nav, main, aside), form fields with labels, buttons, links, and images with alt text status. Useful for ensuring UI recreations maintain proper semantic HTML and accessibility.',
     {
+      project_id: projectIdParam,
       url: z
         .string()
         .optional()
         .describe('Filter by URL substring'),
     },
-    async ({ url }) => {
+    async ({ project_id, url }) => {
       const event = store.getReconAccessibility({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -25,7 +26,7 @@ export function registerReconAccessibilityTools(server: McpServer, store: EventS
               summary: 'No accessibility data captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_accessibility events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -78,6 +79,7 @@ export function registerReconAccessibilityTools(server: McpServer, store: EventS
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

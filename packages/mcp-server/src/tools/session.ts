@@ -1,13 +1,16 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerSessionTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_session_info',
     'Get information about connected browser sessions and overall event statistics. Use this to check if the SDK is connected.',
-    {},
-    async () => {
-      const sessions = store.getSessionInfo();
+    {
+      project_id: projectIdParam,
+    },
+    async ({ project_id }) => {
+      const { sessions, sessionId } = resolveSessionContext(store, project_id);
 
       const response = {
         summary:
@@ -16,6 +19,7 @@ export function registerSessionTools(server: McpServer, store: EventStore): void
             : 'No active sessions. Make sure the RuntimeScope SDK is injected in your app and connected to ws://localhost:9090.',
         data: sessions.map((s) => ({
           sessionId: s.sessionId,
+          projectId: s.projectId ?? null,
           appName: s.appName,
           sdkVersion: s.sdkVersion,
           connectedAt: new Date(s.connectedAt).toISOString(),
@@ -26,7 +30,8 @@ export function registerSessionTools(server: McpServer, store: EventStore): void
         metadata: {
           timeRange: { from: 0, to: Date.now() },
           eventCount: store.eventCount,
-          sessionId: sessions[0]?.sessionId ?? null,
+          sessionId,
+          projectId: project_id ?? null,
         },
       };
 

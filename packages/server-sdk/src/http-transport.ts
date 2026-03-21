@@ -12,6 +12,7 @@ export interface HttpTransportOptions {
   appName: string;
   sdkVersion: string;
   authToken?: string;
+  projectId?: string;
   maxQueueSize?: number;
   flushIntervalMs?: number;
   maxRetries?: number;
@@ -25,6 +26,7 @@ export class HttpTransport {
   private appName: string;
   private sdkVersion: string;
   private authToken: string | undefined;
+  private projectId?: string;
   private maxQueueSize: number;
   private maxRetries: number;
   private retryDelayMs: number;
@@ -38,6 +40,7 @@ export class HttpTransport {
     this.appName = options.appName;
     this.sdkVersion = options.sdkVersion;
     this.authToken = options.authToken;
+    this.projectId = options.projectId;
     this.maxQueueSize = options.maxQueueSize ?? 10_000;
     this.maxRetries = options.maxRetries ?? 2;
     this.retryDelayMs = options.retryDelayMs ?? 500;
@@ -75,6 +78,7 @@ export class HttpTransport {
     if (!this.sessionRegistered) {
       payload.appName = this.appName;
       payload.sdkVersion = this.sdkVersion;
+      payload.projectId = this.projectId;
     }
 
     const body = JSON.stringify(payload);

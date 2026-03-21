@@ -2,20 +2,23 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { NetworkEvent } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerHarTools(server: McpServer, store: EventStore): void {
   server.tool(
     'capture_har',
     'Export captured network requests as a HAR (HTTP Archive) 1.2 JSON file. This is the standard format used by browser DevTools, Charles Proxy, and other tools. Includes request/response headers, body content (if captureBody was enabled in the SDK), and timing data.',
     {
+      project_id: projectIdParam,
       since_seconds: z
         .number()
         .optional()
         .describe('Only include requests from the last N seconds'),
       limit: z.number().optional().describe('Max entries to include (default 200, max 1000)'),
     },
-    async ({ since_seconds, limit }) => {
+    async ({ project_id, since_seconds, limit }) => {
       const allEvents = store.getNetworkRequests({
+        projectId: project_id,
         sinceSeconds: since_seconds,
       });
 
@@ -23,8 +26,7 @@ export function registerHarTools(server: McpServer, store: EventStore): void {
       const truncated = allEvents.length > maxLimit;
       const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const har = buildHar(events);
 
@@ -41,6 +43,7 @@ export function registerHarTools(server: McpServer, store: EventStore): void {
           totalCount: allEvents.length,
           truncated,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

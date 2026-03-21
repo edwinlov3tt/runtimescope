@@ -161,6 +161,8 @@ export class PmStore {
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN sdk_installed INTEGER DEFAULT 0'); } catch { /* already exists */ }
     // Add runtime_apps column (added in v3) — JSON array of associated SDK appNames
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN runtime_apps TEXT DEFAULT NULL'); } catch { /* already exists */ }
+    // Add runtime_project_id column (added in v4) — stable project ID for multi-SDK grouping
+    try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN runtime_project_id TEXT DEFAULT NULL'); } catch { /* already exists */ }
   }
 
   // ============================================================
@@ -229,6 +231,7 @@ export class PmStore {
     if (updates.sdkInstalled !== undefined) { sets.push('sdk_installed = ?'); params.push(updates.sdkInstalled ? 1 : 0); }
     if (updates.runtimeApps !== undefined) { sets.push('runtime_apps = ?'); params.push(updates.runtimeApps.length ? JSON.stringify(updates.runtimeApps) : null); }
     if (updates.runtimescopeProject !== undefined) { sets.push('runtimescope_project = ?'); params.push(updates.runtimescopeProject ?? null); }
+    if (updates.runtimeProjectId !== undefined) { sets.push('runtime_project_id = ?'); params.push(updates.runtimeProjectId ?? null); }
     if (updates.metadata !== undefined) { sets.push('metadata = ?'); params.push(JSON.stringify(updates.metadata)); }
 
     if (sets.length === 0) return;
@@ -245,17 +248,37 @@ export class PmStore {
    * Matches by: exact name, directory basename, runtimescopeProject, or existing runtimeApps.
    * Returns the project ID if linked, null if no match found.
    */
-  autoLinkApp(appName: string): string | null {
+  autoLinkApp(appName: string, projectId?: string): string | null {
     const projects = this.listProjects();
     const appLower = appName.toLowerCase();
 
-    // 1. Already linked?
+    // 0. If projectId provided, try exact match first (deterministic, no fuzzy matching)
+    if (projectId) {
+      const byProjectId = projects.find((p) => p.runtimeProjectId === projectId);
+      if (byProjectId) {
+        // Ensure appName is in runtimeApps
+        const apps = byProjectId.runtimeApps ?? [];
+        if (!apps.some((a) => a.toLowerCase() === appLower)) {
+          apps.push(appName);
+          this.updateProject(byProjectId.id, { runtimeApps: apps });
+        }
+        return byProjectId.id;
+      }
+    }
+
+    // 1. Already linked by appName?
     const alreadyLinked = projects.find(
       (p) => p.runtimeApps?.some((a) => a.toLowerCase() === appLower),
     );
-    if (alreadyLinked) return alreadyLinked.id;
+    if (alreadyLinked) {
+      // If projectId provided but not yet stored, store it now
+      if (projectId && !alreadyLinked.runtimeProjectId) {
+        this.updateProject(alreadyLinked.id, { runtimeProjectId: projectId });
+      }
+      return alreadyLinked.id;
+    }
 
-    // 2. Find best match
+    // 2. Find best match by name/path/runtimescopeProject
     const match = projects.find((p) => {
       // Exact name match
       if (p.name.toLowerCase() === appLower) return true;
@@ -271,12 +294,16 @@ export class PmStore {
 
     if (!match) return null;
 
-    // Add appName to runtimeApps
+    // Add appName to runtimeApps and store projectId if provided
     const apps = match.runtimeApps ?? [];
     if (!apps.some((a) => a.toLowerCase() === appLower)) {
       apps.push(appName);
-      this.updateProject(match.id, { runtimeApps: apps });
     }
+    const updates: Partial<PmProject> = { runtimeApps: apps };
+    if (projectId && !match.runtimeProjectId) {
+      updates.runtimeProjectId = projectId;
+    }
+    this.updateProject(match.id, updates);
     return match.id;
   }
 
@@ -294,6 +321,7 @@ export class PmStore {
       path: row.path ?? undefined,
       claudeProjectKey: row.claude_project_key ?? undefined,
       runtimescopeProject: row.runtimescope_project ?? undefined,
+      runtimeProjectId: row.runtime_project_id ?? undefined,
       runtimeApps: row.runtime_apps ? JSON.parse(row.runtime_apps) : undefined,
       phase: row.phase as ProjectPhase,
       managementAuthorized: row.management_authorized === 1,
@@ -971,6 +999,7 @@ interface PmProjectRow {
   path: string | null;
   claude_project_key: string | null;
   runtimescope_project: string | null;
+  runtime_project_id: string | null;
   phase: string;
   management_authorized: number;
   probable_to_complete: number;

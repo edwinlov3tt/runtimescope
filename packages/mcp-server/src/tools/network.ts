@@ -1,20 +1,23 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerNetworkTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_network_requests',
     'Get captured network (fetch) requests from the running web app. Returns URL, method, status, timing, and optional GraphQL operation info.',
     {
+      project_id: projectIdParam,
       since_seconds: z.number().optional().describe('Only return requests from the last N seconds'),
       url_pattern: z.string().optional().describe('Filter by URL substring match'),
       status: z.number().optional().describe('Filter by HTTP status code'),
       method: z.string().optional().describe('Filter by HTTP method (GET, POST, etc.)'),
       limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ since_seconds, url_pattern, status, method, limit }) => {
+    async ({ project_id, since_seconds, url_pattern, status, method, limit }) => {
       const allEvents = store.getNetworkRequests({
+        projectId: project_id,
         sinceSeconds: since_seconds,
         urlPattern: url_pattern,
         status,
@@ -30,8 +33,7 @@ export function registerNetworkTools(server: McpServer, store: EventStore): void
           ? { from: events[events.length - 1].timestamp, to: events[0].timestamp }
           : { from: 0, to: 0 };
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const failedCount = events.filter((e) => e.status >= 400).length;
       const avgDuration =
@@ -77,7 +79,7 @@ export function registerNetworkTools(server: McpServer, store: EventStore): void
           timestamp: new Date(e.timestamp).toISOString(),
         })),
         issues,
-        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId },
+        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId, projectId: project_id ?? null },
       };
 
       return {

@@ -86,6 +86,7 @@ export class EventStore {
         sdkVersion: se.sdkVersion,
         eventCount: 0,
         isConnected: true,
+        projectId: se.projectId,
       });
     }
 
@@ -115,6 +116,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'network') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ne = e as NetworkEvent;
       if (ne.timestamp < since) return false;
       if (filter.urlPattern && !ne.url.includes(filter.urlPattern)) return false;
@@ -133,6 +135,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'console') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ce = e as ConsoleEvent;
       if (ce.timestamp < since) return false;
       if (filter.level && ce.level !== filter.level) return false;
@@ -163,16 +166,18 @@ export class EventStore {
     return this.buffer.toArray().filter((e) => {
       if (e.timestamp < since) return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (typeSet && !typeSet.has(e.eventType)) return false;
       return true;
     });
   }
 
-  getAllEvents(sinceSeconds?: number, sessionId?: string): RuntimeEvent[] {
+  getAllEvents(sinceSeconds?: number, sessionId?: string, projectId?: string): RuntimeEvent[] {
     const since = sinceSeconds ? Date.now() - sinceSeconds * 1000 : 0;
     return this.buffer.toArray().filter((e) => {
       if (e.timestamp < since) return false;
       if (sessionId && e.sessionId !== sessionId) return false;
+      if (projectId && !this.matchesProjectId(e.sessionId, projectId)) return false;
       return true;
     });
   }
@@ -183,6 +188,18 @@ export class EventStore {
       .map((s) => s.sessionId);
   }
 
+  getSessionIdsForProjectId(projectId: string): string[] {
+    return Array.from(this.sessions.values())
+      .filter((s) => s.projectId === projectId)
+      .map((s) => s.sessionId);
+  }
+
+  /** Check if an event belongs to the given projectId (via its session). */
+  private matchesProjectId(sessionId: string, projectId: string): boolean {
+    const session = this.sessions.get(sessionId);
+    return session?.projectId === projectId;
+  }
+
   getStateEvents(filter: StateFilter = {}): StateEvent[] {
     const since = filter.sinceSeconds
       ? Date.now() - filter.sinceSeconds * 1000
@@ -191,6 +208,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'state') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const se = e as StateEvent;
       if (se.timestamp < since) return false;
       if (filter.storeId && se.storeId !== filter.storeId) return false;
@@ -206,6 +224,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'render') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const re = e as RenderEvent;
       if (re.timestamp < since) return false;
       if (filter.componentName) {
@@ -226,6 +245,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'performance') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const pe = e as PerformanceEvent;
       if (pe.timestamp < since) return false;
       if (filter.metricName && pe.metricName !== filter.metricName) return false;
@@ -241,6 +261,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'database') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const de = e as DatabaseEvent;
       if (de.timestamp < since) return false;
       if (filter.table) {
@@ -266,6 +287,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'custom') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ce = e as CustomEvent;
       if (ce.timestamp < since) return false;
       if (filter.name && ce.name !== filter.name) return false;
@@ -281,6 +303,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== 'ui') return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ue = e as UIInteractionEvent;
       if (ue.timestamp < since) return false;
       if (filter.action && ue.action !== filter.action) return false;
@@ -304,6 +327,7 @@ export class EventStore {
     const results = this.buffer.query((e) => {
       if (e.eventType !== eventType) return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (e.timestamp < since) return false;
       if (filter.url) {
         const re = e as unknown as { url?: string };
@@ -326,6 +350,7 @@ export class EventStore {
     return this.buffer.query((e) => {
       if (e.eventType !== eventType) return false;
       if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (e.timestamp < since) return false;
       if (filter.url) {
         const re = e as unknown as { url?: string };

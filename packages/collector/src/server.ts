@@ -2,6 +2,7 @@ import { createServer as createHttpsServer } from 'node:https';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EventStore } from './store.js';
 import { ProjectManager } from './project-manager.js';
+import { getOrCreateProjectId } from './project-id.js';
 import { SqliteStore } from './sqlite-store.js';
 import { isSqliteAvailable } from './sqlite-check.js';
 import { AuthManager } from './auth.js';
@@ -31,6 +32,7 @@ export interface CollectorServerOptions {
 interface ClientInfo {
   sessionId: string;
   projectName: string;
+  projectId?: string;
 }
 
 interface PendingCommand {
@@ -49,8 +51,8 @@ export class CollectorServer {
   private pendingHandshakes: Set<WebSocket> = new Set();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
-  private connectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
-  private disconnectCallbacks: ((sessionId: string, projectName: string) => void)[] = [];
+  private connectCallbacks: ((sessionId: string, projectName: string, projectId?: string) => void)[] = [];
+  private disconnectCallbacks: ((sessionId: string, projectName: string, projectId?: string) => void)[] = [];
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private tlsConfig: TlsConfig | null = null;
@@ -101,11 +103,11 @@ export class CollectorServer {
     return this.rateLimiter;
   }
 
-  onConnect(cb: (sessionId: string, projectName: string) => void): void {
+  onConnect(cb: (sessionId: string, projectName: string, projectId?: string) => void): void {
     this.connectCallbacks.push(cb);
   }
 
-  onDisconnect(cb: (sessionId: string, projectName: string) => void): void {
+  onDisconnect(cb: (sessionId: string, projectName: string, projectId?: string) => void): void {
     this.disconnectCallbacks.push(cb);
   }
 
@@ -299,7 +301,7 @@ export class CollectorServer {
           // Notify disconnect listeners (for session snapshotting)
           for (const cb of this.disconnectCallbacks) {
             try {
-              cb(clientInfo.sessionId, clientInfo.projectName);
+              cb(clientInfo.sessionId, clientInfo.projectName, clientInfo.projectId);
             } catch {
               // Don't let listener errors break disconnect handling
             }
@@ -336,10 +338,14 @@ export class CollectorServer {
         }
 
         const projectName = payload.appName;
+        // Auto-generate a projectId if the SDK didn't send one (backwards compat)
+        const projectId = payload.projectId
+          ?? (this.projectManager ? getOrCreateProjectId(this.projectManager, projectName) : undefined);
 
         this.clients.set(ws, {
           sessionId: payload.sessionId,
           projectName,
+          projectId,
         });
 
         // Initialize SQLite for this project
@@ -366,6 +372,7 @@ export class CollectorServer {
           timestamp: msg.timestamp,
           eventType: 'session',
           appName: payload.appName,
+          projectId,
           connectedAt: msg.timestamp,
           sdkVersion: payload.sdkVersion,
         } as RuntimeEvent);
@@ -376,7 +383,7 @@ export class CollectorServer {
 
         // Notify connect listeners
         for (const cb of this.connectCallbacks) {
-          try { cb(payload.sessionId, projectName); } catch { /* non-fatal */ }
+          try { cb(payload.sessionId, projectName, projectId); } catch { /* non-fatal */ }
         }
         break;
       }
@@ -437,10 +444,10 @@ export class CollectorServer {
   }
 
   /** Get all connected session IDs with their project names */
-  getConnectedSessions(): { sessionId: string; projectName: string }[] {
-    const sessions: { sessionId: string; projectName: string }[] = [];
+  getConnectedSessions(): { sessionId: string; projectName: string; projectId?: string }[] {
+    const sessions: { sessionId: string; projectName: string; projectId?: string }[] = [];
     for (const [, info] of this.clients) {
-      sessions.push({ sessionId: info.sessionId, projectName: info.projectName });
+      sessions.push({ sessionId: info.sessionId, projectName: info.projectName, projectId: info.projectId });
     }
     return sessions;
   }

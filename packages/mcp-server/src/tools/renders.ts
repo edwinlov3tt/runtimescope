@@ -2,12 +2,14 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { RenderComponentProfile } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerRenderTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_render_profile',
     'Get React component render profiles showing render counts, velocity, average duration, and render causes. Flags suspicious components that are re-rendering excessively. Requires captureRenders: true in the SDK config and React dev mode for accurate timing data.',
     {
+      project_id: projectIdParam,
       component_name: z
         .string()
         .optional()
@@ -17,14 +19,14 @@ export function registerRenderTools(server: McpServer, store: EventStore): void 
         .optional()
         .describe('Only return events from the last N seconds'),
     },
-    async ({ component_name, since_seconds }) => {
+    async ({ project_id, component_name, since_seconds }) => {
       const events = store.getRenderEvents({
+        projectId: project_id,
         componentName: component_name,
         sinceSeconds: since_seconds,
       });
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
       const issues: string[] = [];
 
       // Merge profiles across snapshots
@@ -86,6 +88,7 @@ export function registerRenderTools(server: McpServer, store: EventStore): void 
           },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

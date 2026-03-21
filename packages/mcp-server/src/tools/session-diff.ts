@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { SessionManager, SessionMetrics, CollectorServer } from '@runtimescope/collector';
+import type { SessionManager, SessionMetrics, CollectorServer, ProjectManager } from '@runtimescope/collector';
 import { compareSessions } from '@runtimescope/collector';
+import { projectIdParam } from './shared.js';
 
 export function registerSessionDiffTools(
   server: McpServer,
   sessionManager: SessionManager,
-  collector: CollectorServer
+  collector: CollectorServer,
+  projectManager?: ProjectManager,
 ): void {
   // --- create_session_snapshot ---
   server.tool(
@@ -16,8 +18,9 @@ export function registerSessionDiffTools(
       session_id: z.string().optional().describe('Session ID (defaults to first active session)'),
       label: z.string().optional().describe('Label for this snapshot (e.g., "before-fix", "baseline", "after-deploy")'),
       project: z.string().optional().describe('Project name'),
+      project_id: projectIdParam,
     },
-    async ({ session_id, label, project }) => {
+    async ({ session_id, label, project, project_id }) => {
       const sessionId = session_id ?? collector.getFirstSessionId();
       if (!sessionId) {
         return {
@@ -30,7 +33,9 @@ export function registerSessionDiffTools(
         };
       }
 
-      const projectName = project ?? collector.getProjectForSession(sessionId) ?? 'default';
+      const projectName = project
+        ?? (project_id && projectManager ? projectManager.getAppForProjectId(project_id) : undefined)
+        ?? collector.getProjectForSession(sessionId) ?? 'default';
       const snapshot = sessionManager.createSnapshot(sessionId, projectName, label);
 
       const response = {
@@ -71,9 +76,12 @@ export function registerSessionDiffTools(
     {
       session_id: z.string().describe('Session ID'),
       project: z.string().optional().describe('Project name'),
+      project_id: projectIdParam,
     },
-    async ({ session_id, project }) => {
-      const projectName = project ?? collector.getProjectForSession(session_id) ?? 'default';
+    async ({ session_id, project, project_id }) => {
+      const projectName = project
+        ?? (project_id && projectManager ? projectManager.getAppForProjectId(project_id) : undefined)
+        ?? collector.getProjectForSession(session_id) ?? 'default';
       const snapshots = sessionManager.getSessionSnapshots(projectName, session_id);
 
       const response = {
@@ -114,9 +122,12 @@ export function registerSessionDiffTools(
       snapshot_a: z.number().optional().describe('First snapshot ID (baseline) — used when comparing snapshots'),
       snapshot_b: z.number().optional().describe('Second snapshot ID (comparison) — used when comparing snapshots'),
       project: z.string().optional().describe('Project name'),
+      project_id: projectIdParam,
     },
-    async ({ session_a, session_b, snapshot_a, snapshot_b, project }) => {
-      const projectName = project ?? 'default';
+    async ({ session_a, session_b, snapshot_a, snapshot_b, project, project_id }) => {
+      const projectName = project
+        ?? (project_id && projectManager ? projectManager.getAppForProjectId(project_id) : undefined)
+        ?? 'default';
 
       let metricsA: SessionMetrics | null = null;
       let metricsB: SessionMetrics | null = null;

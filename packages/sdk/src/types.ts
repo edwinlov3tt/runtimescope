@@ -70,6 +70,7 @@ export interface SessionEvent extends BaseEvent {
   sdkVersion: string;
   buildMeta?: BuildMeta;
   user?: UserContext;
+  projectId?: string;
 }
 
 export interface StateEvent extends BaseEvent {
@@ -195,6 +196,7 @@ export interface RuntimeScopeConfig {
   /** Alias for `serverUrl` — used by script-tag snippets */
   endpoint?: string;
   appName?: string;
+  projectId?: string;
   /** API key for authenticated connections to the collector */
   authToken?: string;
   buildMeta?: BuildMeta;

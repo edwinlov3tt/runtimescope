@@ -7,7 +7,7 @@ import { generateSessionId } from './utils.js';
 // Matches collector's POST /api/events endpoint.
 // ============================================================
 
-const SDK_VERSION = '0.8.0';
+const SDK_VERSION = '0.9.0';
 const DEFAULT_ENDPOINT = 'http://localhost:9091/api/events';
 
 export class WorkersTransport {
@@ -16,6 +16,7 @@ export class WorkersTransport {
   private url: string;
   private authToken: string | undefined;
   private appName: string;
+  private projectId?: string;
   private sessionRegistered = false;
   private _droppedCount = 0;
 
@@ -25,6 +26,7 @@ export class WorkersTransport {
     this.sessionId = generateSessionId();
     this.url = config.httpEndpoint ?? DEFAULT_ENDPOINT;
     this.appName = config.appName;
+    this.projectId = config.projectId;
     this.authToken = config.authToken;
     this.maxQueueSize = config.maxQueueSize ?? 500;
   }
@@ -59,6 +61,7 @@ export class WorkersTransport {
     if (!this.sessionRegistered) {
       payload.appName = this.appName;
       payload.sdkVersion = SDK_VERSION;
+      if (this.projectId) payload.projectId = this.projectId;
     }
 
     const headers: Record<string, string> = {

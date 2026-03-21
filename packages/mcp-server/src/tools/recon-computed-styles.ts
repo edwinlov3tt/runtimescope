@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore, CollectorServer } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 // Common CSS property groups for the `properties` filter
 const PROPERTY_GROUPS: Record<string, string[]> = {
@@ -49,6 +50,7 @@ export function registerReconComputedStyleTools(
     'get_computed_styles',
     'Get computed CSS styles for elements matching a selector. Returns the actual resolved values the browser uses to render each element. Can filter by property group (colors, typography, spacing, layout, borders, visual) or specific property names. When multiple elements match, highlights variations between them.',
     {
+      project_id: projectIdParam,
       selector: z
         .string()
         .describe('CSS selector to query (e.g., ".btn-primary", "nav > ul > li", "[data-testid=hero]")'),
@@ -67,7 +69,7 @@ export function registerReconComputedStyleTools(
         .default(false)
         .describe('Request fresh capture from extension or scanner for this selector'),
     },
-    async ({ selector, properties, specific_properties, force_refresh }) => {
+    async ({ project_id, selector, properties, specific_properties, force_refresh }) => {
       // Determine property filter for on-demand collection
       const propFilter = specific_properties ??
         (properties !== 'all' ? PROPERTY_GROUPS[properties] : undefined);
@@ -118,8 +120,7 @@ export function registerReconComputedStyleTools(
         }
       }
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event || event.entries.length === 0) {
         const hint = scanner.getLastScannedUrl()
@@ -133,7 +134,7 @@ export function registerReconComputedStyleTools(
               summary: hint,
               data: null,
               issues: ['No computed style data available for this selector'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -191,6 +192,7 @@ export function registerReconComputedStyleTools(
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

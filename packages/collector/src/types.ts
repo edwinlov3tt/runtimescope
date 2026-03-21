@@ -100,6 +100,7 @@ export interface SessionEvent extends BaseEvent {
   sdkVersion: string;
   buildMeta?: BuildMeta;
   user?: UserContext;
+  projectId?: string;
 }
 
 // --- State Events ---
@@ -248,6 +249,7 @@ export interface UIInteractionFilter {
   action?: UIInteractionAction;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
 }
 
 // --- Custom Event Filters ---
@@ -256,6 +258,7 @@ export interface CustomEventFilter {
   name?: string;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
 }
 
 // ============================================================
@@ -599,6 +602,7 @@ export interface ReconFilter {
   reconType?: ReconEventType;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
   url?: string;
 }
 
@@ -643,6 +647,7 @@ export interface NetworkFilter {
   status?: number;
   method?: string;
   sessionId?: string;
+  projectId?: string;
 }
 
 export interface ConsoleFilter {
@@ -650,24 +655,28 @@ export interface ConsoleFilter {
   sinceSeconds?: number;
   search?: string;
   sessionId?: string;
+  projectId?: string;
 }
 
 export interface StateFilter {
   storeId?: string;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
 }
 
 export interface RenderFilter {
   componentName?: string;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
 }
 
 export interface PerformanceFilter {
   metricName?: string;
   sinceSeconds?: number;
   sessionId?: string;
+  projectId?: string;
 }
 
 export interface DatabaseFilter {
@@ -678,6 +687,7 @@ export interface DatabaseFilter {
   operation?: DatabaseOperation;
   source?: DatabaseSource;
   sessionId?: string;
+  projectId?: string;
 }
 
 // --- Historical Filter (SQLite queries) ---
@@ -705,6 +715,7 @@ export interface ToolResponse<T = unknown> {
     timeRange: { from: number; to: number };
     eventCount: number;
     sessionId: string | null;
+    projectId?: string | null;
   };
 }
 
@@ -717,10 +728,12 @@ export interface SessionInfo {
   sdkVersion: string;
   eventCount: number;
   isConnected: boolean;
+  projectId?: string;
 }
 
 export interface SessionInfoExtended extends SessionInfo {
   project: string;
+  projectId?: string;
   disconnectedAt?: number;
   buildMeta?: BuildMeta;
 }
@@ -788,6 +801,7 @@ export interface HandshakePayload {
   sdkVersion: string;
   sessionId: string;
   authToken?: string;
+  projectId?: string;
 }
 
 export interface EventBatchPayload {
@@ -821,6 +835,7 @@ export interface TimelineFilter {
   sinceSeconds?: number;
   eventTypes?: EventType[];
   sessionId?: string;
+  projectId?: string;
 }
 
 // --- Issue Detection ---

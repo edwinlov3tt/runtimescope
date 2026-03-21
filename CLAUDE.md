@@ -128,10 +128,10 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 
 ## Environment Variables
 
-| Variable | MCP Server Default | Standalone Default | Description |
-|----------|-------------------|-------------------|-------------|
-| `RUNTIMESCOPE_PORT` | `9090` | `9092` | WebSocket collector port |
-| `RUNTIMESCOPE_HTTP_PORT` | `9091` | `9093` | HTTP API port (for dashboard) |
-| `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | `10000` | Max events in ring buffer |
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
+| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port (for dashboard) |
+| `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
 
-The MCP server (9090/9091) and standalone collector (9092/9093) use different default ports so both can run simultaneously. The SDK defaults to `ws://localhost:9090` (MCP server). The dashboard Vite proxy defaults to `http://127.0.0.1:9093` (standalone collector).
+Both the MCP server and standalone collector use the same default ports (9090/9091). Only one should run at a time. The SDK defaults to `ws://localhost:9090`. The dashboard Vite proxy defaults to `http://127.0.0.1:9091`.

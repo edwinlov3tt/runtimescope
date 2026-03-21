@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { CollectorServer } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconMetadataTools(
   server: McpServer,
@@ -12,6 +13,7 @@ export function registerReconMetadataTools(
     'get_page_metadata',
     'Get page metadata and tech stack detection for the current page. Returns URL, viewport, meta tags, detected framework/UI library/build tool/hosting, external stylesheets and scripts. Requires the RuntimeScope extension to be connected.',
     {
+      project_id: projectIdParam,
       url: z
         .string()
         .optional()
@@ -22,7 +24,7 @@ export function registerReconMetadataTools(
         .default(false)
         .describe('Send a recon_scan command to the extension to capture fresh data'),
     },
-    async ({ url, force_refresh }) => {
+    async ({ project_id, url, force_refresh }) => {
       if (force_refresh) {
         const sessions = store.getSessionInfo();
         const activeSession = sessions.find((s) => s.isConnected);
@@ -40,8 +42,7 @@ export function registerReconMetadataTools(
       }
 
       const event = store.getReconMetadata({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -51,7 +52,7 @@ export function registerReconMetadataTools(
               summary: 'No page metadata captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_metadata events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -98,6 +99,7 @@ export function registerReconMetadataTools(
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

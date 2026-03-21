@@ -11,7 +11,7 @@ import { interceptClicks } from './interceptors/clicks.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, UIInteractionEvent, UserContext } from './types.js';
 
-const SDK_VERSION = '0.8.0';
+const SDK_VERSION = '0.9.0';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
@@ -132,6 +132,7 @@ export class RuntimeScope {
       sessionId: this._sessionId,
       sdkVersion: SDK_VERSION,
       authToken: config.authToken,
+      projectId: config.projectId,
       batchSize: resolved.batchSize,
       flushIntervalMs: resolved.flushIntervalMs,
     });
@@ -165,6 +166,7 @@ export class RuntimeScope {
       sdkVersion: SDK_VERSION,
       buildMeta: config.buildMeta,
       user: this._user,
+      projectId: config.projectId,
     });
 
     // Register command handler for server→SDK commands

@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerConsoleTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_console_messages',
     'Get captured console messages (log, warn, error, info, debug, trace) from the running web app. Includes message text, args, and stack traces for errors.',
     {
+      project_id: projectIdParam,
       level: z
         .enum(['log', 'warn', 'error', 'info', 'debug', 'trace'])
         .optional()
@@ -18,8 +20,9 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
         .describe('Search message text (case-insensitive substring match)'),
       limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ level, since_seconds, search, limit }) => {
+    async ({ project_id, level, since_seconds, search, limit }) => {
       const allEvents = store.getConsoleMessages({
+        projectId: project_id,
         level,
         sinceSeconds: since_seconds,
         search,
@@ -34,8 +37,7 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
           ? { from: events[events.length - 1].timestamp, to: events[0].timestamp }
           : { from: 0, to: 0 };
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       // Group by level for summary
       const levelCounts: Record<string, number> = {};
@@ -79,7 +81,7 @@ export function registerConsoleTools(server: McpServer, store: EventStore): void
           timestamp: new Date(e.timestamp).toISOString(),
         })),
         issues,
-        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId },
+        metadata: { timeRange, eventCount: events.length, totalCount: allEvents.length, truncated, sessionId, projectId: project_id ?? null },
       };
 
       return {

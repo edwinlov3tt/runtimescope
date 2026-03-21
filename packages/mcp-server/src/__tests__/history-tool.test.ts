@@ -33,6 +33,8 @@ function createMockProjectManager(projects: string[] = []): ProjectManager {
   return {
     listProjects: vi.fn(() => projects),
     getProjectDbPath: vi.fn((name: string) => `/mock/.runtimescope/projects/${name}/events.db`),
+    getProjectConfig: vi.fn(() => null),
+    getAppForProjectId: vi.fn(() => null),
   } as unknown as ProjectManager;
 }
 

@@ -10,6 +10,7 @@ import type {
   StateEvent,
   UIInteractionEvent,
 } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 /**
  * A single breadcrumb entry — a lightweight, human-readable record
@@ -133,6 +134,7 @@ export function registerBreadcrumbTools(server: McpServer, store: EventStore): v
     'get_breadcrumbs',
     'Get the chronological trail of user actions, navigation, clicks, console logs, network requests, and state changes leading up to a point in time (or an error). This is the primary debugging context tool — use it when investigating errors, unexpected behavior, or user-reported issues.',
     {
+      project_id: projectIdParam,
       since_seconds: z
         .number()
         .optional()
@@ -158,12 +160,13 @@ export function registerBreadcrumbTools(server: McpServer, store: EventStore): v
         .optional()
         .describe(`Max breadcrumbs to return (default/max: ${MAX_BREADCRUMBS})`),
     },
-    async ({ since_seconds, session_id, before_timestamp, categories, level, limit }) => {
+    async ({ project_id, since_seconds, session_id, before_timestamp, categories, level, limit }) => {
       const sinceSeconds = since_seconds ?? 60;
       const maxItems = Math.min(limit ?? MAX_BREADCRUMBS, MAX_BREADCRUMBS);
 
       // Get all events in the time window (chronological order)
       const allEvents = store.getEventTimeline({
+        projectId: project_id,
         sinceSeconds,
         sessionId: session_id,
         eventTypes: ['navigation', 'ui', 'console', 'network', 'state', 'custom'],
@@ -209,8 +212,8 @@ export function registerBreadcrumbTools(server: McpServer, store: EventStore): v
       // Find the most recent error for context
       const lastError = breadcrumbs.findLast((bc) => bc.level === 'error');
 
-      const sessions = store.getSessionInfo();
-      const sessionId = session_id ?? sessions[0]?.sessionId ?? null;
+      const { sessionId: resolvedSessionId } = resolveSessionContext(store, project_id);
+      const sessionId = session_id ?? resolvedSessionId;
 
       const response = {
         summary: `${breadcrumbs.length} breadcrumbs over the last ${sinceSeconds}s${lastError ? ` — last error: "${lastError.message.slice(0, 80)}"` : ''}`,
@@ -222,6 +225,7 @@ export function registerBreadcrumbTools(server: McpServer, store: EventStore): v
           },
           eventCount: breadcrumbs.length,
           sessionId,
+          projectId: project_id ?? null,
           anchor: new Date(anchor).toISOString(),
           categoryCounts: countCategories(breadcrumbs),
         },

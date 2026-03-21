@@ -1,21 +1,22 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconFontTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_font_info',
     'Get typography details for the current page: @font-face declarations, font families actually used in computed styles, icon fonts with glyph usage, and font loading strategy. Critical for matching typography when recreating UI.',
     {
+      project_id: projectIdParam,
       url: z
         .string()
         .optional()
         .describe('Filter by URL substring'),
     },
-    async ({ url }) => {
+    async ({ project_id, url }) => {
       const event = store.getReconFonts({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -25,7 +26,7 @@ export function registerReconFontTools(server: McpServer, store: EventStore): vo
               summary: 'No font data captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_fonts events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -60,6 +61,7 @@ export function registerReconFontTools(server: McpServer, store: EventStore): vo
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

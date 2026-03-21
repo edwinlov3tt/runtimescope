@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 interface StackFrame {
   functionName: string;
@@ -20,6 +21,7 @@ export function registerErrorTools(server: McpServer, store: EventStore): void {
     'get_errors_with_source_context',
     'Get console errors with parsed stack traces and surrounding source code lines. Fetches the actual source files from the dev server (e.g. http://localhost:3000/src/...) and shows the lines around the error. This gives you the same context as clicking a stack frame in DevTools.',
     {
+      project_id: projectIdParam,
       since_seconds: z
         .number()
         .optional()
@@ -33,17 +35,17 @@ export function registerErrorTools(server: McpServer, store: EventStore): void {
         .optional()
         .describe('Number of source lines to show above and below the error line (default: 5)'),
     },
-    async ({ since_seconds, fetch_source, context_lines }) => {
+    async ({ project_id, since_seconds, fetch_source, context_lines }) => {
       const shouldFetch = fetch_source !== false;
       const contextSize = context_lines ?? 5;
 
       const events = store.getConsoleMessages({
+        projectId: project_id,
         level: 'error',
         sinceSeconds: since_seconds,
       });
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       // Limit to 50 errors
       const limited = events.slice(0, 50);
@@ -98,6 +100,7 @@ export function registerErrorTools(server: McpServer, store: EventStore): void {
           },
           eventCount: limited.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

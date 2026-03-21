@@ -106,6 +106,8 @@ export type WorkersRuntimeEvent = ConsoleEvent | DatabaseEvent | NetworkEvent | 
 export interface WorkersConfig {
   /** App name — identifies this worker in session info */
   appName: string;
+  /** Project ID — links this worker to a PM project */
+  projectId?: string;
   /** HTTP endpoint for collector (default: http://localhost:9091/api/events) */
   httpEndpoint?: string;
   /** Auth token for authenticated collectors */

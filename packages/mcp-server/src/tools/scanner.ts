@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import type { EventStore } from '@runtimescope/collector';
+import type { EventStore, ProjectManager } from '@runtimescope/collector';
+import { getOrCreateProjectId } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
 
 const COLLECTOR_PORT = process.env.RUNTIMESCOPE_PORT ?? '9090';
@@ -10,6 +11,7 @@ export function registerScannerTools(
   server: McpServer,
   store: EventStore,
   scanner: PlaywrightScanner,
+  projectManager?: ProjectManager,
 ): void {
   // ---------- get_sdk_snippet ----------
   server.tool(
@@ -26,13 +28,21 @@ export function registerScannerTools(
         .optional()
         .default('html')
         .describe('The framework/tech stack of the project. Use "html" for any plain HTML or server-rendered pages. Use "workers" for Cloudflare Workers.'),
+      project_id: z
+        .string()
+        .optional()
+        .describe('Existing project ID to use (proj_xxx). If omitted, one is auto-generated and persisted.'),
     },
-    async ({ app_name, framework }) => {
+    async ({ app_name, framework, project_id }) => {
+      // Resolve or generate project ID
+      const resolvedProjectId = project_id
+        ?? (projectManager ? getOrCreateProjectId(projectManager, app_name) : undefined);
+      const projectIdLine = resolvedProjectId ? `\n    projectId: '${resolvedProjectId}',` : '';
       const scriptTagSnippet = `<!-- RuntimeScope — paste before </body> -->
 <script src="http://localhost:${HTTP_PORT}/runtimescope.js"></script>
 <script>
   RuntimeScope.init({
-    appName: '${app_name}',
+    appName: '${app_name}',${projectIdLine}
     endpoint: 'ws://localhost:${COLLECTOR_PORT}',
   });
 </script>`;
@@ -41,7 +51,7 @@ export function registerScannerTools(
 import { RuntimeScope } from '@runtimescope/sdk';
 
 RuntimeScope.init({
-  appName: '${app_name}',
+  appName: '${app_name}',${projectIdLine}
   endpoint: 'ws://localhost:${COLLECTOR_PORT}',
 });`;
 
@@ -64,7 +74,7 @@ export default withRuntimeScope({
     return new Response('Hello!');
   },
 }, {
-  appName: '${app_name}',
+  appName: '${app_name}',${projectIdLine}
   httpEndpoint: 'http://localhost:${HTTP_PORT}/api/events',
   // captureConsole: true,    // Capture console.log/warn/error (default: true)
   // captureHeaders: false,   // Include request/response headers (default: false)
@@ -141,7 +151,7 @@ export default withRuntimeScope({
           whatItCaptures: isWorkers ? workersCaptures : browserCaptures,
         },
         issues: [],
-        metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+        metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null, projectId: resolvedProjectId ?? null },
       };
 
       return {

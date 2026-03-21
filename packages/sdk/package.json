@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/sdk",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Zero-dependency browser SDK for RuntimeScope runtime profiling and telemetry",
   "type": "module",
   "main": "./dist/index.cjs",

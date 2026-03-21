@@ -1,10 +1,15 @@
-import { execSync } from 'node:child_process';
 import type { EventStore } from '../store.js';
 import type { DevProcess, DevProcessType, PortUsage, DetectedIssue } from '../types.js';
+import {
+  getListenPorts,
+  getProcessCwd,
+  getProcessMemoryMB,
+  parseProcessList,
+} from '../platform.js';
 
 // ============================================================
 // Process Monitor Engine
-// Scans for running dev processes (macOS/Linux only)
+// Scans for running dev processes (macOS, Linux, Windows)
 // ============================================================
 
 const PROCESS_PATTERNS: [RegExp, DevProcessType][] = [
@@ -30,76 +35,6 @@ function detectProcessType(command: string): DevProcessType {
   return 'unknown';
 }
 
-function parsePs(): { pid: number; cpu: number; mem: number; command: string }[] {
-  try {
-    const output = execSync('ps aux', { encoding: 'utf-8', timeout: 5000 });
-    const lines = output.split('\n').slice(1); // Skip header
-    const results: { pid: number; cpu: number; mem: number; command: string }[] = [];
-
-    for (const line of lines) {
-      const parts = line.trim().split(/\s+/);
-      if (parts.length < 11) continue;
-
-      const pid = parseInt(parts[1], 10);
-      const cpu = parseFloat(parts[2]);
-      const mem = parseFloat(parts[3]);
-      // VSZ is in KB, convert to MB
-      const command = parts.slice(10).join(' ');
-
-      if (isNaN(pid)) continue;
-      results.push({ pid, cpu, mem, command });
-    }
-
-    return results;
-  } catch {
-    return [];
-  }
-}
-
-function getListenPorts(pid: number): number[] {
-  try {
-    const output = execSync(`lsof -nP -p ${pid} 2>/dev/null | grep LISTEN`, {
-      encoding: 'utf-8',
-      timeout: 3000,
-    });
-
-    const ports: number[] = [];
-    for (const line of output.split('\n')) {
-      const match = line.match(/:(\d+)\s+\(LISTEN\)/);
-      if (match) {
-        ports.push(parseInt(match[1], 10));
-      }
-    }
-    return [...new Set(ports)];
-  } catch {
-    return [];
-  }
-}
-
-function getCwd(pid: number): string | undefined {
-  try {
-    // macOS: lsof -p PID | grep cwd
-    const output = execSync(`lsof -p ${pid} 2>/dev/null | grep cwd`, {
-      encoding: 'utf-8',
-      timeout: 3000,
-    });
-    const match = output.match(/cwd\s+\w+\s+\w+\s+\d+\w?\s+\d+\s+\d+\s+\d+\s+(.+)/);
-    return match?.[1]?.trim();
-  } catch {
-    return undefined;
-  }
-}
-
-function getMemoryMB(pid: number): number {
-  try {
-    const output = execSync(`ps -o rss= -p ${pid}`, { encoding: 'utf-8', timeout: 2000 });
-    const rss = parseInt(output.trim(), 10);
-    return isNaN(rss) ? 0 : rss / 1024;
-  } catch {
-    return 0;
-  }
-}
-
 export class ProcessMonitor {
   private store: EventStore;
   private scanInterval: ReturnType<typeof setInterval> | null = null;
@@ -123,7 +58,7 @@ export class ProcessMonitor {
   }
 
   scan(): void {
-    const allProcesses = parsePs();
+    const allProcesses = parseProcessList();
     const relevantTypes: Set<DevProcessType> = new Set([
       'next', 'vite', 'webpack', 'wrangler', 'prisma',
       'docker', 'postgres', 'mysql', 'redis', 'bun', 'deno',
@@ -147,8 +82,8 @@ export class ProcessMonitor {
       // Only do expensive lsof lookups on first discovery or periodically
       const existing = this.processes.get(proc.pid);
       const ports = existing?.ports ?? getListenPorts(proc.pid);
-      const cwd = existing?.cwd ?? getCwd(proc.pid);
-      const memoryMB = getMemoryMB(proc.pid);
+      const cwd = existing?.cwd ?? getProcessCwd(proc.pid);
+      const memoryMB = getProcessMemoryMB(proc.pid);
 
       // Check orphan status: no activity in 30 minutes
       const lastActive = this.lastActivity.get(proc.pid) ?? Date.now();

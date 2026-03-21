@@ -8,6 +8,7 @@ import type { IncomingMessage, ServerResponse } from 'node:http';
 import type { PmStore } from './pm-store.js';
 import type { ProjectDiscovery } from './project-discovery.js';
 import type { TaskStatus, PmTask, PmNote, GitFileStatus, GitFileChange, GitStatus, GitCommit } from './pm-types.js';
+import { findPidsInDirectory } from '../platform.js';
 
 // ============================================================
 // Managed Dev Server Processes
@@ -709,15 +710,9 @@ export function createPmRouter(
       try { managed.child.kill(signal); } catch { /* fallthrough to process.kill */ }
       managedProcesses.delete(id);
     } else if (project.path) {
-      // Try to find a dev server process in the project's directory
-      try {
-        const output = execSync(
-          `lsof -t +D "${project.path}" 2>/dev/null | head -5`,
-          { encoding: 'utf-8', timeout: 5000 },
-        ).trim();
-        const pids = output.split('\n').filter(Boolean).map(Number).filter((n) => n > 1 && n !== process.pid);
-        if (pids.length > 0) pid = pids[0];
-      } catch { /* no process found */ }
+      // Try to find a dev server process in the project's directory (cross-platform)
+      const pids = findPidsInDirectory(project.path).filter((n) => n > 1 && n !== process.pid);
+      if (pids.length > 0) pid = pids[0];
     }
 
     if (!pid) { helpers.json(res, { error: 'No running dev server found for this project' }, 404); return; }

@@ -10,13 +10,10 @@
 - **Proper Fix**: Add `sessionId` parameter to the tool
 - **Added**: 2026-02-11
 
-### [LOW] Port Cleanup Uses macOS-Specific lsof
+### ~~[LOW] Port Cleanup Uses macOS-Specific lsof~~
 - **ID**: KI-003
-- **Location**: `packages/mcp-server/src/index.ts:26`
-- **Symptom**: Stale process detection may fail on Linux distros without lsof, and on Windows
-- **Workaround**: Manually kill processes on port 9090
-- **Proper Fix**: Cross-platform port detection (e.g., `fkill` or platform-specific checks)
-- **Added**: 2026-02-11
+- **Resolved**: 2026-03-21
+- **Fix**: Created `packages/collector/src/platform.ts` with cross-platform utilities. Uses `lsof` on macOS, `lsof`/`ss`/`/proc` on Linux, `netstat`/`tasklist` on Windows. Applied to all 4 callsites: `killStaleProcess`, `getListenPorts`, `getProcessCwd`, and `findPidsInDirectory`.
 
 ---
 

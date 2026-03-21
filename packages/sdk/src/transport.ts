@@ -10,6 +10,7 @@ interface TransportConfig {
   sessionId: string;
   sdkVersion: string;
   authToken?: string;
+  projectId?: string;
   batchSize: number;
   flushIntervalMs: number;
 }
@@ -134,6 +135,7 @@ export class Transport {
           sdkVersion: this.config.sdkVersion,
           sessionId: this.config.sessionId,
           ...(this.config.authToken ? { authToken: this.config.authToken } : {}),
+          ...(this.config.projectId ? { projectId: this.config.projectId } : {}),
         },
         timestamp: Date.now(),
         sessionId: this.config.sessionId,

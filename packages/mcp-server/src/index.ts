@@ -1,4 +1,3 @@
-import { execSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
@@ -21,6 +20,7 @@ import {
   resolveTlsConfig,
   PmStore,
   ProjectDiscovery,
+  getPidsOnPort,
 } from '@runtimescope/collector';
 
 // --- Existing M1/M2 tool registrations ---
@@ -75,25 +75,24 @@ const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10
  * Attempt to kill any stale process holding the collector port.
  * This handles the case where a previous MCP server process didn't
  * clean up (e.g. Claude Code session crashed).
+ * Cross-platform: uses lsof on macOS, lsof/ss on Linux, netstat on Windows.
  */
 function killStaleProcess(port: number): void {
   try {
-    const pids = execSync(`lsof -ti :${port} 2>/dev/null`, { encoding: 'utf-8' }).trim();
-    if (pids) {
-      const myPid = process.pid.toString();
-      for (const pid of pids.split('\n')) {
-        if (pid && pid !== myPid) {
-          console.error(`[RuntimeScope] Killing stale process ${pid} on port ${port}`);
-          try {
-            process.kill(parseInt(pid, 10), 'SIGTERM');
-          } catch {
-            // Process may have already exited
-          }
+    const pids = getPidsOnPort(port);
+    const myPid = process.pid;
+    for (const pid of pids) {
+      if (pid !== myPid) {
+        console.error(`[RuntimeScope] Killing stale process ${pid} on port ${port}`);
+        try {
+          process.kill(pid, 'SIGTERM');
+        } catch {
+          // Process may have already exited
         }
       }
     }
   } catch {
-    // lsof not available or no process found — that's fine
+    // Platform utility failed — that's fine, port will fail with EADDRINUSE and retry
   }
 }
 
@@ -243,6 +242,7 @@ async function main() {
     rateLimiter: collector.getRateLimiter(),
     pmStore,
     discovery,
+    projectManager,
     getConnectedSessions: () => collector.getConnectedSessions(),
   });
   try {
@@ -253,11 +253,11 @@ async function main() {
   }
 
   // Push session connect/disconnect to dashboard in real-time
-  collector.onConnect((sessionId, projectName) => {
+  collector.onConnect((sessionId, projectName, projectId) => {
     httpServer.broadcastSessionChange('session_connected', sessionId, projectName);
     // Auto-link SDK appName to PM project
     if (pmStore) {
-      try { pmStore.autoLinkApp(projectName); } catch { /* non-fatal */ }
+      try { pmStore.autoLinkApp(projectName, projectId); } catch { /* non-fatal */ }
     }
   });
   collector.onDisconnect((sessionId, projectName) => {
@@ -301,7 +301,7 @@ async function main() {
   registerInfraTools(mcp, infraConnector);
 
   // --- Session Diffing (4 — compare, history, create snapshot, list snapshots) ---
-  registerSessionDiffTools(mcp, sessionManager, collector);
+  registerSessionDiffTools(mcp, sessionManager, collector, projectManager);
 
   // --- Recon / UI Analysis (9 new — extension-powered) ---
   registerReconMetadataTools(mcp, store, collector);
@@ -315,7 +315,7 @@ async function main() {
   registerReconStyleDiffTools(mcp, store);
 
   // --- Playwright Scanner + SDK Snippet (2 new) ---
-  registerScannerTools(mcp, store, scanner);
+  registerScannerTools(mcp, store, scanner, projectManager);
 
   // --- Custom Event Tracking (2 new) ---
   registerCustomEventTools(mcp, store);

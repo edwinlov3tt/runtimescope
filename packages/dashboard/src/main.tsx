@@ -6,7 +6,7 @@ import { App } from './App';
 import { ErrorBoundary } from './components/error-boundary';
 
 RuntimeScope.connect({
-  serverUrl: 'ws://localhost:9092',
+  serverUrl: 'ws://localhost:9090',
   appName: 'runtimescope-dashboard',
 });
 

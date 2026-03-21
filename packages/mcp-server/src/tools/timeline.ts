@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 import type {
   RuntimeEvent,
   NetworkEvent,
@@ -18,6 +19,7 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
     'get_event_timeline',
     'Get a chronological view of ALL events (network requests, console messages) interleaved by timestamp. Essential for understanding causal chains — e.g. seeing that an API call failed, then an error was logged, then another retry fired. Events are in chronological order (oldest first).',
     {
+      project_id: projectIdParam,
       since_seconds: z
         .number()
         .optional()
@@ -31,11 +33,12 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
         .optional()
         .describe('Max events to return (default: 200, max: 1000)'),
     },
-    async ({ since_seconds, event_types, limit }) => {
+    async ({ project_id, since_seconds, event_types, limit }) => {
       const sinceSeconds = since_seconds ?? 60;
       const maxEvents = Math.min(limit ?? 200, 1000);
 
       const events = store.getEventTimeline({
+        projectId: project_id,
         sinceSeconds,
         eventTypes: event_types as any,
       });
@@ -45,8 +48,7 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
         ? events.slice(events.length - maxEvents)
         : events;
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       // Build summary stats
       const typeCounts: Record<string, number> = {};
@@ -69,6 +71,7 @@ export function registerTimelineTools(server: McpServer, store: EventStore): voi
           eventCount: trimmed.length,
           totalInWindow: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

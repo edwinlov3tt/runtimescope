@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { CollectorServer } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconDesignTokenTools(
   server: McpServer,
@@ -12,6 +13,7 @@ export function registerReconDesignTokenTools(
     'get_design_tokens',
     'Extract the design system from the current page: CSS custom properties (--variables), color palette, typography scale, spacing scale, border radii, box shadows, and CSS architecture detection. Essential for matching a site\'s visual style when recreating UI.',
     {
+      project_id: projectIdParam,
       url: z
         .string()
         .optional()
@@ -27,7 +29,7 @@ export function registerReconDesignTokenTools(
         .default(false)
         .describe('Send a recon_scan command to capture fresh data'),
     },
-    async ({ url, category, force_refresh }) => {
+    async ({ project_id, url, category, force_refresh }) => {
       if (force_refresh) {
         const sessions = store.getSessionInfo();
         const activeSession = sessions.find((s) => s.isConnected);
@@ -45,8 +47,7 @@ export function registerReconDesignTokenTools(
       }
 
       const event = store.getReconDesignTokens({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -56,7 +57,7 @@ export function registerReconDesignTokenTools(
               summary: 'No design tokens captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_design_tokens events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -117,6 +118,7 @@ export function registerReconDesignTokenTools(
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

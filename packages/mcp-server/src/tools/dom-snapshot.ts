@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { CollectorServer } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 function generateRequestId(): string {
   return Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
@@ -16,13 +17,14 @@ export function registerDomSnapshotTools(
     'get_dom_snapshot',
     'Capture a live DOM snapshot from the running web app. Sends a command to the SDK which serializes document.documentElement.outerHTML and returns it along with the current URL, viewport dimensions, scroll position, and element count. Useful for understanding what the user sees.',
     {
+      project_id: projectIdParam,
       max_size: z
         .number()
         .optional()
         .describe('Maximum HTML size in bytes (default: 500000). Larger pages will be truncated.'),
     },
-    async ({ max_size }) => {
-      const sessions = store.getSessionInfo();
+    async ({ project_id, max_size }) => {
+      const { sessions, sessionId: resolvedSessionId } = resolveSessionContext(store, project_id);
       const sessionId = collector.getFirstSessionId();
       const activeSession = sessions[0] ?? null;
 
@@ -70,6 +72,7 @@ export function registerDomSnapshotTools(
             timeRange: { from: Date.now(), to: Date.now() },
             eventCount: 1,
             sessionId,
+            projectId: project_id ?? null,
           },
         };
 
@@ -85,7 +88,7 @@ export function registerDomSnapshotTools(
               summary: `Failed to capture DOM snapshot: ${errorMsg}`,
               data: null,
               issues: [errorMsg],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };

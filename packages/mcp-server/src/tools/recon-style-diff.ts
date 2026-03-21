@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
 import type { ComputedStyleEntry } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 // Properties that matter most for visual fidelity
 const VISUAL_PROPERTIES = [
@@ -29,6 +30,7 @@ export function registerReconStyleDiffTools(server: McpServer, store: EventStore
     'get_style_diff',
     'Compare computed styles between two captured element snapshots to check how closely a recreation matches the original. Compares two selectors from stored computed style events and reports property-by-property differences with a match percentage. Use this to verify UI recreation fidelity.',
     {
+      project_id: projectIdParam,
       source_selector: z
         .string()
         .describe('CSS selector for the source/original element'),
@@ -45,10 +47,9 @@ export function registerReconStyleDiffTools(server: McpServer, store: EventStore
         .optional()
         .describe('Specific CSS property names to compare (overrides properties group)'),
     },
-    async ({ source_selector, target_selector, properties, specific_properties }) => {
+    async ({ project_id, source_selector, target_selector, properties, specific_properties }) => {
       const events = store.getReconComputedStyles();
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       // Find the styles for each selector
       const sourceEvent = events.find((e) =>
@@ -70,7 +71,7 @@ export function registerReconStyleDiffTools(server: McpServer, store: EventStore
               summary: `Missing computed styles for ${missing.join(' and ')}. Capture computed styles for both selectors first using get_computed_styles with force_refresh=true.`,
               data: null,
               issues: [`No captured styles for: ${missing.join(', ')}`],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -157,6 +158,7 @@ export function registerReconStyleDiffTools(server: McpServer, store: EventStore
           },
           eventCount: 2,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

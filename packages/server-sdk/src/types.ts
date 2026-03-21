@@ -116,6 +116,7 @@ export interface ServerSdkConfig {
   endpoint?: string;
   appName?: string;
   sessionId?: string;
+  projectId?: string;
   /** API key for authenticated connections to the collector */
   authToken?: string;
   captureStackTraces?: boolean;

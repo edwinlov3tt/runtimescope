@@ -8,6 +8,7 @@ import type {
   DatabaseEvent,
   StateEvent,
 } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerCustomEventTools(server: McpServer, store: EventStore): void {
   // ----------------------------------------------------------------
@@ -17,14 +18,16 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
     'get_custom_events',
     'Get custom business/product events tracked via RuntimeScope.track(). Shows event catalog (all unique event names with counts) and recent occurrences. Use this to see what events are being tracked and their frequency.',
     {
+      project_id: projectIdParam,
       name: z.string().optional().describe('Filter by event name (exact match)'),
       since_seconds: z.number().optional().describe('Only events from the last N seconds (default: 300)'),
       session_id: z.string().optional().describe('Filter by session ID'),
     },
-    async ({ name, since_seconds, session_id }) => {
+    async ({ project_id, name, since_seconds, session_id }) => {
       const sinceSeconds = since_seconds ?? 300;
 
       const events = store.getCustomEvents({
+        projectId: project_id,
         name,
         sinceSeconds,
         sessionId: session_id,
@@ -52,8 +55,8 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
           sampleProperties: info.sampleProperties,
         }));
 
-      const sessions = store.getSessionInfo();
-      const sessionId = session_id ?? sessions[0]?.sessionId ?? null;
+      const { sessionId: resolvedSessionId } = resolveSessionContext(store, project_id);
+      const sessionId = session_id ?? resolvedSessionId;
 
       const response = {
         summary: `${events.length} custom event(s) across ${catalogList.length} unique event name(s) in the last ${sinceSeconds}s.${name ? ` Filtered by: "${name}".` : ''}`,
@@ -74,6 +77,7 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
           },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 
@@ -90,15 +94,16 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
     'get_event_flow',
     'Analyze a user flow as a funnel. Given an ordered list of custom event names (steps), shows how many sessions completed each step, where drop-offs happen, and what errors/failures occurred between steps. Each step includes correlated telemetry (network errors, console errors, failed DB queries) that happened between the previous step and this one — this is the key to finding WHY a step failed.',
     {
+      project_id: projectIdParam,
       steps: z.array(z.string()).min(2).describe('Ordered list of custom event names representing the flow (e.g. ["create_profile", "generate_campaign", "export_ad"])'),
       since_seconds: z.number().optional().describe('Only analyze events from the last N seconds (default: 3600)'),
       session_id: z.string().optional().describe('Analyze a specific session (default: all sessions)'),
     },
-    async ({ steps, since_seconds, session_id }) => {
+    async ({ project_id, steps, since_seconds, session_id }) => {
       const sinceSeconds = since_seconds ?? 3600;
 
       // Get all custom events in the window
-      const allCustom = store.getCustomEvents({ sinceSeconds, sessionId: session_id });
+      const allCustom = store.getCustomEvents({ projectId: project_id, sinceSeconds, sessionId: session_id });
 
       // Group custom events by session
       const bySession = new Map<string, CustomEvent[]>();
@@ -113,11 +118,11 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
       }
 
       // Get all telemetry for correlation
-      const networkErrors = store.getNetworkRequests({ sinceSeconds, sessionId: session_id })
+      const networkErrors = store.getNetworkRequests({ projectId: project_id, sinceSeconds, sessionId: session_id })
         .filter((e) => e.status >= 400 || e.errorPhase);
-      const consoleErrors = store.getConsoleMessages({ sinceSeconds, sessionId: session_id })
+      const consoleErrors = store.getConsoleMessages({ projectId: project_id, sinceSeconds, sessionId: session_id })
         .filter((e) => e.level === 'error');
-      const dbErrors = store.getDatabaseEvents({ sinceSeconds, sessionId: session_id })
+      const dbErrors = store.getDatabaseEvents({ projectId: project_id, sinceSeconds, sessionId: session_id })
         .filter((e) => !!e.error);
 
       // Analyze the funnel
@@ -263,6 +268,7 @@ export function registerCustomEventTools(server: McpServer, store: EventStore): 
           },
           eventCount: allCustom.length,
           sessionId: session_id ?? null,
+          projectId: project_id ?? null,
         },
       };
 

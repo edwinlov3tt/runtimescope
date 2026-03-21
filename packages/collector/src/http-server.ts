@@ -1,6 +1,8 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from 'node:http';
 import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
+import type { ProjectManager } from './project-manager.js';
+import { getOrCreateProjectId } from './project-id.js';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -49,6 +51,7 @@ export class HttpServer {
   private startedAt = Date.now();
   private connectedSessionsGetter: (() => { sessionId: string; projectName: string }[]) | null = null;
   private pmStore: PmStore | null = null;
+  private projectManager: ProjectManager | null = null;
 
   constructor(
     store: EventStore,
@@ -60,6 +63,7 @@ export class HttpServer {
       pmStore?: PmStore;
       discovery?: ProjectDiscovery;
       getConnectedSessions?: () => { sessionId: string; projectName: string }[];
+      projectManager?: ProjectManager;
     }
   ) {
     this.store = store;
@@ -69,6 +73,7 @@ export class HttpServer {
     this.rateLimiter = options?.rateLimiter ?? null;
     this.connectedSessionsGetter = options?.getConnectedSessions ?? null;
     this.pmStore = options?.pmStore ?? null;
+    this.projectManager = options?.projectManager ?? null;
     this.registerRoutes();
 
     // Register PM routes if PM store is available
@@ -101,7 +106,7 @@ export class HttpServer {
     // Projects (sessions grouped by appName, merged with live WS clients)
     this.routes.set('GET /api/projects', (_req, res) => {
       const sessions = this.store.getSessionInfo();
-      const projectMap = new Map<string, { appName: string; sessions: string[]; isConnected: boolean; eventCount: number }>();
+      const projectMap = new Map<string, { appName: string; sessions: string[]; isConnected: boolean; eventCount: number; projectId?: string }>();
 
       for (const s of sessions) {
         const existing = projectMap.get(s.appName);
@@ -109,12 +114,14 @@ export class HttpServer {
           existing.sessions.push(s.sessionId);
           existing.eventCount += s.eventCount;
           if (s.isConnected) existing.isConnected = true;
+          if (!existing.projectId && s.projectId) existing.projectId = s.projectId;
         } else {
           projectMap.set(s.appName, {
             appName: s.appName,
             sessions: [s.sessionId],
             isConnected: s.isConnected,
             eventCount: s.eventCount,
+            projectId: s.projectId,
           });
         }
       }
@@ -197,6 +204,7 @@ export class HttpServer {
         urlPattern: params.get('url_pattern') ?? undefined,
         method: params.get('method') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -208,6 +216,7 @@ export class HttpServer {
         level: params.get('level') ?? undefined,
         search: params.get('search') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -218,6 +227,7 @@ export class HttpServer {
         sinceSeconds: numParam(params, 'since_seconds'),
         storeId: params.get('store_id') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -228,6 +238,7 @@ export class HttpServer {
         sinceSeconds: numParam(params, 'since_seconds'),
         componentName: params.get('component') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -238,6 +249,7 @@ export class HttpServer {
         sinceSeconds: numParam(params, 'since_seconds'),
         metricName: params.get('metric') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -250,6 +262,7 @@ export class HttpServer {
         minDurationMs: numParam(params, 'min_duration_ms'),
         search: params.get('search') ?? undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -261,6 +274,7 @@ export class HttpServer {
         sinceSeconds: numParam(params, 'since_seconds'),
         eventTypes: eventTypes as RuntimeEvent['eventType'][] | undefined,
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -270,6 +284,7 @@ export class HttpServer {
         name: params.get('name') ?? undefined,
         sinceSeconds: numParam(params, 'since_seconds'),
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -281,6 +296,7 @@ export class HttpServer {
         action: action ?? undefined,
         sinceSeconds: numParam(params, 'since_seconds'),
         sessionId: params.get('session_id') ?? undefined,
+        projectId: params.get('project_id') ?? undefined,
       });
       this.json(res, { data: events, count: events.length });
     });
@@ -311,8 +327,16 @@ export class HttpServer {
         sessionId?: string;
         appName?: string;
         sdkVersion?: string;
+        projectId?: string;
         events?: unknown[];
       };
+
+      // Auto-generate projectId if SDK didn't send one (backwards compat)
+      const projectId = typeof payload.projectId === 'string'
+        ? payload.projectId
+        : (payload.appName && this.projectManager
+          ? getOrCreateProjectId(this.projectManager, payload.appName)
+          : undefined);
 
       if (!payload.sessionId || !Array.isArray(payload.events) || payload.events.length === 0) {
         this.json(res, {
@@ -332,13 +356,14 @@ export class HttpServer {
           timestamp: Date.now(),
           eventType: 'session',
           appName: payload.appName,
+          projectId,
           connectedAt: Date.now(),
           sdkVersion: payload.sdkVersion ?? 'http',
         } as RuntimeEvent);
 
         // Auto-link SDK appName to PM project
         if (this.pmStore) {
-          try { this.pmStore.autoLinkApp(payload.appName); } catch { /* non-fatal */ }
+          try { this.pmStore.autoLinkApp(payload.appName, projectId); } catch { /* non-fatal */ }
         }
       }
 

@@ -26,9 +26,9 @@ import { Redactor } from './redactor.js';
 import { resolveTlsConfig } from './tls.js';
 
 const HOST = process.env.RUNTIMESCOPE_HOST ?? '127.0.0.1';
-// Standalone defaults to 9092/9093 to avoid conflicting with the MCP server (9090/9091)
-const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9092', 10);
-const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9093', 10);
+// Same default ports as MCP server — only one should run at a time
+const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
+const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
 const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
 
@@ -145,6 +145,7 @@ async function main() {
     rateLimiter: collector.getRateLimiter(),
     pmStore,
     discovery,
+    projectManager,
     getConnectedSessions: () => collector.getConnectedSessions(),
   });
 
@@ -155,11 +156,11 @@ async function main() {
   }
 
   // Push session connect/disconnect to dashboard in real-time
-  collector.onConnect((sessionId, projectName) => {
+  collector.onConnect((sessionId, projectName, projectId) => {
     httpServer.broadcastSessionChange('session_connected', sessionId, projectName);
     // Auto-link SDK appName to PM project
     if (pmStore) {
-      try { pmStore.autoLinkApp(projectName); } catch { /* non-fatal */ }
+      try { pmStore.autoLinkApp(projectName, projectId); } catch { /* non-fatal */ }
     }
   });
   collector.onDisconnect((sessionId, projectName) => {

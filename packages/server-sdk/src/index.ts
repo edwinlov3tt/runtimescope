@@ -25,7 +25,7 @@ import type { MiddlewareOptions } from './interceptors/middleware.js';
 // to the RuntimeScope collector via WebSocket
 // ============================================================
 
-const SDK_VERSION = '0.8.0';
+const SDK_VERSION = '0.9.0';
 
 // Re-export _log for integration modules (lives in utils/log.js to avoid circular deps)
 export { _log } from './utils/log.js';
@@ -66,6 +66,7 @@ class RuntimeScopeServer {
         appName: config.appName ?? 'server-app',
         sdkVersion: SDK_VERSION,
         authToken: config.authToken,
+        projectId: config.projectId,
         maxQueueSize: config.maxQueueSize,
         flushIntervalMs: config.httpFlushIntervalMs,
       });
@@ -77,6 +78,7 @@ class RuntimeScopeServer {
         appName: config.appName ?? 'server-app',
         sdkVersion: SDK_VERSION,
         authToken: config.authToken,
+        projectId: config.projectId,
         maxQueueSize: config.maxQueueSize,
       });
 

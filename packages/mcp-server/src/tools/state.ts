@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerStateTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_state_snapshots',
     'Get state store snapshots and diffs from Zustand or Redux stores. Shows state changes over time with action history, mutation frequency, and shallow diffs showing which keys changed.',
     {
+      project_id: projectIdParam,
       store_name: z
         .string()
         .optional()
@@ -17,8 +19,9 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
         .describe('Only return events from the last N seconds'),
       limit: z.number().optional().describe('Max results to return (default 200, max 1000)'),
     },
-    async ({ store_name, since_seconds, limit }) => {
+    async ({ project_id, store_name, since_seconds, limit }) => {
       const allEvents = store.getStateEvents({
+        projectId: project_id,
         storeId: store_name,
         sinceSeconds: since_seconds,
       });
@@ -27,8 +30,7 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
       const truncated = allEvents.length > maxLimit;
       const events = truncated ? allEvents.slice(0, maxLimit) : allEvents;
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
       const issues: string[] = [];
 
       // Detect store thrashing (>10 updates/sec in any 1-second window)
@@ -73,6 +75,7 @@ export function registerStateTools(server: McpServer, store: EventStore): void {
           totalCount: allEvents.length,
           truncated,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

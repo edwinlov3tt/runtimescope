@@ -1,6 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 const WEB_VITAL_METRICS = ['LCP', 'FCP', 'CLS', 'TTFB', 'FID', 'INP'] as const;
 const SERVER_METRICS = [
@@ -22,6 +23,7 @@ export function registerPerformanceTools(server: McpServer, store: EventStore): 
     'get_performance_metrics',
     'Get performance metrics from browser (Web Vitals: LCP, FCP, CLS, TTFB, FID, INP) and/or server (memory, event loop lag, GC pauses, CPU usage). Browser metrics include quality ratings. Server metrics require capturePerformance: true in the server-SDK config.',
     {
+      project_id: projectIdParam,
       metric_name: z
         .enum(ALL_METRICS)
         .optional()
@@ -36,8 +38,9 @@ export function registerPerformanceTools(server: McpServer, store: EventStore): 
         .optional()
         .describe('Only return metrics from the last N seconds'),
     },
-    async ({ metric_name, source, since_seconds }) => {
+    async ({ project_id, metric_name, source, since_seconds }) => {
       let events = store.getPerformanceMetrics({
+        projectId: project_id,
         metricName: metric_name,
         sinceSeconds: since_seconds,
       });
@@ -49,8 +52,7 @@ export function registerPerformanceTools(server: McpServer, store: EventStore): 
         events = events.filter((e) => !isWebVital(e.metricName));
       }
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
       const issues: string[] = [];
 
       // Flag poor Web Vitals
@@ -113,6 +115,7 @@ export function registerPerformanceTools(server: McpServer, store: EventStore): 
           },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

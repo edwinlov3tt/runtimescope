@@ -17,12 +17,15 @@ export class ServerTransport {
   private authToken: string | undefined;
   private authFailed = false;
 
+  private projectId?: string;
+
   constructor(options: {
     url: string;
     sessionId: string;
     appName: string;
     sdkVersion: string;
     authToken?: string;
+    projectId?: string;
     maxQueueSize?: number;
   }) {
     this.url = options.url;
@@ -30,6 +33,7 @@ export class ServerTransport {
     this.appName = options.appName;
     this.sdkVersion = options.sdkVersion;
     this.authToken = options.authToken;
+    this.projectId = options.projectId;
     this.maxQueueSize = options.maxQueueSize ?? 10_000;
   }
 
@@ -101,6 +105,7 @@ export class ServerTransport {
         sdkVersion: this.sdkVersion,
         sessionId: this.sessionId,
         ...(this.authToken ? { authToken: this.authToken } : {}),
+        ...(this.projectId ? { projectId: this.projectId } : {}),
       },
       timestamp: Date.now(),
       sessionId: this.sessionId,

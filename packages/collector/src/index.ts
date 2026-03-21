@@ -5,6 +5,7 @@ export { RingBuffer } from './ring-buffer.js';
 export { detectIssues } from './issue-detector.js';
 export { ProjectManager } from './project-manager.js';
 export type { GlobalConfig, ProjectConfig, InfrastructureConfig } from './project-manager.js';
+export { generateProjectId, isValidProjectId, getOrCreateProjectId } from './project-id.js';
 export { SqliteStore } from './sqlite-store.js';
 export type { SqliteStoreOptions } from './sqlite-store.js';
 export { isSqliteAvailable } from './sqlite-check.js';
@@ -39,4 +40,13 @@ export { PmStore } from './pm/pm-store.js';
 export { ProjectDiscovery } from './pm/project-discovery.js';
 export { parseSessionJsonl, calculateActiveMinutes, calculateCostMicrodollars } from './pm/session-parser.js';
 export * from './pm/pm-types.js';
+export {
+  getPidsOnPort,
+  getListenPorts,
+  getProcessCwd,
+  getProcessMemoryMB,
+  findPidsInDirectory,
+  parseProcessList,
+} from './platform.js';
+export type { ProcessInfo } from './platform.js';
 export * from './types.js';

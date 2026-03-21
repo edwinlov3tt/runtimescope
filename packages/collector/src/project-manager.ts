@@ -40,6 +40,7 @@ export interface ProjectConfig {
   name: string;
   createdAt: string;
   sdkVersion?: string;
+  projectId?: string;
   settings: {
     bufferSize?: number;
     retentionDays?: number;
@@ -191,6 +192,33 @@ export class ProjectManager {
 
   projectExists(projectName: string): boolean {
     return existsSync(this.getProjectDir(projectName));
+  }
+
+  // --- Project ID helpers ---
+
+  /** Look up the stored projectId for an appName. Returns null if none set. */
+  getProjectIdForApp(appName: string): string | null {
+    const config = this.getProjectConfig(appName);
+    return config?.projectId ?? null;
+  }
+
+  /** Persist a projectId for an appName in its project config. */
+  setProjectIdForApp(appName: string, projectId: string): void {
+    this.ensureProjectDir(appName);
+    const config = this.getProjectConfig(appName);
+    if (config) {
+      config.projectId = projectId;
+      this.saveProjectConfig(appName, config);
+    }
+  }
+
+  /** Resolve a projectId to an appName by scanning all project configs. Returns null if not found. */
+  getAppForProjectId(projectId: string): string | null {
+    for (const name of this.listProjects()) {
+      const config = this.getProjectConfig(name);
+      if (config?.projectId === projectId) return name;
+    }
+    return null;
   }
 
   // --- Environment variable resolution ---

@@ -48,7 +48,12 @@ export function registerHistoryTools(
     {
       project: z
         .string()
-        .describe('Project/app name (the appName used in SDK init)'),
+        .optional()
+        .describe('Project/app name (the appName used in SDK init). Required unless project_id is provided.'),
+      project_id: z
+        .string()
+        .optional()
+        .describe('Project ID (proj_xxx). Alternative to project name — resolves to the app name automatically.'),
       event_types: z
         .array(z.enum(EVENT_TYPES))
         .optional()
@@ -76,8 +81,27 @@ export function registerHistoryTools(
         .default(0)
         .describe('Pagination offset'),
     },
-    async ({ project, event_types, since, until, session_id, limit, offset }) => {
-      const sqliteStore = collector.getSqliteStore(project);
+    async ({ project, project_id, event_types, since, until, session_id, limit, offset }) => {
+      // Resolve project_id to project name if needed
+      const resolvedProject = project
+        ?? (project_id ? projectManager.getAppForProjectId(project_id) : undefined);
+
+      if (!resolvedProject) {
+        const projects = projectManager.listProjects();
+        const hint = projects.length > 0
+          ? ` Available projects: ${projects.join(', ')}`
+          : ' No projects have connected yet.';
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify({
+            summary: `No project specified or project_id "${project_id}" not found.${hint}`,
+            data: null,
+            issues: ['Provide either project (appName) or project_id (proj_xxx).'],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+          }, null, 2) }],
+        };
+      }
+
+      const sqliteStore = collector.getSqliteStore(resolvedProject);
       if (!sqliteStore) {
         // Check if the project directory exists at all
         const projects = projectManager.listProjects();
@@ -87,9 +111,9 @@ export function registerHistoryTools(
 
         return {
           content: [{ type: 'text' as const, text: JSON.stringify({
-            summary: `No historical data for project "${project}".${hint}`,
+            summary: `No historical data for project "${resolvedProject}".${hint}`,
             data: null,
-            issues: [`Project "${project}" has no SQLite store. Connect an SDK with appName: "${project}" first.`],
+            issues: [`Project "${resolvedProject}" has no SQLite store. Connect an SDK with appName: "${resolvedProject}" first.`],
             metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
           }, null, 2) }],
         };
@@ -100,7 +124,7 @@ export function registerHistoryTools(
       const cappedLimit = Math.min(limit, 1000);
 
       const events = sqliteStore.getEvents({
-        project,
+        project: resolvedProject,
         sessionId: session_id,
         eventTypes: event_types as EventType[] | undefined,
         since: sinceMs,
@@ -110,7 +134,7 @@ export function registerHistoryTools(
       });
 
       const totalCount = sqliteStore.getEventCount({
-        project,
+        project: resolvedProject,
         sessionId: session_id,
         eventTypes: event_types as EventType[] | undefined,
         since: sinceMs,
@@ -181,8 +205,10 @@ export function registerHistoryTools(
         const sessions = sqliteStore.getSessions(name, 100);
         const connectedSessions = sessions.filter((s) => s.isConnected);
 
+        const config = projectManager.getProjectConfig(name);
         return {
           name,
+          projectId: config?.projectId ?? null,
           eventCount,
           sessionCount: sessions.length,
           activeSessions: connectedSessions.length,

@@ -1,12 +1,14 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconAssetTools(server: McpServer, store: EventStore): void {
   server.tool(
     'get_asset_inventory',
     'Sprite-aware asset inventory for the current page. Detects and extracts: standard images, inline SVGs, SVG sprite sheets (<symbol>/<use> references), CSS background sprites (with crop coordinates and extracted frames), CSS mask sprites, and icon fonts (with glyph codepoints). For CSS sprites, calculates the exact crop rectangle from background-position/size and can provide extracted individual frames as data URLs.',
     {
+      project_id: projectIdParam,
       category: z
         .enum(['all', 'images', 'svg', 'sprites', 'icon_fonts'])
         .optional()
@@ -17,10 +19,9 @@ export function registerReconAssetTools(server: McpServer, store: EventStore): v
         .optional()
         .describe('Filter by page URL substring'),
     },
-    async ({ category, url }) => {
+    async ({ project_id, category, url }) => {
       const event = store.getReconAssetInventory({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -30,7 +31,7 @@ export function registerReconAssetTools(server: McpServer, store: EventStore): v
               summary: 'No asset inventory captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_asset_inventory events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -112,6 +113,7 @@ export function registerReconAssetTools(server: McpServer, store: EventStore): v
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

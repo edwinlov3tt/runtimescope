@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore, CollectorServer } from '@runtimescope/collector';
 import type { LayoutNode } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconLayoutTools(
   server: McpServer,
@@ -12,6 +13,7 @@ export function registerReconLayoutTools(
     'get_layout_tree',
     'Get the DOM structure with layout information: element tags, classes, bounding rects, display mode (flex/grid/block), flex/grid properties (direction, justify, align, gap, template columns/rows), position, and z-index. Optionally scoped to a CSS selector. Essential for understanding page structure when recreating UI.',
     {
+      project_id: projectIdParam,
       selector: z
         .string()
         .optional()
@@ -31,7 +33,7 @@ export function registerReconLayoutTools(
         .default(false)
         .describe('Request fresh capture from extension'),
     },
-    async ({ selector, max_depth, url, force_refresh }) => {
+    async ({ project_id, selector, max_depth, url, force_refresh }) => {
       if (force_refresh) {
         const sessions = store.getSessionInfo();
         const activeSession = sessions.find((s) => s.isConnected);
@@ -49,8 +51,7 @@ export function registerReconLayoutTools(
       }
 
       const event = store.getReconLayoutTree({ url });
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         return {
@@ -60,7 +61,7 @@ export function registerReconLayoutTools(
               summary: 'No layout tree captured yet. Ensure the RuntimeScope extension is connected and has scanned a page.',
               data: null,
               issues: ['No recon_layout_tree events found in the event store'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -100,6 +101,7 @@ export function registerReconLayoutTools(
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

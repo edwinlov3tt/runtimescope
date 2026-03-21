@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/collector",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Event collector and persistence layer for RuntimeScope",
   "type": "module",
   "main": "./dist/index.js",

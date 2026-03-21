@@ -2,6 +2,7 @@ import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore, CollectorServer } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerReconElementSnapshotTools(
   server: McpServer,
@@ -13,6 +14,7 @@ export function registerReconElementSnapshotTools(
     'get_element_snapshot',
     'Deep snapshot of a specific element and its children: structure, attributes, text content, bounding rects, and key computed styles for every node. This is the "zoom in" tool — use it when you need the full picture of a component (a card, a nav bar, a form) for recreation. More detailed than get_layout_tree, more targeted than get_computed_styles.',
     {
+      project_id: projectIdParam,
       selector: z
         .string()
         .describe('CSS selector for the root element (e.g., ".card", "#hero", "[data-testid=checkout-form]")'),
@@ -27,7 +29,7 @@ export function registerReconElementSnapshotTools(
         .default(false)
         .describe('Request fresh capture from extension or scanner for this element'),
     },
-    async ({ selector, depth, force_refresh }) => {
+    async ({ project_id, selector, depth, force_refresh }) => {
       // If force_refresh, try to get fresh data from extension
       if (force_refresh) {
         const sessions = store.getSessionInfo();
@@ -75,8 +77,7 @@ export function registerReconElementSnapshotTools(
         }
       }
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       if (!event) {
         const hint = scanner.getLastScannedUrl()
@@ -90,7 +91,7 @@ export function registerReconElementSnapshotTools(
               summary: hint,
               data: null,
               issues: ['No element snapshot data available for this selector'],
-              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId },
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId, projectId: project_id ?? null },
             }, null, 2),
           }],
         };
@@ -117,6 +118,7 @@ export function registerReconElementSnapshotTools(
           timeRange: { from: event.timestamp, to: event.timestamp },
           eventCount: 1,
           sessionId: event.sessionId,
+          projectId: project_id ?? null,
         },
       };
 

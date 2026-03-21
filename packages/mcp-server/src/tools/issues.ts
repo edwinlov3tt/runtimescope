@@ -4,6 +4,7 @@ import type { EventStore, DetectedIssue } from '@runtimescope/collector';
 import { detectIssues } from '@runtimescope/collector';
 import type { ApiDiscoveryEngine } from '@runtimescope/collector';
 import type { ProcessMonitor } from '@runtimescope/collector';
+import { projectIdParam, resolveSessionContext } from './shared.js';
 
 export function registerIssueTools(
   server: McpServer,
@@ -15,6 +16,7 @@ export function registerIssueTools(
     'detect_issues',
     'Run all pattern detectors against captured runtime data and return prioritized issues. Detects: failed requests, slow requests (>3s), N+1 request patterns, console error spam, high error rates, slow DB queries (>500ms), N+1 DB queries, API degradation, high latency endpoints, orphaned processes, and more. Use this as the first tool when investigating performance problems.',
     {
+      project_id: projectIdParam,
       since_seconds: z
         .number()
         .optional()
@@ -24,8 +26,8 @@ export function registerIssueTools(
         .optional()
         .describe('Only return issues at this severity or above'),
     },
-    async ({ since_seconds, severity_filter }) => {
-      const events = store.getAllEvents(since_seconds);
+    async ({ project_id, since_seconds, severity_filter }) => {
+      const events = store.getAllEvents(since_seconds, undefined, project_id);
       const allIssues: DetectedIssue[] = [...detectIssues(events)];
 
       // Merge engine-contributed issues
@@ -49,8 +51,7 @@ export function registerIssueTools(
         (i) => severityOrder[i.severity] <= filterThreshold
       );
 
-      const sessions = store.getSessionInfo();
-      const sessionId = sessions[0]?.sessionId ?? null;
+      const { sessionId } = resolveSessionContext(store, project_id);
 
       const highCount = issues.filter((i) => i.severity === 'high').length;
       const mediumCount = issues.filter((i) => i.severity === 'medium').length;
@@ -85,6 +86,7 @@ export function registerIssueTools(
           },
           eventCount: events.length,
           sessionId,
+          projectId: project_id ?? null,
         },
       };
 

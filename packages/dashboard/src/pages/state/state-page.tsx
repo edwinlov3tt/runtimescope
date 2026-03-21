@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DetailPanel, Badge, JsonViewer, Tabs } from '@/components/ui';
+import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { cn } from '@/lib/cn';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
@@ -11,6 +12,7 @@ export function StatePage() {
   const [activeTab, setActiveTab] = useState('mutations');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const connected = useConnected();
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const liveState = useDataStore((s) => s.state);
   const allData = liveState;
 
@@ -52,6 +54,16 @@ export function StatePage() {
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
         <div className="flex-1 overflow-y-auto">
+          {initialLoadDone && allData.length === 0 ? (
+            <EmptyConfigState
+              title="No State Data"
+              description="State tracking captures Zustand and Redux store mutations with diffs, action history, and the full state tree."
+              configHints={[
+                { key: 'stores', value: '{ myStore: useMyStore }', description: 'Pass your Zustand/Redux store references' },
+              ]}
+            />
+          ) : (
+          <>
           {activeTab === 'stores' && (
             <div className="p-5 space-y-3">
               {stores.map((store) => (
@@ -100,6 +112,8 @@ export function StatePage() {
                 </div>
               ))}
             </div>
+          )}
+          </>
           )}
         </div>
 

@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { Gauge, Sparkline, Badge } from '@/components/ui';
+import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
@@ -12,6 +13,7 @@ const METRIC_UNIT: Record<string, string> = { LCP: 'ms', FCP: 'ms', TTFB: 'ms', 
 export function PerformancePage() {
   const [selectedMetric, setSelectedMetric] = useState<string>('LCP');
   const connected = useConnected();
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const livePerformance = useDataStore((s) => s.performance);
 
   const metrics = useMemo(() => {
@@ -41,6 +43,15 @@ export function PerformancePage() {
       <Topbar title="Performance" connected={connected} />
 
       <div className="flex-1 overflow-y-auto">
+        {initialLoadDone && livePerformance.length === 0 ? (
+          <EmptyConfigState
+            title="No Performance Data"
+            description="Performance tracking captures Web Vitals (LCP, FCP, CLS, TTFB, INP) and server metrics (memory, CPU, event loop lag, GC pauses)."
+            configHints={[
+              { key: 'capturePerformance', value: 'true', description: 'Enable Web Vitals and server metrics' },
+            ]}
+          />
+        ) : (
         <div className="p-6 space-y-6 max-w-6xl mx-auto w-full">
           {/* Gauges grid */}
           <div>
@@ -104,6 +115,7 @@ export function PerformancePage() {
             </div>
           )}
         </div>
+        )}
       </div>
     </div>
   );

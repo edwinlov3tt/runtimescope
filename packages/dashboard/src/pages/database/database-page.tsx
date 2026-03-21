@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, CodeBlock, FilterBar } from '@/components/ui';
+import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { ExportButton } from '@/components/ui/export-button';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
@@ -419,6 +420,16 @@ export function DatabasePage() {
           <div className="flex-1 overflow-auto">
             {!initialLoadDone && queries.length === 0 ? (
               <TableSkeleton rows={8} />
+            ) : initialLoadDone && queries.length === 0 ? (
+              <EmptyConfigState
+                title="No Database Queries"
+                description="Database tracking captures SQL queries with timing, row counts, and N+1 detection. Requires instrumenting your ORM or database driver."
+                configHints={[
+                  { key: 'RuntimeScope.instrumentPrisma(prisma)', value: '', description: 'Prisma' },
+                  { key: 'RuntimeScope.instrumentDrizzle(db)', value: '', description: 'Drizzle' },
+                  { key: 'RuntimeScope.instrumentPg(pool)', value: '', description: 'node-postgres' },
+                ]}
+              />
             ) : (
             <>
             {activeTab === 'queries' && (

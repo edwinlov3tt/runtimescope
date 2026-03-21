@@ -1,6 +1,7 @@
 import { useState, useMemo, useCallback, memo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { Badge, JsonViewer } from '@/components/ui';
+import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { SearchInput } from '@/components/ui/input';
 import { ExportButton } from '@/components/ui/export-button';
 import { ListSkeleton } from '@/components/ui/skeleton';
@@ -346,11 +347,14 @@ export function BreadcrumbsPage() {
         {!initialLoadDone && breadcrumbs.length === 0 ? (
           <ListSkeleton rows={12} />
         ) : breadcrumbs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full text-text-muted">
-            <Bookmark size={32} strokeWidth={1} className="mb-3 opacity-40" />
-            <p className="text-sm font-medium">No breadcrumbs yet</p>
-            <p className="text-xs mt-1">Clicks, console logs, and network requests will appear here as a timeline.</p>
-          </div>
+          <EmptyConfigState
+            title="No Breadcrumbs"
+            description="Breadcrumbs are custom markers you add to trace user flows and debug sequences. Add them in your code with the SDK's addBreadcrumb() function."
+            configHints={[
+              { key: "RuntimeScope.addBreadcrumb('label'", value: "{ key: 'value' })", description: 'Add trail markers' },
+              { key: "RuntimeScope.track('event_name'", value: '{ data })', description: 'Track custom events' },
+            ]}
+          />
         ) : (
           <>
             {rendered.map((entry) => (

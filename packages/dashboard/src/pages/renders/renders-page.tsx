@@ -1,6 +1,7 @@
 import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, StatusDot, Sparkline, Tabs } from '@/components/ui';
+import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { SearchInput } from '@/components/ui/input';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
@@ -46,6 +47,7 @@ export function RendersPage() {
   const [search, setSearch] = useState('');
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
   const connected = useConnected();
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const liveRenders = useDataStore((s) => s.renders);
 
   const profiles = useMemo(() => {
@@ -80,6 +82,15 @@ export function RendersPage() {
       <Topbar title="Renders" connected={connected} />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
+        {initialLoadDone && liveRenders.length === 0 ? (
+          <EmptyConfigState
+            title="No Render Data"
+            description="Render tracking profiles React component renders — counts, velocity, duration, and what triggered each re-render. Requires React development mode."
+            configHints={[
+              { key: 'captureRenders', value: 'true', description: 'Enable React render profiling' },
+            ]}
+          />
+        ) : (
         <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
           {/* Timeline sparkline */}
           <div className="px-5 py-3 border-b border-border-default">
@@ -108,6 +119,7 @@ export function RendersPage() {
             />
           </div>
         </div>
+        )}
 
         <DetailPanel
           open={selected !== null}

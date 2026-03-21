@@ -83,7 +83,7 @@ function getWeekLabel(ts: number): string {
   return monday.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
-/** Get week key for grouping (YYYY-Www) */
+/** Get week key for grouping */
 function getWeekKey(ts: number): string {
   const d = new Date(ts);
   const day = d.getDay();
@@ -92,6 +92,18 @@ function getWeekKey(ts: number): string {
   monday.setDate(diff);
   return monday.toISOString().slice(0, 10);
 }
+
+/** Get day label (e.g., "Mar 17") */
+function getDayLabel(ts: number): string {
+  return new Date(ts).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
+/** Get day key for grouping (YYYY-MM-DD) */
+function getDayKey(ts: number): string {
+  return new Date(ts).toISOString().slice(0, 10);
+}
+
+type ChartGranularity = 'week' | 'day';
 
 // ---------------------------------------------------------------------------
 // Component
@@ -105,6 +117,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
   const projects = usePmStore((s) => s.projects);
 
   const [confirmingAll, setConfirmingAll] = useState(false);
+  const [chartGranularity, setChartGranularity] = useState<ChartGranularity>('week');
 
   const project = useMemo(
     () => projects.find((p) => p.id === projectId) ?? null,
@@ -128,15 +141,18 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
     return map;
   }, [sessions]);
 
-  // Weekly breakdown derived from entries
+  // Weekly or daily breakdown derived from entries
   const chartData = useMemo(() => {
     if (capexEntries.length === 0) return [];
-    const weeks = new Map<string, { week: string; label: string; capitalizable: number; expensed: number; total: number }>();
+    const buckets = new Map<string, { key: string; label: string; capitalizable: number; expensed: number; total: number }>();
+
+    const getKey = chartGranularity === 'day' ? getDayKey : getWeekKey;
+    const getLabel = chartGranularity === 'day' ? getDayLabel : getWeekLabel;
 
     for (const entry of capexEntries) {
       const ts = entry.createdAt;
-      const key = getWeekKey(ts);
-      const existing = weeks.get(key) ?? { week: key, label: getWeekLabel(ts), capitalizable: 0, expensed: 0, total: 0 };
+      const key = getKey(ts);
+      const existing = buckets.get(key) ?? { key, label: getLabel(ts), capitalizable: 0, expensed: 0, total: 0 };
       const cost = entry.adjustedCostMicrodollars / 1_000_000;
       if (entry.classification === 'capitalizable') {
         existing.capitalizable += cost;
@@ -144,12 +160,12 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
         existing.expensed += cost;
       }
       existing.total += cost;
-      weeks.set(key, existing);
+      buckets.set(key, existing);
     }
 
-    return Array.from(weeks.values())
-      .sort((a, b) => a.week.localeCompare(b.week));
-  }, [capexEntries]);
+    return Array.from(buckets.values())
+      .sort((a, b) => a.key.localeCompare(b.key));
+  }, [capexEntries, chartGranularity]);
 
   // Confirmed / total counts
   const confirmedCount = capexSummary?.confirmedCount ?? 0;
@@ -381,20 +397,42 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
               <div className="flex items-center justify-between mb-5">
                 <div>
                   <h2 className="text-sm font-semibold text-text-primary">
-                    Weekly Breakdown
+                    Spend Breakdown
                   </h2>
                   <p className="text-[11px] text-text-tertiary mt-0.5">
-                    Spend by classification per week
+                    By classification per {chartGranularity}
                   </p>
                 </div>
-                <div className="flex items-center gap-4">
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-green" />
-                    <span className="text-[11px] text-text-muted">Capitalizable</span>
+                <div className="flex items-center gap-5">
+                  <div className="flex items-center gap-4">
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2.5 h-2.5 rounded-full bg-green" />
+                      <span className="text-[11px] text-text-muted">Capitalizable</span>
+                    </div>
+                    <div className="flex items-center gap-1.5">
+                      <div className="w-2.5 h-2.5 rounded-full bg-text-muted" />
+                      <span className="text-[11px] text-text-muted">Expensed</span>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-1.5">
-                    <div className="w-2.5 h-2.5 rounded-full bg-text-muted" />
-                    <span className="text-[11px] text-text-muted">Expensed</span>
+                  <div className="flex items-center rounded-md border border-border-default overflow-hidden">
+                    <button
+                      onClick={() => setChartGranularity('day')}
+                      className={cn(
+                        'px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
+                        chartGranularity === 'day' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                      )}
+                    >
+                      Day
+                    </button>
+                    <button
+                      onClick={() => setChartGranularity('week')}
+                      className={cn(
+                        'px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer border-l border-border-default',
+                        chartGranularity === 'week' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                      )}
+                    >
+                      Week
+                    </button>
                   </div>
                 </div>
               </div>

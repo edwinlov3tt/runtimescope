@@ -959,6 +959,142 @@ export class PmStore {
     return [headers.join(','), ...rows].join('\n');
   }
 
+  async exportCapexXlsx(
+    projectId: string,
+    opts?: { startDate?: string; endDate?: string },
+  ): Promise<Buffer> {
+    const ExcelJS = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
+
+    const project = this.getProject(projectId);
+    const summary = this.getCapexSummary(projectId, opts);
+    const entries = this.listCapexEntries(projectId, { month: opts?.startDate });
+    const sessions = new Map<string, PmSession>();
+    for (const entry of entries) {
+      if (!sessions.has(entry.sessionId)) {
+        const s = this.getSession(entry.sessionId);
+        if (s) sessions.set(entry.sessionId, s);
+      }
+    }
+
+    // --- Sheet 1: Summary ---
+    const summarySheet = workbook.addWorksheet('Summary');
+    const summaryData = [
+      ['Project', project?.name ?? projectId],
+      ['Phase', project?.phase ?? ''],
+      ['Status', project?.projectStatus ?? ''],
+      ['Total Active Hours', (summary.totalActiveMinutes / 60).toFixed(2)],
+      ['Total Cost', `$${(summary.totalCostMicrodollars / 1_000_000).toFixed(2)}`],
+      ['Capitalizable', `$${(summary.capitalizableCostMicrodollars / 1_000_000).toFixed(2)}`],
+      ['Expensed', `$${(summary.expensedCostMicrodollars / 1_000_000).toFixed(2)}`],
+      ['Sessions', String(summary.totalSessions)],
+      ['Confirmed', `${summary.confirmedCount}/${summary.totalSessions}`],
+    ];
+    summaryData.forEach(([field, value]) => {
+      const row = summarySheet.addRow([field, value]);
+      row.getCell(1).font = { bold: true };
+    });
+    summarySheet.getColumn(1).width = 20;
+    summarySheet.getColumn(2).width = 30;
+
+    // --- Sheet 2: Daily Detail ---
+    const detailSheet = workbook.addWorksheet('Daily Detail');
+    detailSheet.addRow(['Date', 'Session', 'Model', 'Active Hours', 'Cost (USD)', 'Classification', 'Work Type', 'Confirmed', 'Notes']);
+    detailSheet.getRow(1).font = { bold: true };
+    for (const e of entries) {
+      const s = sessions.get(e.sessionId);
+      const date = s?.startedAt ? new Date(s.startedAt).toISOString().split('T')[0] : e.period;
+      detailSheet.addRow([
+        date,
+        s?.slug ?? e.sessionId.slice(0, 12),
+        s?.model ?? '',
+        Number((e.activeMinutes / 60).toFixed(2)),
+        Number((e.costMicrodollars / 1_000_000).toFixed(4)),
+        e.classification,
+        e.workType ?? '',
+        e.confirmed ? 'Yes' : 'No',
+        e.notes ?? '',
+      ]);
+    }
+    detailSheet.columns.forEach((col) => { col.width = 16; });
+    detailSheet.getColumn(1).width = 12;
+    detailSheet.getColumn(2).width = 24;
+
+    // --- Sheet 3: Monthly Totals ---
+    const monthlySheet = workbook.addWorksheet('Monthly Totals');
+    monthlySheet.addRow(['Period', 'Active Hours', 'Capitalizable ($)', 'Expensed ($)', 'Total ($)']);
+    monthlySheet.getRow(1).font = { bold: true };
+    for (const m of summary.byMonth) {
+      monthlySheet.addRow([
+        m.period,
+        Number((m.activeMinutes / 60).toFixed(2)),
+        Number((m.capitalizable / 1_000_000).toFixed(2)),
+        Number((m.expensed / 1_000_000).toFixed(2)),
+        Number(((m.capitalizable + m.expensed) / 1_000_000).toFixed(2)),
+      ]);
+    }
+    monthlySheet.columns.forEach((col) => { col.width = 18; });
+
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+  }
+
+  async exportCapexXlsxAll(
+    opts?: { startDate?: string; endDate?: string; category?: string },
+  ): Promise<Buffer> {
+    const ExcelJS = await import('exceljs');
+    const workbook = new ExcelJS.Workbook();
+
+    let projects = this.listProjects();
+    if (opts?.category) {
+      projects = projects.filter((p) => p.category === opts.category);
+    }
+
+    // --- Sheet 1: Overview ---
+    const overviewSheet = workbook.addWorksheet('Overview');
+    overviewSheet.addRow(['Project', 'Category', 'Phase', 'Total Hours', 'Capitalizable ($)', 'Expensed ($)', 'Total ($)']);
+    overviewSheet.getRow(1).font = { bold: true };
+    for (const p of projects) {
+      const summary = this.getCapexSummary(p.id, opts);
+      overviewSheet.addRow([
+        p.name,
+        p.category ?? '',
+        p.phase,
+        Number((summary.totalActiveMinutes / 60).toFixed(2)),
+        Number((summary.capitalizableCostMicrodollars / 1_000_000).toFixed(2)),
+        Number((summary.expensedCostMicrodollars / 1_000_000).toFixed(2)),
+        Number((summary.totalCostMicrodollars / 1_000_000).toFixed(2)),
+      ]);
+    }
+    overviewSheet.columns.forEach((col) => { col.width = 18; });
+    overviewSheet.getColumn(1).width = 28;
+
+    // --- Sheet 2: All Entries ---
+    const allSheet = workbook.addWorksheet('All Entries');
+    allSheet.addRow(['Project', 'Date', 'Session', 'Active Hours', 'Cost (USD)', 'Classification', 'Work Type']);
+    allSheet.getRow(1).font = { bold: true };
+    for (const p of projects) {
+      const entries = this.listCapexEntries(p.id, { month: opts?.startDate });
+      for (const e of entries) {
+        const s = this.getSession(e.sessionId);
+        const date = s?.startedAt ? new Date(s.startedAt).toISOString().split('T')[0] : e.period;
+        allSheet.addRow([
+          p.name,
+          date,
+          s?.slug ?? e.sessionId.slice(0, 12),
+          Number((e.activeMinutes / 60).toFixed(2)),
+          Number((e.costMicrodollars / 1_000_000).toFixed(4)),
+          e.classification,
+          e.workType ?? '',
+        ]);
+      }
+    }
+    allSheet.columns.forEach((col) => { col.width = 16; });
+    allSheet.getColumn(1).width = 24;
+    allSheet.getColumn(3).width = 24;
+
+    return Buffer.from(await workbook.xlsx.writeBuffer());
+  }
+
   private mapCapexRow(row: PmCapexRow): PmCapexEntry {
     return {
       id: row.id,

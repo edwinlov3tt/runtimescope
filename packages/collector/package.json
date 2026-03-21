@@ -29,7 +29,8 @@
     "ws": "^8.16.0"
   },
   "optionalDependencies": {
-    "better-sqlite3": "^11.0.0"
+    "better-sqlite3": "^11.0.0",
+    "exceljs": "^4.4.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

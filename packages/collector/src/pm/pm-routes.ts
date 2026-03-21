@@ -918,6 +918,46 @@ export function createPmRouter(
     res.end(csv);
   });
 
+  // XLSX export — single project
+  route('GET', '/api/pm/capex-report/:projectId', async (_req, res, params) => {
+    const projectId = params.get('projectId')!;
+    const startDate = params.get('start_date') ?? undefined;
+    const endDate = params.get('end_date') ?? undefined;
+    try {
+      const buffer = await pmStore.exportCapexXlsx(projectId, { startDate, endDate });
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': `attachment; filename="capex-${projectId}.xlsx"`,
+      });
+      res.end(buffer);
+    } catch {
+      // Fallback to CSV if exceljs not available
+      const csv = pmStore.exportCapexCsv(projectId, { startDate, endDate });
+      res.writeHead(200, {
+        'Content-Type': 'text/csv',
+        'Content-Disposition': `attachment; filename="capex-${projectId}.csv"`,
+      });
+      res.end(csv);
+    }
+  });
+
+  // XLSX export — all projects (optional ?category= filter)
+  route('GET', '/api/pm/capex-report-all', async (_req, res, params) => {
+    const startDate = params.get('start_date') ?? undefined;
+    const endDate = params.get('end_date') ?? undefined;
+    const category = params.get('category') ?? undefined;
+    try {
+      const buffer = await pmStore.exportCapexXlsxAll({ startDate, endDate, category });
+      res.writeHead(200, {
+        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        'Content-Disposition': 'attachment; filename="capex-all-projects.xlsx"',
+      });
+      res.end(buffer);
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 500);
+    }
+  });
+
   // ============================================================
   // Pattern matcher
   // ============================================================

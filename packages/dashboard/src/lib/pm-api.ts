@@ -262,6 +262,16 @@ export function getCapexExportUrl(projectId: string): string {
   return `${BASE}/api/pm/capex/${projectId}/export`;
 }
 
+export function getCapexExportXlsxUrl(projectId: string): string {
+  return `${BASE}/api/pm/capex-report/${projectId}`;
+}
+
+export function getCapexExportAllUrl(opts?: { category?: string }): string {
+  const url = `${BASE}/api/pm/capex-report-all`;
+  if (opts?.category) return `${url}?category=${encodeURIComponent(opts.category)}`;
+  return url;
+}
+
 // --- Git ---
 
 import type { GitStatus, GitCommit } from './pm-types';

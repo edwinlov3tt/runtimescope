@@ -250,3 +250,50 @@ You now have RuntimeScope monitoring on both sides:
 
 Both feed into the same collector — use `/diagnose` for a unified health check.
 ```
+
+---
+
+## Phase 7: Register Claude Code Hooks (Optional)
+
+Register global hooks for real-time tool timing data, improving CapEx time tracking accuracy.
+
+### Check existing hooks
+```bash
+cat ~/.claude/settings.json 2>/dev/null | grep -c "runtimescope\|9091" || echo "0"
+```
+
+If the count is 0 (no RuntimeScope hooks registered), proceed to add them.
+
+### Merge hooks into settings.json
+
+Read `~/.claude/settings.json`. If it doesn't exist, create it with `{}`.
+
+Add the following hook entries. **IMPORTANT**: Merge into any existing `hooks` object — do NOT overwrite other hooks the user may have configured.
+
+The hooks to add under `hooks.PostToolUse` (append to existing array if one exists):
+
+```json
+{
+  "matcher": ".*",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "curl -s -X POST http://localhost:9091/api/events -H 'Content-Type: application/json' -d '{\"sessionId\":\"claude-hooks\",\"appName\":\"claude-hooks\",\"events\":[{\"eventId\":\"hook-'$(date +%s%N)'\",\"sessionId\":\"claude-hooks\",\"timestamp\":'$(date +%s000)',\"eventType\":\"custom\",\"name\":\"tool_use\",\"properties\":{\"tool\":\"'\"$CLAUDE_TOOL_NAME\"'\",\"exitCode\":\"'\"$CLAUDE_TOOL_EXIT_CODE\"'\"}}]}' >/dev/null 2>&1 &"
+    }
+  ]
+}
+```
+
+### What the hooks do
+- **PostToolUse**: After every tool call, fires a background `curl` to log the tool name and exit code to the RuntimeScope collector
+- Events appear as `custom` type events with name `tool_use` in the event timeline
+- Fire-and-forget (`&` + `>/dev/null 2>&1`) — zero impact on Claude performance
+- Improves CapEx time tracking by providing per-tool timing data
+
+### Verify hooks are registered
+```bash
+cat ~/.claude/settings.json | python3 -c "import sys,json; d=json.load(sys.stdin); print('Hooks registered:', 'PostToolUse' in d.get('hooks', {}))"
+```
+
+### If user declines
+Hooks are optional. The tool works without them — session timing falls back to JSONL gap-aware parsing. Hooks just add finer granularity.

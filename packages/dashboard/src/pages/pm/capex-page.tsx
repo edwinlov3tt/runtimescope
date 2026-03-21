@@ -13,7 +13,7 @@ import {
 } from 'recharts';
 import { DollarSign, Download, CheckCircle, TrendingUp, Clock } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import { getCapexExportUrl } from '@/lib/pm-api';
+import { getCapexExportXlsxUrl } from '@/lib/pm-api';
 import type {
   PmCapexEntry,
   CapexClassification,
@@ -196,7 +196,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
   };
 
   const handleExport = () => {
-    window.open(getCapexExportUrl(projectId), '_blank');
+    window.open(getCapexExportXlsxUrl(projectId), '_blank');
   };
 
   // -----------------------------------------------------------------------
@@ -324,7 +324,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
             <div className="flex items-center gap-2">
               <Button variant="secondary" size="sm" onClick={handleExport}>
                 <Download size={14} />
-                Export CSV
+                Export XLSX
               </Button>
               <Button
                 variant="primary"

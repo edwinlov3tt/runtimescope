@@ -1,4 +1,5 @@
 import { useState, useMemo, useCallback } from 'react';
+import { cn } from '@/lib/cn';
 import { Topbar } from '@/components/layout/topbar';
 import {
   DataTable,

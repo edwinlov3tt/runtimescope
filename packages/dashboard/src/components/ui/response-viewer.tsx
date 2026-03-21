@@ -326,10 +326,10 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
           </button>
         </div>
         {/* Modal overlay */}
-        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-6" onClick={() => setFullscreen(false)}>
+        <div className="fixed inset-0 z-[100] bg-bg-default/95 backdrop-blur-sm flex items-center justify-center p-8" onClick={() => setFullscreen(false)}>
           <div
-            className="bg-bg-default border border-border-default rounded-lg shadow-2xl flex flex-col w-full max-w-5xl"
-            style={{ height: 'calc(100vh - 80px)' }}
+            className="bg-bg-surface border border-border-default rounded-lg shadow-2xl flex flex-col w-full max-w-5xl"
+            style={{ height: 'calc(100vh - 100px)' }}
             onClick={(e) => e.stopPropagation()}
           >
             {toolbar}

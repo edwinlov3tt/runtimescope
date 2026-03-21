@@ -32,6 +32,109 @@ function detectBinary(content: string): { isBinary: boolean; label?: string; ext
   return { isBinary: false };
 }
 
+// --- Content type detection ---
+
+type ContentFormat = 'json' | 'rsc' | 'html' | 'text';
+
+function detectFormat(content: string): ContentFormat {
+  const trimmed = content.trimStart();
+  // JSON: starts with { or [
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+    try { JSON.parse(content); return 'json'; } catch { /* not valid JSON */ }
+  }
+  // React Server Components wire format: lines like 0:{"key":"value"} or a:D{...}
+  if (/^\w+:["\[{$DIN]/.test(trimmed) || trimmed.startsWith('0:') || /\n\w+:/.test(content.slice(0, 200))) {
+    return 'rsc';
+  }
+  // HTML
+  if (trimmed.startsWith('<!') || trimmed.startsWith('<html') || trimmed.startsWith('<div')) {
+    return 'html';
+  }
+  return 'text';
+}
+
+/** Parse RSC wire format into a readable structure */
+function prettifyRsc(content: string): string {
+  const lines = content.split('\n').filter(Boolean);
+  const components: string[] = [];
+  const dataChunks: string[] = [];
+
+  for (const line of lines) {
+    const colonIdx = line.indexOf(':');
+    if (colonIdx < 0 || colonIdx > 4) { dataChunks.push(line); continue; }
+
+    const id = line.slice(0, colonIdx);
+    const payload = line.slice(colonIdx + 1);
+
+    // Module imports (I[...])
+    if (payload.startsWith('I[')) {
+      const nameMatch = payload.match(/"([^"]+\.(?:tsx?|jsx?))"/);
+      const exportMatch = payload.match(/,"(\w+)"\]$/);
+      if (nameMatch) {
+        const file = nameMatch[1].split('/').pop() ?? nameMatch[1];
+        const exp = exportMatch?.[1] ?? 'default';
+        components.push(`  ${id}: ${exp} from ${file}`);
+      }
+      continue;
+    }
+
+    // React elements
+    if (payload.startsWith('["$"')) {
+      try {
+        const parsed = JSON.parse(payload);
+        if (Array.isArray(parsed) && parsed[0] === '$' && typeof parsed[1] === 'string') {
+          dataChunks.push(`  ${id}: <${parsed[1]}> element`);
+          continue;
+        }
+      } catch { /* not parseable */ }
+    }
+
+    // Named component info
+    if (payload.startsWith('{') && payload.includes('"name"')) {
+      try {
+        const obj = JSON.parse(payload);
+        if (obj.name) {
+          const env = obj.env ? ` [${obj.env}]` : '';
+          const propsKeys = obj.props && typeof obj.props === 'object'
+            ? ` props={${Object.keys(obj.props).join(', ')}}`
+            : '';
+          dataChunks.push(`  ${id}: <${obj.name}${env}>${propsKeys}`);
+          continue;
+        }
+      } catch { /* not parseable */ }
+    }
+
+    // Timing data
+    if (payload.startsWith('D{') && payload.includes('"time"')) {
+      continue; // Skip timing markers for cleaner output
+    }
+
+    // Other JSON payloads — try to pretty-print
+    if (payload.startsWith('{') || payload.startsWith('[')) {
+      try {
+        const obj = JSON.parse(payload);
+        dataChunks.push(`  ${id}: ${JSON.stringify(obj, null, 2).split('\n').join('\n    ')}`);
+        continue;
+      } catch { /* not parseable */ }
+    }
+
+    // Everything else
+    if (payload.length > 0 && payload !== 'null') {
+      dataChunks.push(`  ${id}: ${payload.slice(0, 200)}${payload.length > 200 ? '...' : ''}`);
+    }
+  }
+
+  const sections: string[] = [];
+  if (components.length > 0) {
+    sections.push(`Components (${components.length}):\n${components.join('\n')}`);
+  }
+  if (dataChunks.length > 0) {
+    sections.push(`Data:\n${dataChunks.join('\n')}`);
+  }
+
+  return `React Server Components Payload\n${'─'.repeat(40)}\n\n${sections.join('\n\n')}`;
+}
+
 // --- Format conversions ---
 
 function tryParseJson(content: string): unknown | null {
@@ -166,10 +269,15 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
   }, [fullscreen]);
 
   const binary = useMemo(() => detectBinary(content), [content]);
-  const parsed = useMemo(() => tryParseJson(content), [content]);
+  const contentFormat = useMemo(() => detectFormat(content), [content]);
+  const parsed = useMemo(() => contentFormat === 'json' ? tryParseJson(content) : null, [content, contentFormat]);
   const isJson = parsed !== null;
+  const isRsc = contentFormat === 'rsc';
 
   const formatted = useMemo(() => {
+    if (isRsc) {
+      return format === 'raw' ? content : prettifyRsc(content);
+    }
     if (!isJson) return content;
     switch (format) {
       case 'pretty': return jsonToPretty(parsed);
@@ -255,9 +363,31 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
               {lbl}
             </button>
           ))
+        ) : isRsc ? (
+          <>
+            <button
+              onClick={() => setFormat('pretty')}
+              className={cn(
+                'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
+                format === 'pretty' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+              )}
+            >
+              Parsed
+            </button>
+            <button
+              onClick={() => setFormat('raw')}
+              className={cn(
+                'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
+                format === 'raw' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+              )}
+            >
+              Raw
+            </button>
+            <span className="ml-1 px-1.5 py-0.5 rounded bg-purple/10 text-purple text-[9px] font-medium uppercase">RSC</span>
+          </>
         ) : (
           <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">
-            {label}
+            {contentFormat === 'html' ? 'HTML' : label}
           </span>
         )}
       </div>

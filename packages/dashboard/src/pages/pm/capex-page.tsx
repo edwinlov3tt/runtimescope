@@ -244,7 +244,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <div className="flex-1 overflow-y-auto">
-        <div className="p-6 space-y-6 max-w-6xl mx-auto w-full">
+        <div className="p-6 space-y-6 w-full">
           {/* Header + Action Bar */}
           <div className="flex items-center justify-between">
             <div>

@@ -275,9 +275,13 @@ export function NetworkPage() {
                         {selectedRow.requestBody}
                       </CodeBlock>
                     ) : (
-                      <p className="text-sm text-text-muted">
-                        No request body
-                      </p>
+                      <div className="space-y-2">
+                        <p className="text-sm text-text-muted">No request body captured</p>
+                        <p className="text-xs text-text-tertiary">
+                          Enable body capture in your SDK config:
+                          <code className="ml-1 px-1.5 py-0.5 bg-bg-elevated rounded text-text-secondary">captureBody: true</code>
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}
@@ -288,9 +292,13 @@ export function NetworkPage() {
                         {selectedRow.responseBody}
                       </CodeBlock>
                     ) : (
-                      <p className="text-sm text-text-muted">
-                        No response body
-                      </p>
+                      <div className="space-y-2">
+                        <p className="text-sm text-text-muted">No response body captured</p>
+                        <p className="text-xs text-text-tertiary">
+                          Enable body capture in your SDK config:
+                          <code className="ml-1 px-1.5 py-0.5 bg-bg-elevated rounded text-text-secondary">captureBody: true</code>
+                        </p>
+                      </div>
                     )}
                   </div>
                 )}

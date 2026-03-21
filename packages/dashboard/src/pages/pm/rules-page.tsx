@@ -7,9 +7,9 @@ import { cn } from '@/lib/cn';
 type Scope = 'global' | 'project' | 'local';
 
 const SCOPE_TABS = [
-  { id: 'global', label: 'Global' },
-  { id: 'project', label: 'Project' },
   { id: 'local', label: 'Local' },
+  { id: 'project', label: 'Project' },
+  { id: 'global', label: 'Global' },
 ];
 
 const SCOPE_DESCRIPTIONS: Record<Scope, string> = {
@@ -22,7 +22,7 @@ export function RulesPage({ projectId }: { projectId: string }) {
   const rules = usePmStore((s) => s.rules);
   const rulesLoading = usePmStore((s) => s.rulesLoading);
 
-  const [activeScope, setActiveScope] = useState<Scope>('global');
+  const [activeScope, setActiveScope] = useState<Scope>('local');
   const [globalContent, setGlobalContent] = useState('');
   const [projectContent, setProjectContent] = useState('');
   const [localContent, setLocalContent] = useState('');

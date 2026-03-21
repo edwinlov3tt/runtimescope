@@ -95,6 +95,18 @@ export class RuntimeScope {
   static connect(config: RuntimeScopeConfig = {}): void {
     if (config.enabled === false) return;
 
+    // Auto-disable in production: if no explicit endpoint was configured and
+    // we're not on localhost, become a no-op. Users with a hosted collector
+    // set serverUrl/endpoint explicitly, so this only catches the default case.
+    const hasExplicitEndpoint = !!(config.serverUrl || config.endpoint);
+    if (!hasExplicitEndpoint && typeof window !== 'undefined') {
+      const host = window.location?.hostname;
+      if (host && host !== 'localhost' && host !== '127.0.0.1' && !host.startsWith('192.168.') && !host.startsWith('10.')) {
+        _log('[RuntimeScope] No endpoint configured and not on localhost — SDK disabled for production');
+        return;
+      }
+    }
+
     // Guard against double-init: disconnect cleanly first
     if (this._state === 'started') {
       _log('[RuntimeScope] Already connected — disconnecting before re-init');

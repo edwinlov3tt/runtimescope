@@ -26,6 +26,7 @@ Ideas and planned features organized by phase. Based on PRD milestones (M1-M13).
 | State Store Dashboard Tab | M | Medium | ⬜ Backlog | M5 (SDK done) |
 | Performance/Web Vitals Dashboard | M | Medium | ⬜ Backlog | M11 (SDK done) |
 | SQLite persistence + Session diffing | L | High | ⬜ Backlog | M9 |
+| [Protocol-Aware Response Detection](protocol-detection.md) | L | High | ⬜ Backlog | — |
 
 ## v1.1 — Fast Follow
 

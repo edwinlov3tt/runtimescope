@@ -7,9 +7,9 @@ import {
   Badge,
   StatusDot,
   Tabs,
-  CodeBlock,
   WaterfallBar,
 } from '@/components/ui';
+import { ResponseViewer } from '@/components/ui/response-viewer';
 import { ExportButton } from '@/components/ui/export-button';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
@@ -271,9 +271,11 @@ export function NetworkPage() {
                 {detailTab === 'request' && (
                   <div>
                     {selectedRow.requestBody ? (
-                      <CodeBlock language="json">
-                        {selectedRow.requestBody}
-                      </CodeBlock>
+                      <ResponseViewer
+                        content={selectedRow.requestBody}
+                        label="Request"
+                        filename={`request-${getRequestName(selectedRow)}`}
+                      />
                     ) : (
                       <div className="space-y-2">
                         <p className="text-sm text-text-muted">No request body captured</p>
@@ -288,9 +290,11 @@ export function NetworkPage() {
                 {detailTab === 'response' && (
                   <div>
                     {selectedRow.responseBody ? (
-                      <CodeBlock language="json">
-                        {selectedRow.responseBody}
-                      </CodeBlock>
+                      <ResponseViewer
+                        content={selectedRow.responseBody}
+                        label="Response"
+                        filename={`response-${getRequestName(selectedRow)}`}
+                      />
                     ) : (
                       <div className="space-y-2">
                         <p className="text-sm text-text-muted">No response body captured</p>

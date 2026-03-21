@@ -171,6 +171,7 @@ export interface ProjectSummary {
   category: string | null;
   sdk_installed: number;
   runtimescope_project: string | null;
+  runtime_apps: string | null;
   session_count: number;
   total_cost: number;
   total_active_minutes: number;

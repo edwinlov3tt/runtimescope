@@ -176,4 +176,4 @@ export interface RulesFiles {
   local: { path: string; content: string; exists: boolean };
 }
 
-export type ProjectTab = 'tasks' | 'sessions' | 'git' | 'runtime' | 'notes' | 'memory' | 'rules' | 'capex';
+export type ProjectTab = 'tasks' | 'sessions' | 'git' | 'sdk' | 'runtime' | 'notes' | 'memory' | 'rules' | 'capex';

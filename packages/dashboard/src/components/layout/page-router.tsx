@@ -8,7 +8,7 @@ const KitchenSink = lazy(() => import('@/components/showcase/kitchen-sink').then
 const ProjectView = lazy(() => import('./project-view').then((m) => ({ default: m.ProjectView })));
 const HomePage = lazy(() => import('@/pages/pm/home-page').then((m) => ({ default: m.HomePage })));
 
-// Legacy runtime pages
+// Legacy runtime pages (used when activeView is not home/project)
 const OverviewPage = lazy(() => import('@/pages/overview/overview-page').then((m) => ({ default: m.OverviewPage })));
 const NetworkPage = lazy(() => import('@/pages/network/network-page').then((m) => ({ default: m.NetworkPage })));
 const ConsolePage = lazy(() => import('@/pages/console/console-page').then((m) => ({ default: m.ConsolePage })));

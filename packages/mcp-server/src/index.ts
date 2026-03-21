@@ -255,6 +255,10 @@ async function main() {
   // Push session connect/disconnect to dashboard in real-time
   collector.onConnect((sessionId, projectName) => {
     httpServer.broadcastSessionChange('session_connected', sessionId, projectName);
+    // Auto-link SDK appName to PM project
+    if (pmStore) {
+      try { pmStore.autoLinkApp(projectName); } catch { /* non-fatal */ }
+    }
   });
   collector.onDisconnect((sessionId, projectName) => {
     httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName);

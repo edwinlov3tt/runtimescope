@@ -25,11 +25,13 @@ const MemoryPage = lazy(() => import('@/pages/pm/memory-page').then((m) => ({ de
 const RulesPage = lazy(() => import('@/pages/pm/rules-page').then((m) => ({ default: m.RulesPage })));
 const CapexPage = lazy(() => import('@/pages/pm/capex-page').then((m) => ({ default: m.CapexPage })));
 const GitPage = lazy(() => import('@/pages/pm/git-page').then((m) => ({ default: m.GitPage })));
+const SdkPage = lazy(() => import('@/pages/pm/sdk-page').then((m) => ({ default: m.SdkPage })));
 
 const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
   { id: 'tasks', label: 'Tasks' },
   { id: 'git', label: 'Git' },
+  { id: 'sdk', label: 'SDK' },
   { id: 'runtime', label: 'Runtime' },
   { id: 'notes', label: 'Notes' },
   { id: 'memory', label: 'Memory' },
@@ -472,6 +474,7 @@ export function ProjectView() {
           {activeProjectTab === 'tasks' && <TasksPage projectId={project.id} />}
           {activeProjectTab === 'git' && <GitPage projectId={project.id} projectPath={project.path} />}
           {activeProjectTab === 'sessions' && <PmSessionsPage projectId={project.id} />}
+          {activeProjectTab === 'sdk' && <SdkPage project={project} />}
           {activeProjectTab === 'runtime' && <RuntimePage project={project} />}
           {activeProjectTab === 'notes' && <NotesPage projectId={project.id} />}
           {activeProjectTab === 'memory' && <MemoryPage projectId={project.id} claudeProjectKey={project.claudeProjectKey} />}

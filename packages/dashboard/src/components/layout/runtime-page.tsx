@@ -60,6 +60,23 @@ const RUNTIME_TABS = [
   { id: 'events', label: 'Events' },
 ];
 
+const RUNTIME_TAB_COMPONENTS: Record<string, React.ComponentType> = {
+  overview: OverviewPage,
+  network: NetworkPage,
+  console: ConsolePage,
+  renders: RendersPage,
+  state: StatePage,
+  performance: PerformancePage,
+  api: ApiMapPage,
+  database: DatabasePage,
+  breadcrumbs: BreadcrumbsPage,
+  issues: IssuesPage,
+  processes: ProcessesPage,
+  infra: InfraPage,
+  sessions: SessionsPage,
+  events: EventsPage,
+};
+
 interface RuntimePageProps {
   project: PmProject;
 }
@@ -245,6 +262,10 @@ export function RuntimePage({ project }: RuntimePageProps) {
     );
   }
 
+  // Track visited sub-tabs to keep them mounted (prevents flash on tab switch)
+  const visitedSubTabs = useRef<Set<string>>(new Set(['overview']));
+  visitedSubTabs.current.add(runtimeSubTab);
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Tabs
@@ -252,21 +273,20 @@ export function RuntimePage({ project }: RuntimePageProps) {
         activeTab={runtimeSubTab}
         onTabChange={setRuntimeSubTab}
       />
-      <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {runtimeSubTab === 'overview' && <OverviewPage />}
-        {runtimeSubTab === 'network' && <NetworkPage />}
-        {runtimeSubTab === 'console' && <ConsolePage />}
-        {runtimeSubTab === 'renders' && <RendersPage />}
-        {runtimeSubTab === 'state' && <StatePage />}
-        {runtimeSubTab === 'performance' && <PerformancePage />}
-        {runtimeSubTab === 'api' && <ApiMapPage />}
-        {runtimeSubTab === 'database' && <DatabasePage />}
-        {runtimeSubTab === 'breadcrumbs' && <BreadcrumbsPage />}
-        {runtimeSubTab === 'issues' && <IssuesPage />}
-        {runtimeSubTab === 'processes' && <ProcessesPage />}
-        {runtimeSubTab === 'infra' && <InfraPage />}
-        {runtimeSubTab === 'sessions' && <SessionsPage />}
-        {runtimeSubTab === 'events' && <EventsPage />}
+      <div className="flex-1 min-h-0 flex flex-col overflow-hidden relative">
+        {RUNTIME_TABS.filter((t) => visitedSubTabs.current.has(t.id)).map((tab) => {
+          const Comp = RUNTIME_TAB_COMPONENTS[tab.id];
+          if (!Comp) return null;
+          const isActive = runtimeSubTab === tab.id;
+          return (
+            <div
+              key={tab.id}
+              className={isActive ? 'flex-1 flex flex-col min-h-0 overflow-hidden' : 'hidden'}
+            >
+              <Comp />
+            </div>
+          );
+        })}
       </div>
     </div>
   );

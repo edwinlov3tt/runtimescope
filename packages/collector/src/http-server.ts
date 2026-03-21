@@ -48,6 +48,7 @@ export class HttpServer {
   private activePort = 9091;
   private startedAt = Date.now();
   private connectedSessionsGetter: (() => { sessionId: string; projectName: string }[]) | null = null;
+  private pmStore: PmStore | null = null;
 
   constructor(
     store: EventStore,
@@ -67,6 +68,7 @@ export class HttpServer {
     this.allowedOrigins = options?.allowedOrigins ?? null;
     this.rateLimiter = options?.rateLimiter ?? null;
     this.connectedSessionsGetter = options?.getConnectedSessions ?? null;
+    this.pmStore = options?.pmStore ?? null;
     this.registerRoutes();
 
     // Register PM routes if PM store is available
@@ -333,6 +335,11 @@ export class HttpServer {
           connectedAt: Date.now(),
           sdkVersion: payload.sdkVersion ?? 'http',
         } as RuntimeEvent);
+
+        // Auto-link SDK appName to PM project
+        if (this.pmStore) {
+          try { this.pmStore.autoLinkApp(payload.appName); } catch { /* non-fatal */ }
+        }
       }
 
       const VALID_EVENT_TYPES = new Set([

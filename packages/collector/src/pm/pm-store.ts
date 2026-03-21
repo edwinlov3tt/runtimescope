@@ -240,6 +240,46 @@ export class PmStore {
     this.db.prepare(`UPDATE pm_projects SET ${sets.join(', ')} WHERE id = ?`).run(...params);
   }
 
+  /**
+   * Auto-link an SDK appName to a PM project.
+   * Matches by: exact name, directory basename, runtimescopeProject, or existing runtimeApps.
+   * Returns the project ID if linked, null if no match found.
+   */
+  autoLinkApp(appName: string): string | null {
+    const projects = this.listProjects();
+    const appLower = appName.toLowerCase();
+
+    // 1. Already linked?
+    const alreadyLinked = projects.find(
+      (p) => p.runtimeApps?.some((a) => a.toLowerCase() === appLower),
+    );
+    if (alreadyLinked) return alreadyLinked.id;
+
+    // 2. Find best match
+    const match = projects.find((p) => {
+      // Exact name match
+      if (p.name.toLowerCase() === appLower) return true;
+      // Directory basename match (e.g., project path /Users/x/my-app → "my-app")
+      if (p.path) {
+        const basename = p.path.replace(/\/+$/, '').split('/').pop()?.toLowerCase();
+        if (basename === appLower) return true;
+      }
+      // runtimescopeProject match
+      if (p.runtimescopeProject?.toLowerCase() === appLower) return true;
+      return false;
+    });
+
+    if (!match) return null;
+
+    // Add appName to runtimeApps
+    const apps = match.runtimeApps ?? [];
+    if (!apps.some((a) => a.toLowerCase() === appLower)) {
+      apps.push(appName);
+      this.updateProject(match.id, { runtimeApps: apps });
+    }
+    return match.id;
+  }
+
   listCategories(): string[] {
     const rows = this.db
       .prepare('SELECT DISTINCT category FROM pm_projects WHERE category IS NOT NULL ORDER BY category ASC')
@@ -566,6 +606,7 @@ export class PmStore {
         p.category,
         p.sdk_installed,
         p.runtimescope_project,
+        p.runtime_apps,
         COUNT(s.id) as session_count,
         COALESCE(SUM(s.cost_microdollars), 0) as total_cost,
         COALESCE(SUM(s.active_minutes), 0) as total_active_minutes,
@@ -967,6 +1008,7 @@ export interface ProjectSummaryRow {
   category: string | null;
   sdk_installed: number;
   runtimescope_project: string | null;
+  runtime_apps: string | null;
   session_count: number;
   total_cost: number;
   total_active_minutes: number;

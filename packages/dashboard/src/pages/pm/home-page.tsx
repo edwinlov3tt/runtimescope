@@ -20,7 +20,7 @@ import {
 import { cn } from '@/lib/cn';
 import type { ProjectSummary } from '@/lib/pm-api';
 import * as pmApi from '@/lib/pm-api';
-import type { ProjectInfo } from '@/lib/api';
+import { findRuntimeProjects, type ProjectInfo } from '@/lib/api';
 
 // ---------------------------------------------------------------------------
 // Date presets
@@ -79,9 +79,14 @@ function formatDate(ts: number | null): string {
 type SdkStatus = 'live' | 'installed' | 'not-installed';
 
 function getSdkStatus(row: ProjectSummary, runtimeProjects: ProjectInfo[]): SdkStatus {
-  const rp = runtimeProjects.find((r) => r.appName === row.runtimescope_project);
-  if (rp?.isConnected) return 'live';
-  if (row.sdk_installed) return 'installed';
+  const apps: string[] = row.runtime_apps ? JSON.parse(row.runtime_apps) : [];
+  const rps = findRuntimeProjects(runtimeProjects, {
+    runtimescopeProject: row.runtimescope_project ?? undefined,
+    runtimeApps: apps.length ? apps : undefined,
+    name: row.name,
+  });
+  if (rps.some((r) => r.isConnected)) return 'live';
+  if (row.sdk_installed || rps.length > 0) return 'installed';
   return 'not-installed';
 }
 

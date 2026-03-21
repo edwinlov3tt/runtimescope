@@ -321,10 +321,15 @@ export class ProjectDiscovery {
           const sdkInstalled = await detectSdkInstalled(sourcePath);
 
           if (existing) {
-            // Merge: add runtimescopeProject reference
+            // Merge: add runtimescopeProject reference + auto-link to runtimeApps
+            const apps = existing.runtimeApps ?? [];
+            if (!apps.some((a) => a.toLowerCase() === projectName.toLowerCase())) {
+              apps.push(projectName);
+            }
             const updated: PmProject = {
               ...existing,
               runtimescopeProject: projectName,
+              runtimeApps: apps,
               sdkInstalled: sdkInstalled || existing.sdkInstalled,
               updatedAt: now,
             };
@@ -339,6 +344,7 @@ export class ProjectDiscovery {
               name: projectName,
               path: fsPath,
               runtimescopeProject: projectName,
+              runtimeApps: [projectName],
               phase: 'application_development',
               managementAuthorized: false,
               probableToComplete: true,

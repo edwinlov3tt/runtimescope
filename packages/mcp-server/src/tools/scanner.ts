@@ -1,7 +1,7 @@
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { EventStore, ProjectManager } from '@runtimescope/collector';
-import { getOrCreateProjectId } from '@runtimescope/collector';
+import { getOrCreateProjectId, scaffoldProjectConfig, readProjectConfig } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
 
 const COLLECTOR_PORT = process.env.RUNTIMESCOPE_PORT ?? '9090';
@@ -32,11 +32,30 @@ export function registerScannerTools(
         .string()
         .optional()
         .describe('Existing project ID to use (proj_xxx). If omitted, one is auto-generated and persisted.'),
+      project_dir: z
+        .string()
+        .optional()
+        .describe('Absolute path to the project root directory. If provided, creates .runtimescope/config.json with the project config.'),
     },
-    async ({ app_name, framework, project_id }) => {
-      // Resolve or generate project ID
-      const resolvedProjectId = project_id
-        ?? (projectManager ? getOrCreateProjectId(projectManager, app_name) : undefined);
+    async ({ app_name, framework, project_id, project_dir }) => {
+      // Scaffold .runtimescope/config.json if project_dir is provided
+      let resolvedProjectId = project_id;
+      if (project_dir) {
+        const sdkType = framework === 'workers' ? 'workers' as const
+          : ['flask', 'django', 'rails', 'php', 'wordpress'].includes(framework) ? 'browser' as const
+          : 'browser' as const;
+        const config = scaffoldProjectConfig(project_dir, {
+          appName: app_name,
+          framework,
+          sdkType,
+        });
+        resolvedProjectId = resolvedProjectId ?? config.projectId;
+      }
+
+      // Fallback: generate via ProjectManager if no config scaffolded
+      if (!resolvedProjectId) {
+        resolvedProjectId = projectManager ? getOrCreateProjectId(projectManager, app_name) : undefined;
+      }
       const projectIdLine = resolvedProjectId ? `\n    projectId: '${resolvedProjectId}',` : '';
       const scriptTagSnippet = `<!-- RuntimeScope — paste before </body> -->
 <script src="http://localhost:${HTTP_PORT}/runtimescope.js"></script>
@@ -149,6 +168,12 @@ export default withRuntimeScope({
                 `WebSocket collector at ws://localhost:${COLLECTOR_PORT}`,
               ],
           whatItCaptures: isWorkers ? workersCaptures : browserCaptures,
+          projectConfig: project_dir ? {
+            created: true,
+            path: `${project_dir}/.runtimescope/config.json`,
+            projectId: resolvedProjectId,
+            note: 'Project config created. Commit .runtimescope/ to git to share settings across environments.',
+          } : undefined,
         },
         issues: [],
         metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null, projectId: resolvedProjectId ?? null },
@@ -156,6 +181,50 @@ export default withRuntimeScope({
 
       return {
         content: [{ type: 'text' as const, text: JSON.stringify(response, null, 2) }],
+      };
+    },
+  );
+
+  // ---------- get_project_config ----------
+  server.tool(
+    'get_project_config',
+    'Read the .runtimescope/config.json from a project directory. Returns the project ID, SDK entries, capture settings, and metadata. Use this to understand what RuntimeScope features are configured for a project.',
+    {
+      project_dir: z
+        .string()
+        .describe('Absolute path to the project root directory'),
+    },
+    async ({ project_dir }) => {
+      const config = readProjectConfig(project_dir);
+
+      if (!config) {
+        return {
+          content: [{
+            type: 'text' as const,
+            text: JSON.stringify({
+              summary: `No .runtimescope/config.json found in ${project_dir}. Run get_sdk_snippet with project_dir to create one, or use /setup.`,
+              data: null,
+              issues: ['No project config found. Create one with get_sdk_snippet or /setup.'],
+              metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },
+            }, null, 2),
+          }],
+        };
+      }
+
+      const sdkSummary = config.sdks.length > 0
+        ? config.sdks.map((s) => `${s.type}${s.framework ? ` (${s.framework})` : ''}`).join(', ')
+        : 'none installed';
+
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            summary: `Project "${config.appName}" (${config.projectId}). SDKs: ${sdkSummary}. Phase: ${config.phase ?? 'not set'}.`,
+            data: config,
+            issues: [],
+            metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null, projectId: config.projectId },
+          }, null, 2),
+        }],
       };
     },
   );

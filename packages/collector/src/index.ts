@@ -6,6 +6,17 @@ export { detectIssues } from './issue-detector.js';
 export { ProjectManager } from './project-manager.js';
 export type { GlobalConfig, ProjectConfig, InfrastructureConfig } from './project-manager.js';
 export { generateProjectId, isValidProjectId, getOrCreateProjectId } from './project-id.js';
+export {
+  readProjectConfig,
+  writeProjectConfig,
+  scaffoldProjectConfig,
+  resolveProjectAppNames,
+} from './project-config.js';
+export type {
+  RuntimeScopeProjectConfig,
+  SdkEntry,
+  CaptureConfig,
+} from './project-config.js';
 export { SqliteStore } from './sqlite-store.js';
 export type { SqliteStoreOptions } from './sqlite-store.js';
 export { isSqliteAvailable } from './sqlite-check.js';

@@ -44,6 +44,32 @@ class RuntimeScopeServer {
   }
 
   connect(config: ServerSdkConfig = {}): void {
+    // Auto-read .runtimescope/config.json for projectId and appName if not explicitly set
+    if (!config.projectId || !config.appName) {
+      try {
+        const { readFileSync, existsSync } = require('node:fs');
+        const { join } = require('node:path');
+        const configPath = join(process.cwd(), '.runtimescope', 'config.json');
+        if (existsSync(configPath)) {
+          const projectConfig = JSON.parse(readFileSync(configPath, 'utf-8'));
+          if (!config.projectId && projectConfig.projectId) config.projectId = projectConfig.projectId;
+          if (!config.appName && projectConfig.appName) config.appName = projectConfig.appName;
+          // Auto-apply capture settings from config
+          if (projectConfig.capture) {
+            const c = projectConfig.capture;
+            if (config.captureConsole === undefined && c.console !== undefined) config.captureConsole = c.console;
+            if (config.captureErrors === undefined && c.errors !== undefined) config.captureErrors = c.errors;
+            if (config.captureHttp === undefined && c.http !== undefined) config.captureHttp = c.http;
+            if (config.capturePerformance === undefined && c.performance !== undefined) config.capturePerformance = c.performance;
+            if (config.captureStackTraces === undefined && c.stackTraces !== undefined) config.captureStackTraces = c.stackTraces;
+            if (config.captureBody === undefined && c.body !== undefined) config.captureBody = c.body;
+          }
+        }
+      } catch {
+        // Config file doesn't exist or is malformed — use explicit config
+      }
+    }
+
     this.config = config;
     this.sessionId = config.sessionId ?? generateSessionId();
 

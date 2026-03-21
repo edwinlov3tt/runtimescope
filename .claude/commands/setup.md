@@ -1,6 +1,6 @@
 ---
 description: Install RuntimeScope SDK — detect framework, generate snippet, verify connection
-allowed-tools: ["Bash", "Read", "Write", "Edit", "Grep", "Glob"]
+allowed-tools: ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "mcp__runtimescope__get_sdk_snippet", "mcp__runtimescope__get_session_info", "mcp__runtimescope__get_project_config"]
 ---
 
 # Setup — Install RuntimeScope SDK
@@ -44,9 +44,28 @@ Map to framework type:
 
 ---
 
-## Phase 2: Generate SDK Snippet
+## Phase 2: Scaffold Project Config
 
-Run `get_sdk_snippet` with the detected framework and a sensible app name (from `package.json` name field or directory name).
+Check if `.runtimescope/config.json` already exists:
+
+```bash
+cat .runtimescope/config.json 2>/dev/null || echo "NOT_FOUND"
+```
+
+If it exists, read it with `get_project_config` to see what's already configured.
+
+If it doesn't exist, it will be auto-created in the next phase when `get_sdk_snippet` is called with `project_dir`.
+
+---
+
+## Phase 3: Generate SDK Snippet
+
+Run `get_sdk_snippet` with:
+- The detected framework
+- A sensible app name (from `package.json` name field or directory name)
+- `project_dir` set to the current working directory (this creates `.runtimescope/config.json` automatically)
+
+The snippet will include the `projectId` from the generated config.
 
 ---
 

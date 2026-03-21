@@ -1,5 +1,5 @@
-import { useState, useMemo, useCallback } from 'react';
-import { Copy, Check, Download, ChevronDown } from 'lucide-react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
+import { Copy, Check, Download, ChevronDown, Maximize2, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 
 // --- Binary detection ---
@@ -155,6 +155,15 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
   const [format, setFormat] = useState<ViewFormat>('pretty');
   const [copied, setCopied] = useState(false);
   const [showDropdown, setShowDropdown] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+
+  // Close fullscreen on Escape
+  useEffect(() => {
+    if (!fullscreen) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setFullscreen(false); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [fullscreen]);
 
   const binary = useMemo(() => detectBinary(content), [content]);
   const parsed = useMemo(() => tryParseJson(content), [content]);
@@ -228,73 +237,114 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
     yaml: 'YAML',
   };
 
-  return (
-    <div className="relative group rounded-md border border-border-default bg-bg-input">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-b border-border-muted">
-        <div className="flex items-center gap-1">
-          {isJson ? (
-            Object.entries(FORMAT_LABELS).map(([key, lbl]) => (
-              <button
-                key={key}
-                onClick={() => setFormat(key as ViewFormat)}
-                className={cn(
-                  'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
-                  format === key
-                    ? 'bg-brand/10 text-brand'
-                    : 'text-text-muted hover:text-text-secondary',
-                )}
-              >
-                {lbl}
-              </button>
-            ))
-          ) : (
-            <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">
-              {label}
-            </span>
+  const toolbar = (
+    <div className="flex items-center justify-between px-3 py-1.5 border-b border-border-muted shrink-0">
+      <div className="flex items-center gap-1">
+        {isJson ? (
+          Object.entries(FORMAT_LABELS).map(([key, lbl]) => (
+            <button
+              key={key}
+              onClick={() => setFormat(key as ViewFormat)}
+              className={cn(
+                'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
+                format === key
+                  ? 'bg-brand/10 text-brand'
+                  : 'text-text-muted hover:text-text-secondary',
+              )}
+            >
+              {lbl}
+            </button>
+          ))
+        ) : (
+          <span className="text-[10px] font-medium text-text-muted uppercase tracking-wider">
+            {label}
+          </span>
+        )}
+      </div>
+      <div className="flex items-center gap-1">
+        <button
+          onClick={handleCopy}
+          className="p-1 rounded text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-all cursor-pointer"
+          title="Copy"
+        >
+          {copied ? <Check size={13} /> : <Copy size={13} />}
+        </button>
+        <div className="relative">
+          <button
+            onClick={() => setShowDropdown(!showDropdown)}
+            className="p-1 rounded text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-all cursor-pointer flex items-center gap-0.5"
+            title="Download"
+          >
+            <Download size={13} />
+            <ChevronDown size={10} />
+          </button>
+          {showDropdown && (
+            <div className="absolute right-0 top-full mt-1 bg-bg-elevated border border-border-default rounded-md shadow-lg z-50 py-1 min-w-[120px]">
+              {isJson ? (
+                <>
+                  <DropdownItem onClick={() => handleDownload('json')} label="JSON" />
+                  <DropdownItem onClick={() => handleDownload('xml')} label="XML" />
+                  <DropdownItem onClick={() => handleDownload('csv')} label="CSV" />
+                  <DropdownItem onClick={() => handleDownload('yaml')} label="YAML" />
+                </>
+              ) : (
+                <DropdownItem onClick={() => handleDownload('raw')} label="Download" />
+              )}
+            </div>
           )}
         </div>
-        <div className="flex items-center gap-1">
+        <button
+          onClick={() => setFullscreen(!fullscreen)}
+          className="p-1 rounded text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-all cursor-pointer"
+          title={fullscreen ? 'Exit fullscreen' : 'Fullscreen'}
+        >
+          {fullscreen ? <X size={13} /> : <Maximize2 size={13} />}
+        </button>
+      </div>
+    </div>
+  );
+
+  const codeContent = (
+    <pre className="p-4 overflow-auto flex-1 min-h-0">
+      <code className="font-mono text-[12px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words">
+        {formatted}
+      </code>
+    </pre>
+  );
+
+  // Fullscreen overlay
+  if (fullscreen) {
+    return (
+      <>
+        {/* Inline placeholder so layout doesn't jump */}
+        <div className="rounded-md border border-border-default bg-bg-input p-4 text-center">
           <button
-            onClick={handleCopy}
-            className="p-1 rounded text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-all cursor-pointer"
-            title="Copy"
+            onClick={() => setFullscreen(false)}
+            className="text-sm text-brand hover:underline cursor-pointer"
           >
-            {copied ? <Check size={13} /> : <Copy size={13} />}
+            Viewing fullscreen — click to close
           </button>
-          <div className="relative">
-            <button
-              onClick={() => setShowDropdown(!showDropdown)}
-              className="p-1 rounded text-text-muted hover:text-text-secondary hover:bg-bg-hover transition-all cursor-pointer flex items-center gap-0.5"
-              title="Download"
-            >
-              <Download size={13} />
-              <ChevronDown size={10} />
-            </button>
-            {showDropdown && (
-              <div className="absolute right-0 top-full mt-1 bg-bg-elevated border border-border-default rounded-md shadow-lg z-50 py-1 min-w-[120px]">
-                {isJson ? (
-                  <>
-                    <DropdownItem onClick={() => handleDownload('json')} label="JSON" />
-                    <DropdownItem onClick={() => handleDownload('xml')} label="XML" />
-                    <DropdownItem onClick={() => handleDownload('csv')} label="CSV" />
-                    <DropdownItem onClick={() => handleDownload('yaml')} label="YAML" />
-                  </>
-                ) : (
-                  <DropdownItem onClick={() => handleDownload('raw')} label="Download" />
-                )}
-              </div>
-            )}
+        </div>
+        {/* Modal overlay */}
+        <div className="fixed inset-0 z-[100] bg-black/60 flex items-center justify-center p-6" onClick={() => setFullscreen(false)}>
+          <div
+            className="bg-bg-default border border-border-default rounded-lg shadow-2xl flex flex-col w-full max-w-5xl"
+            style={{ height: 'calc(100vh - 80px)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {toolbar}
+            {codeContent}
           </div>
         </div>
-      </div>
+      </>
+    );
+  }
 
-      {/* Content */}
-      <pre className="p-3 overflow-auto max-h-[500px]">
-        <code className="font-mono text-[12px] leading-relaxed text-text-secondary whitespace-pre-wrap break-words">
-          {formatted}
-        </code>
-      </pre>
+  // Inline — stretch to fill parent
+  return (
+    <div className="flex flex-col rounded-md border border-border-default bg-bg-input flex-1 min-h-0">
+      {toolbar}
+      {codeContent}
     </div>
   );
 }

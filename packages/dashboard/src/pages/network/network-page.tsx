@@ -208,7 +208,7 @@ export function NetworkPage() {
           }
         >
           {selectedRow && (
-            <div>
+            <div className="flex flex-col flex-1 min-h-0">
               <Tabs
                 tabs={[
                   { id: 'headers', label: 'Headers' },
@@ -219,7 +219,10 @@ export function NetworkPage() {
                 activeTab={detailTab}
                 onTabChange={setDetailTab}
               />
-              <div className="p-4">
+              <div className={cn(
+                'p-4 flex-1 min-h-0',
+                (detailTab === 'request' || detailTab === 'response') ? 'flex flex-col' : '',
+              )}>
                 {detailTab === 'headers' && (
                   <div className="space-y-4">
                     <div>
@@ -269,7 +272,7 @@ export function NetworkPage() {
                   </div>
                 )}
                 {detailTab === 'request' && (
-                  <div>
+                  <div className="flex flex-col flex-1 min-h-0">
                     {selectedRow.requestBody ? (
                       <ResponseViewer
                         content={selectedRow.requestBody}
@@ -288,7 +291,7 @@ export function NetworkPage() {
                   </div>
                 )}
                 {detailTab === 'response' && (
-                  <div>
+                  <div className="flex flex-col flex-1 min-h-0">
                     {selectedRow.responseBody ? (
                       <ResponseViewer
                         content={selectedRow.responseBody}

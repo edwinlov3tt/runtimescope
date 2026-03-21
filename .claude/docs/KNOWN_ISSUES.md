@@ -2,22 +2,6 @@
 
 ## Active Issues
 
-### [MEDIUM] No Event Persistence — Data Lost on Restart
-- **ID**: KI-001
-- **Location**: `packages/collector/src/store.ts`
-- **Symptom**: Restarting the MCP server loses all captured events
-- **Workaround**: Use `export_har` to save network data before restart. Don't restart during debugging sessions.
-- **Proper Fix**: Add SQLite persistence (planned for M9)
-- **Added**: 2026-02-11
-
-### [MEDIUM] No Test Suite
-- **ID**: KI-004
-- **Location**: All packages
-- **Symptom**: No unit, integration, or e2e tests exist
-- **Workaround**: Manual testing only
-- **Proper Fix**: Add test framework (vitest) and critical path tests
-- **Added**: 2026-02-11
-
 ### [LOW] DOM Snapshot Targets First Session Only
 - **ID**: KI-002
 - **Location**: `packages/mcp-server/src/tools/dom-snapshot.ts`
@@ -38,7 +22,20 @@
 
 ## Resolved Issues
 
-_No resolved issues yet._
+### [MEDIUM] No Event Persistence — Data Lost on Restart
+- **ID**: KI-001
+- **Resolved**: 2026-03-18 (v0.7.0)
+- **Fix**: SQLite persistence added via `sqlite-store.ts` in the collector. Events now survive restarts. Corruption recovery added in v0.7.2.
+
+### [MEDIUM] No Test Suite
+- **ID**: KI-004
+- **Resolved**: 2026-03-18
+- **Fix**: Vitest test suite added — 444 tests across 32 files including unit and integration tests. Runs with `pool: 'forks'` for native module compatibility.
+
+### [MEDIUM] Dashboard Bundle Size Warning
+- **ID**: KI-005
+- **Resolved**: 2026-03-20
+- **Fix**: Route-based code splitting with `React.lazy()` + `Suspense`. Main bundle reduced from 803KB → 280KB (65% reduction). Vite chunk warning eliminated.
 
 ---
 

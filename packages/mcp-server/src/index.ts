@@ -61,6 +61,9 @@ import { registerScannerTools } from './tools/scanner.js';
 // --- Custom event tracking ---
 import { registerCustomEventTools } from './tools/custom-events.js';
 
+// --- Breadcrumb trail (debugging context) ---
+import { registerBreadcrumbTools } from './tools/breadcrumbs.js';
+
 // --- Historical event persistence ---
 import { registerHistoryTools } from './tools/history.js';
 
@@ -312,6 +315,9 @@ async function main() {
 
   // --- Custom Event Tracking (2 new) ---
   registerCustomEventTools(mcp, store);
+
+  // --- Breadcrumb Trail (1 new) ---
+  registerBreadcrumbTools(mcp, store);
 
   // --- Historical Persistence (2 new) ---
   registerHistoryTools(mcp, collector, projectManager);

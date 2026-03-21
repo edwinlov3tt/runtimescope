@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { useDataStore } from '@/stores/use-data-store';
 import type { ProjectInfo } from '@/lib/api';
 import type { ProjectTab } from '@/lib/pm-types';
 
@@ -59,8 +60,9 @@ export const useAppStore = create<AppState>((set, get) => ({
   selectPmProject: (id) => {
     const prev = get().selectedPmProject;
     if (prev !== id) {
-      // Clear selectedProject so runtime data doesn't leak between PM projects
+      // Clear selectedProject and flush runtime event buffers to prevent data leakage
       set({ selectedProject: null });
+      useDataStore.getState().clearAll();
     }
     set({
       selectedPmProject: id,

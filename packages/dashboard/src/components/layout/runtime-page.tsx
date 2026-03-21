@@ -17,6 +17,7 @@ import { ProcessesPage } from '@/pages/processes/processes-page';
 import { InfraPage } from '@/pages/infra/infra-page';
 import { SessionsPage } from '@/pages/sessions/sessions-page';
 import { EventsPage } from '@/pages/events/events-page';
+import { BreadcrumbsPage } from '@/pages/breadcrumbs/breadcrumbs-page';
 import { EmptyState } from '@/components/ui/empty-state';
 import { WifiOff, Package, Play, Loader2, Terminal, ChevronDown } from 'lucide-react';
 import { fetchProjectScripts, startDevServer, fetchDevServerStatus } from '@/lib/pm-api';
@@ -51,6 +52,7 @@ const RUNTIME_TABS = [
   { id: 'performance', label: 'Performance' },
   { id: 'api', label: 'API Map' },
   { id: 'database', label: 'Database' },
+  { id: 'breadcrumbs', label: 'Breadcrumbs' },
   { id: 'issues', label: 'Issues' },
   { id: 'processes', label: 'Processes' },
   { id: 'infra', label: 'Infra' },
@@ -259,6 +261,7 @@ export function RuntimePage({ project }: RuntimePageProps) {
         {runtimeSubTab === 'performance' && <PerformancePage />}
         {runtimeSubTab === 'api' && <ApiMapPage />}
         {runtimeSubTab === 'database' && <DatabasePage />}
+        {runtimeSubTab === 'breadcrumbs' && <BreadcrumbsPage />}
         {runtimeSubTab === 'issues' && <IssuesPage />}
         {runtimeSubTab === 'processes' && <ProcessesPage />}
         {runtimeSubTab === 'infra' && <InfraPage />}

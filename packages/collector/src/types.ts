@@ -16,6 +16,7 @@ export type EventType =
   | 'database'
   | 'custom'
   | 'navigation'
+  | 'ui'
   | 'recon_metadata'
   | 'recon_design_tokens'
   | 'recon_fonts'
@@ -56,7 +57,7 @@ export interface NetworkEvent extends BaseEvent {
   responseBody?: string;
   errorPhase?: 'error' | 'abort' | 'timeout';
   errorMessage?: string;
-  source?: 'fetch' | 'xhr' | 'node-http' | 'node-https';
+  source?: 'fetch' | 'xhr' | 'node-http' | 'node-https' | 'workers';
 }
 
 // --- Console Events ---
@@ -81,6 +82,15 @@ export interface BuildMeta {
   deployId?: string;
 }
 
+// --- User Context ---
+
+export interface UserContext {
+  id?: string;
+  email?: string;
+  name?: string;
+  [key: string]: unknown;
+}
+
 // --- Session Events ---
 
 export interface SessionEvent extends BaseEvent {
@@ -89,6 +99,7 @@ export interface SessionEvent extends BaseEvent {
   connectedAt: number;
   sdkVersion: string;
   buildMeta?: BuildMeta;
+  user?: UserContext;
 }
 
 // --- State Events ---
@@ -182,6 +193,9 @@ export type DatabaseSource =
   | 'pg'
   | 'mysql2'
   | 'better-sqlite3'
+  | 'd1'
+  | 'kv'
+  | 'r2'
   | 'generic';
 
 export interface DatabaseEvent extends BaseEvent {
@@ -213,6 +227,27 @@ export interface CustomEvent extends BaseEvent {
   eventType: 'custom';
   name: string;
   properties?: Record<string, unknown>;
+}
+
+// --- UI Interaction Events (clicks, manual breadcrumbs) ---
+
+export type UIInteractionAction = 'click' | 'breadcrumb';
+
+export interface UIInteractionEvent extends BaseEvent {
+  eventType: 'ui';
+  action: UIInteractionAction;
+  /** CSS selector or element description */
+  target: string;
+  /** Visible text (button label, link text) */
+  text?: string;
+  /** Optional extra context */
+  data?: Record<string, unknown>;
+}
+
+export interface UIInteractionFilter {
+  action?: UIInteractionAction;
+  sinceSeconds?: number;
+  sessionId?: string;
 }
 
 // --- Custom Event Filters ---
@@ -590,6 +625,7 @@ export type RuntimeEvent =
   | DatabaseEvent
   | NavigationEvent
   | CustomEvent
+  | UIInteractionEvent
   | ReconMetadataEvent
   | ReconDesignTokensEvent
   | ReconFontsEvent

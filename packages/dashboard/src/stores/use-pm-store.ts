@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { RuntimeScope } from '@runtimescope/sdk';
+import { toast } from '@/stores/use-toast-store';
 import type {
   PmProject,
   PmTask,
@@ -130,12 +131,15 @@ export const usePmStore = create<PmState>((set, get) => ({
     const task = await pmApi.createPmTask(data);
     if (task) {
       set({ tasks: [...get().tasks, task] });
+      toast.success('Task created');
       RuntimeScope.track('task_created', {
         taskId: task.id,
         title: task.title,
         priority: task.priority,
         projectId: task.projectId,
       });
+    } else {
+      toast.error('Failed to create task');
     }
     return task;
   },
@@ -147,7 +151,12 @@ export const usePmStore = create<PmState>((set, get) => ({
   },
   deleteTask: async (id) => {
     const ok = await pmApi.deletePmTask(id);
-    if (ok) set({ tasks: get().tasks.filter((t) => t.id !== id) });
+    if (ok) {
+      set({ tasks: get().tasks.filter((t) => t.id !== id) });
+      toast.success('Task deleted');
+    } else {
+      toast.error('Failed to delete task');
+    }
   },
   reorderTask: async (id, status, sortOrder) => {
     const task = get().tasks.find((t) => t.id === id);
@@ -281,7 +290,12 @@ export const usePmStore = create<PmState>((set, get) => ({
   },
   createNote: async (data) => {
     const note = await pmApi.createPmNote(data);
-    if (note) set({ notes: [note, ...get().notes] });
+    if (note) {
+      set({ notes: [note, ...get().notes] });
+      toast.success('Note saved');
+    } else {
+      toast.error('Failed to save note');
+    }
     return note;
   },
   updateNote: async (id, data) => {
@@ -292,7 +306,12 @@ export const usePmStore = create<PmState>((set, get) => ({
   },
   deleteNote: async (id) => {
     const ok = await pmApi.deletePmNote(id);
-    if (ok) set({ notes: get().notes.filter((n) => n.id !== id) });
+    if (ok) {
+      set({ notes: get().notes.filter((n) => n.id !== id) });
+      toast.success('Note deleted');
+    } else {
+      toast.error('Failed to delete note');
+    }
   },
 
   // --- Memory ---
@@ -313,11 +332,19 @@ export const usePmStore = create<PmState>((set, get) => ({
       } else {
         set({ memoryFiles: [...files, saved] });
       }
+      toast.success('Memory file saved');
+    } else {
+      toast.error('Failed to save memory file');
     }
   },
   deleteMemoryFile: async (projectId, filename) => {
     const ok = await pmApi.deleteMemoryFile(projectId, filename);
-    if (ok) set({ memoryFiles: get().memoryFiles.filter((f) => f.filename !== filename) });
+    if (ok) {
+      set({ memoryFiles: get().memoryFiles.filter((f) => f.filename !== filename) });
+      toast.success('Memory file deleted');
+    } else {
+      toast.error('Failed to delete memory file');
+    }
   },
 
   // --- Rules ---
@@ -337,6 +364,9 @@ export const usePmStore = create<PmState>((set, get) => ({
           [scope]: { ...get().rules![scope], content: saved.content, exists: true },
         },
       });
+      toast.success('Rule saved');
+    } else {
+      toast.error('Failed to save rule');
     }
   },
 
@@ -401,8 +431,10 @@ export const usePmStore = create<PmState>((set, get) => ({
         pmApi.fetchGitLog(projectId),
       ]);
       set({ gitStatus: status, gitCommits: commits ?? [] });
+      toast.success('Commit created');
       return true;
     }
+    toast.error('Failed to create commit');
     return false;
   },
 }));

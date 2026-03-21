@@ -1,7 +1,7 @@
 // Re-defined types matching packages/collector/src/types.ts
 // Kept in dashboard to avoid cross-package dependency
 
-export type EventType = 'network' | 'console' | 'session' | 'state' | 'render' | 'dom_snapshot' | 'performance' | 'database' | 'custom';
+export type EventType = 'network' | 'console' | 'session' | 'state' | 'render' | 'dom_snapshot' | 'performance' | 'database' | 'custom' | 'navigation' | 'ui';
 
 export interface BaseEvent {
   eventId: string;
@@ -105,6 +105,23 @@ export interface CustomEvent extends BaseEvent {
   eventType: 'custom';
   name: string;
   properties?: Record<string, unknown>;
+}
+
+export interface NavigationEvent extends BaseEvent {
+  eventType: 'navigation';
+  from: string;
+  to: string;
+  trigger: 'pushState' | 'replaceState' | 'popstate' | 'hashchange' | 'initial';
+}
+
+export type UIInteractionAction = 'click' | 'breadcrumb';
+
+export interface UIInteractionEvent extends BaseEvent {
+  eventType: 'ui';
+  action: UIInteractionAction;
+  target: string;
+  text?: string;
+  data?: Record<string, unknown>;
 }
 
 export type IssueSeverity = 'high' | 'medium' | 'low';

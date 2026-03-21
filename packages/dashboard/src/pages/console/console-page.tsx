@@ -2,6 +2,8 @@ import { useState, useMemo, useCallback, memo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { Badge, StackTrace, JsonViewer } from '@/components/ui';
 import { SearchInput } from '@/components/ui/input';
+import { ExportButton } from '@/components/ui/export-button';
+import { ListSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { formatTimestamp } from '@/lib/format';
@@ -104,6 +106,7 @@ export function ConsolePage() {
   const [showAll, setShowAll] = useState(false);
   const connected = useConnected();
   const liveConsole = useDataStore((s) => s.console);
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const allData = liveConsole;
 
   const levelCounts = useMemo(() => {
@@ -165,20 +168,27 @@ export function ConsolePage() {
             );
           })}
         </div>
-        <div className="w-56 ml-auto">
-          <SearchInput
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Filter logs..."
-          />
+        <div className="flex items-center gap-2 ml-auto">
+          <div className="w-56">
+            <SearchInput
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Filter logs..."
+            />
+          </div>
+          <ExportButton data={filtered as unknown as Record<string, unknown>[]} filename="console-events" />
         </div>
       </div>
 
       {/* Log stream */}
       <div className="flex-1 overflow-y-auto">
-        {rendered.map((entry) => (
+        {!initialLoadDone && allData.length === 0 ? (
+          <ListSkeleton rows={12} />
+        ) : (
+        <>
+        {rendered.map((entry, i) => (
           <ConsoleRow
-            key={entry.eventId}
+            key={`${entry.eventId}-${i}`}
             entry={entry}
             isExpanded={expandedId === entry.eventId}
             onToggle={handleToggle}
@@ -193,6 +203,8 @@ export function ConsolePage() {
               Showing {RENDER_CAP} of {filtered.length} entries — click to show all
             </button>
           </div>
+        )}
+        </>
         )}
       </div>
     </div>

@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/collector",
-  "version": "0.7.2",
+  "version": "0.8.0",
   "description": "Event collector and persistence layer for RuntimeScope",
   "type": "module",
   "main": "./dist/index.js",
@@ -26,8 +26,10 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "better-sqlite3": "^11.0.0",
     "ws": "^8.16.0"
+  },
+  "optionalDependencies": {
+    "better-sqlite3": "^11.0.0"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.8",

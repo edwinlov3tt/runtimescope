@@ -66,9 +66,9 @@ export function StatePage() {
 
           {activeTab === 'mutations' && (
             <div className="divide-y divide-border-muted">
-              {mutations.map((m) => (
+              {mutations.map((m, i) => (
                 <div
-                  key={m.eventId}
+                  key={`${m.eventId}-${i}`}
                   onClick={() => setSelectedId(m.eventId)}
                   className={cn(
                     'flex items-start gap-3 px-5 py-3 cursor-pointer transition-colors hover:bg-bg-hover',

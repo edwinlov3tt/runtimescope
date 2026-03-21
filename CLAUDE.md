@@ -6,13 +6,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ```bash
 npm install              # Install all workspace dependencies
-npm run build            # Build all 3 packages (collector → mcp-server → sdk)
+npm run build            # Build all packages (sdk, server-sdk, workers-sdk, collector, mcp-server)
 ```
 
 Individual packages:
 ```bash
 npm run build -w packages/collector
 npm run build -w packages/sdk
+npm run build -w packages/server-sdk
+npm run build -w packages/workers-sdk
 npm run build -w packages/mcp-server
 ```
 
@@ -39,11 +41,14 @@ claude mcp add runtimescope node packages/mcp-server/dist/index.js
 
 ## Architecture
 
-Six-package npm workspace monorepo. Single data flow: Browser SDK → WebSocket → Collector → MCP tools → Claude Code. The scanner can also visit any URL directly via Playwright.
+Seven-package npm workspace monorepo. Single data flow: SDK → Collector → MCP tools → Claude Code. The scanner can also visit any URL directly via Playwright.
 
 ```
 @runtimescope/sdk (browser, zero deps)
     │  WebSocket (ws://localhost:9090)
+    ▼
+@runtimescope/workers-sdk (Cloudflare Workers, zero deps)
+    │  HTTP POST (to collector /api/events)
     ▼
 @runtimescope/collector (Node.js, depends on: ws)
     │  Shared EventStore (in-process)
@@ -64,6 +69,15 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 - **Transport**: WebSocket client with batching (50 events / 100ms), offline queue (1K max), exponential backoff reconnect
 - **Bidirectional**: Transport receives server→SDK commands (e.g., `capture_dom_snapshot`) and sends responses
 - All diagnostic logging uses `_log` (saved `console.debug.bind(console)` before interceptors patch it) to avoid recursion — hidden by default in Chrome DevTools
+
+### Workers SDK (`packages/workers-sdk/`)
+
+Zero-dependency SDK for Cloudflare Workers. Sends events via HTTP POST to the collector's `/api/events` endpoint (not WebSocket — Workers can't hold persistent connections).
+
+- **`withRuntimeScope(handler, config)`**: Wraps a Workers fetch handler to capture request/response metrics, errors, and console output. Flushes via `ctx.waitUntil()`.
+- **Binding wrappers**: `instrumentD1()`, `instrumentKV()`, `instrumentR2()` wrap Cloudflare bindings to capture operations with timing. `scopeD1()`, `scopeKV()`, `scopeR2()` auto-wire to the active request context.
+- **Transport**: `WorkersTransport` — no timers, explicit `flush()` call per request. FIFO queue with configurable max size.
+- **Types are self-contained** — mirrors event types from `collector/src/types.ts` plus Cloudflare-specific binding interfaces.
 
 ### Collector (`packages/collector/`)
 
@@ -95,7 +109,7 @@ Zero-dependency browser SDK. Builds to ESM + IIFE (global `RuntimeScope`). Monke
 - **`collector/src/types.ts` is the canonical source** — it's re-exported via `export * from './types.js'` in the collector barrel and consumed by the MCP server
 - Build tool is **tsup** — configs in each package's `tsup.config.ts`
 - SDK targets `es2020`, collector and MCP server target `node20`
-- MCP server version and SDK version (`SDK_VERSION` constant in `sdk/src/index.ts`) should stay in sync
+- MCP server version and SDK version (`SDK_VERSION` constant) should stay in sync across `sdk/src/index.ts`, `server-sdk/src/index.ts`, and `workers-sdk/src/transport.ts`
 
 ## Publishing to npm
 
@@ -104,7 +118,7 @@ All 4 public packages are published under the `@runtimescope` org. A GitHub Acti
 To release a new version:
 ```bash
 npm version 0.7.0 --workspaces --no-git-tag-version  # Bump all package.json files
-# Also update SDK_VERSION in packages/sdk/src/index.ts and packages/server-sdk/src/index.ts
+# Also update SDK_VERSION in packages/sdk/src/index.ts, packages/server-sdk/src/index.ts, and packages/workers-sdk/src/transport.ts
 git add -A && git commit -m "v0.7.0"
 git tag v0.7.0
 git push && git push --tags                            # Triggers GitHub Action → npm publish

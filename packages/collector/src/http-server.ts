@@ -272,6 +272,17 @@ export class HttpServer {
       this.json(res, { data: events, count: events.length });
     });
 
+    // UI interaction events (clicks, breadcrumbs)
+    this.routes.set('GET /api/events/ui', (_req, res, params) => {
+      const action = params.get('action') as 'click' | 'breadcrumb' | undefined;
+      const events = this.store.getUIInteractions({
+        action: action ?? undefined,
+        sinceSeconds: numParam(params, 'since_seconds'),
+        sessionId: params.get('session_id') ?? undefined,
+      });
+      this.json(res, { data: events, count: events.length });
+    });
+
     // Clear events
     this.routes.set('DELETE /api/events', (_req, res) => {
       const result = this.store.clear();
@@ -327,6 +338,7 @@ export class HttpServer {
       const VALID_EVENT_TYPES = new Set([
         'network', 'console', 'session', 'state', 'render',
         'dom_snapshot', 'performance', 'database',
+        'custom', 'navigation', 'ui',
         'recon_metadata', 'recon_design_tokens', 'recon_fonts',
         'recon_layout_tree', 'recon_accessibility', 'recon_computed_styles',
         'recon_element_snapshot', 'recon_asset_inventory',

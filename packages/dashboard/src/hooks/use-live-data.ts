@@ -8,6 +8,7 @@ import {
   fetchRenderEvents,
   fetchPerformanceEvents,
   fetchDatabaseEvents,
+  fetchUIEvents,
   fetchProcesses,
   fetchPorts,
 } from '@/lib/api';
@@ -65,6 +66,11 @@ function makeFetchers(): Record<string, Fetcher> {
       const data = await fetchDatabaseEvents({ session_id: sid });
       if (data) useDataStore.getState().setDatabase(data);
     },
+    breadcrumbs: async () => {
+      const sid = getSessionIdFilter();
+      const data = await fetchUIEvents({ session_id: sid });
+      if (data) useDataStore.getState().setUI(data);
+    },
     processes: async () => {
       const [procs, ports] = await Promise.all([fetchProcesses(), fetchPorts()]);
       const s = useDataStore.getState();
@@ -112,6 +118,7 @@ export function useLiveData(): void {
   const runtimeSubTab = useAppStore((s) => s.runtimeSubTab);
   const selectedProject = useAppStore((s) => s.selectedProject);
   const source = useDataStore((s) => s.source);
+  const connected = useDataStore((s) => s.connected);
   const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -128,29 +135,35 @@ export function useLiveData(): void {
     const fetchers = makeFetchers();
     const fetcher = fetchers[effectiveTab] ?? fetchAllFiltered;
 
-    // Fetch immediately on tab switch or project change
+    // Always fetch once on tab switch or project change for fresh data
     fetcher();
 
-    // Poll on interval
-    intervalRef.current = setInterval(fetcher, POLL_INTERVAL);
+    // Only poll when WS is disconnected — when connected, the WS pushes events in real-time
+    if (!connected) {
+      intervalRef.current = setInterval(fetcher, POLL_INTERVAL);
 
-    // Pause when tab is hidden
-    const onVisibility = () => {
-      if (document.hidden) {
-        if (intervalRef.current) {
-          clearInterval(intervalRef.current);
-          intervalRef.current = null;
+      // Pause when tab is hidden
+      const onVisibility = () => {
+        if (document.hidden) {
+          if (intervalRef.current) {
+            clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+        } else {
+          fetcher();
+          intervalRef.current = setInterval(fetcher, POLL_INTERVAL);
         }
-      } else {
-        fetcher();
-        intervalRef.current = setInterval(fetcher, POLL_INTERVAL);
-      }
-    };
-    document.addEventListener('visibilitychange', onVisibility);
+      };
+      document.addEventListener('visibilitychange', onVisibility);
+
+      return () => {
+        if (intervalRef.current) clearInterval(intervalRef.current);
+        document.removeEventListener('visibilitychange', onVisibility);
+      };
+    }
 
     return () => {
       if (intervalRef.current) clearInterval(intervalRef.current);
-      document.removeEventListener('visibilitychange', onVisibility);
     };
-  }, [activeTab, activeView, activeProjectTab, runtimeSubTab, source, selectedProject]);
+  }, [activeTab, activeView, activeProjectTab, runtimeSubTab, source, selectedProject, connected]);
 }

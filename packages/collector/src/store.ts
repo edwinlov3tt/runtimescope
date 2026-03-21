@@ -12,6 +12,8 @@ import type {
   DatabaseEvent,
   CustomEvent,
   CustomEventFilter,
+  UIInteractionEvent,
+  UIInteractionFilter,
   ReconMetadataEvent,
   ReconDesignTokensEvent,
   ReconFontsEvent,
@@ -269,6 +271,21 @@ export class EventStore {
       if (filter.name && ce.name !== filter.name) return false;
       return true;
     }) as CustomEvent[];
+  }
+
+  getUIInteractions(filter: UIInteractionFilter = {}): UIInteractionEvent[] {
+    const since = filter.sinceSeconds
+      ? Date.now() - filter.sinceSeconds * 1000
+      : 0;
+
+    return this.buffer.query((e) => {
+      if (e.eventType !== 'ui') return false;
+      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      const ue = e as UIInteractionEvent;
+      if (ue.timestamp < since) return false;
+      if (filter.action && ue.action !== filter.action) return false;
+      return true;
+    }) as UIInteractionEvent[];
   }
 
   // ============================================================

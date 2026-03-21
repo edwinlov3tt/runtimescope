@@ -7,9 +7,12 @@
 | SDK (Browser) | TypeScript, zero deps | Monkey-patches fetch/XHR/console/React Profiler/Zustand/Redux in the browser |
 | SDK Transport | WebSocket (native browser API) | Streams events with batching, reconnection, offline queue |
 | Collector | Node.js, `ws` library | WebSocket server + ring buffer + issue detection engine |
-| MCP Server | `@modelcontextprotocol/sdk`, `zod` | stdio transport MCP server exposing 11 tools to Claude Code |
-| Build | `tsup`, TypeScript 5.4+ | Bundling for all 3 packages (CJS/ESM/IIFE for SDK) |
-| Monorepo | npm workspaces | 3 packages under `packages/` |
+| Server SDK | TypeScript, `ws` | Node.js instrumentation (Prisma, pg, Knex, Drizzle, MySQL2, SQLite) |
+| Dashboard | React 19, Vite, Zustand, Tailwind CSS | Real-time monitoring UI with PM features |
+| MCP Server | `@modelcontextprotocol/sdk`, `zod` | stdio transport MCP server exposing 44 tools to Claude Code |
+| Build | `tsup`, TypeScript 5.4+ | Bundling for all 6 packages (CJS/ESM/IIFE for SDK) |
+| Monorepo | npm workspaces | 6 packages under `packages/` |
+| Tests | Vitest | 444 tests across 32 files |
 
 ## Directory Structure
 

@@ -6,6 +6,8 @@ import type {
   PerformanceEvent,
   DatabaseEvent,
   CustomEvent,
+  UIInteractionEvent,
+  NavigationEvent,
   DevProcess,
   PortUsage,
 } from '@/lib/runtime-types';
@@ -157,6 +159,14 @@ export async function fetchCustomEvents(params?: {
   session_id?: string;
 }): Promise<CustomEvent[] | null> {
   return get<CustomEvent>(`${BASE}/api/events/custom`, params);
+}
+
+export async function fetchUIEvents(params?: {
+  since_seconds?: number;
+  action?: 'click' | 'breadcrumb';
+  session_id?: string;
+}): Promise<UIInteractionEvent[] | null> {
+  return get<UIInteractionEvent>(`${BASE}/api/events/ui`, params);
 }
 
 export async function fetchTimelineEvents(params?: {

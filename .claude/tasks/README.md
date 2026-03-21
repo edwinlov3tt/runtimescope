@@ -14,7 +14,7 @@ Track implementation tasks, dependencies, and parallel execution opportunities.
 
 | Task | Priority | Effort | Status | Blocked By |
 |------|----------|--------|--------|------------|
-| _No tasks yet_ | - | - | - | - |
+| [workers-sdk](workers-sdk.md) | P1 | M (3-5 days) | ⬜ | None |
 
 ---
 
@@ -22,8 +22,8 @@ Track implementation tasks, dependencies, and parallel execution opportunities.
 
 Tasks within each group can be worked on simultaneously by different Claude instances.
 
-### Group A
-_Tasks will be grouped here based on file independence_
+### Group A (new packages — no conflicts)
+- `workers-sdk` — creates `packages/workers-sdk/` (new package, no shared files)
 
 ### ⚠️ Sequential Only
 _Tasks that modify same files - must be done one at a time_

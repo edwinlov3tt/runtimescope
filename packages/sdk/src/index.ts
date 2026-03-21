@@ -7,10 +7,11 @@ import { interceptPerformance } from './interceptors/performance.js';
 import { interceptReactRenders } from './interceptors/react-renders.js';
 import { interceptErrors } from './interceptors/errors.js';
 import { interceptNavigation } from './interceptors/navigation.js';
+import { interceptClicks } from './interceptors/clicks.js';
 import { generateId, generateSessionId } from './utils/id.js';
-import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent } from './types.js';
+import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, UIInteractionEvent, UserContext } from './types.js';
 
-const SDK_VERSION = '0.7.2';
+const SDK_VERSION = '0.8.0';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.
@@ -55,6 +56,11 @@ export class RuntimeScope {
   private static restoreFns: (() => void)[] = [];
   private static _sessionId: string | null = null;
   private static _state: 'stopped' | 'started' = 'stopped';
+  private static _sampleRate: number = 1;
+  private static _maxEventsPerSecond: number | undefined;
+  private static _windowCount = 0;
+  private static _windowStart = 0;
+  private static _user: UserContext | undefined;
 
   static get sessionId(): string | null {
     return this._sessionId;
@@ -63,6 +69,27 @@ export class RuntimeScope {
   /** Returns true if the SDK is currently connected */
   static get isConnected(): boolean {
     return this._state === 'started';
+  }
+
+  /** Probabilistic + rate-limit sampling. Returns true if the event should be sent. */
+  private static shouldSample(): boolean {
+    // Probabilistic sampling
+    if (this._sampleRate < 1 && Math.random() > this._sampleRate) {
+      return false;
+    }
+    // Rate limiting
+    if (this._maxEventsPerSecond !== undefined) {
+      const now = Date.now();
+      if (now - this._windowStart >= 1000) {
+        this._windowCount = 0;
+        this._windowStart = now;
+      }
+      if (this._windowCount >= this._maxEventsPerSecond) {
+        return false;
+      }
+      this._windowCount++;
+    }
+    return true;
   }
 
   static connect(config: RuntimeScopeConfig = {}): void {
@@ -85,6 +112,7 @@ export class RuntimeScope {
       capturePerformance: config.capturePerformance ?? true,
       captureRenders: config.captureRenders ?? true,
       captureNavigation: config.captureNavigation ?? true,
+      captureClicks: config.captureClicks ?? true,
       stores: config.stores ?? {},
       beforeSend: config.beforeSend,
       redactHeaders: config.redactHeaders ?? ['authorization', 'cookie'],
@@ -108,10 +136,23 @@ export class RuntimeScope {
       flushIntervalMs: resolved.flushIntervalMs,
     });
 
+    // Sampling config
+    this._sampleRate = config.sampleRate ?? 1;
+    this._maxEventsPerSecond = config.maxEventsPerSecond;
+    this._windowCount = 0;
+    this._windowStart = Date.now();
+    this._user = config.user;
+
     this.transport.connect();
     _log(`[RuntimeScope] SDK v${SDK_VERSION} initializing — app: ${resolved.appName}, server: ${resolved.serverUrl}`);
 
-    const emit = (event: RuntimeEvent) => this.transport?.send(event);
+    const emit = (event: RuntimeEvent) => {
+      // Session, custom, and UI events always pass through (never sampled out)
+      if (event.eventType !== 'session' && event.eventType !== 'custom' && event.eventType !== 'ui') {
+        if (!this.shouldSample()) return;
+      }
+      this.transport?.send(event);
+    };
 
     // Send session event
     emit({
@@ -123,6 +164,7 @@ export class RuntimeScope {
       connectedAt: Date.now(),
       sdkVersion: SDK_VERSION,
       buildMeta: config.buildMeta,
+      user: this._user,
     });
 
     // Register command handler for server→SDK commands
@@ -199,6 +241,13 @@ export class RuntimeScope {
       );
     }
 
+    // Click tracking (UI interaction breadcrumbs)
+    if (resolved.captureClicks) {
+      this.restoreFns.push(
+        interceptClicks(emit, this._sessionId)
+      );
+    }
+
     const features = [
       resolved.captureNetwork && 'fetch',
       resolved.captureXhr && 'xhr',
@@ -207,8 +256,15 @@ export class RuntimeScope {
       resolved.capturePerformance && 'performance',
       resolved.captureRenders && 'renders',
       resolved.captureNavigation && 'navigation',
+      resolved.captureClicks && 'clicks',
     ].filter(Boolean);
     _log(`[RuntimeScope] Interceptors active — ${features.join(', ')}`);
+    if (this._sampleRate < 1) {
+      _log(`[RuntimeScope] Sampling at ${(this._sampleRate * 100).toFixed(0)}%`);
+    }
+    if (this._maxEventsPerSecond !== undefined) {
+      _log(`[RuntimeScope] Rate limited to ${this._maxEventsPerSecond} events/sec`);
+    }
   }
 
   private static handleCommand(
@@ -271,6 +327,54 @@ export class RuntimeScope {
     this.transport.send(event);
   }
 
+  /**
+   * Set user context attached to the current session.
+   * Call this after login to associate events with a specific user.
+   * Pass null to clear user context.
+   */
+  static setUser(user: UserContext | null): void {
+    this._user = user ?? undefined;
+
+    // Send an updated session event so the collector picks up the user context
+    if (this.transport && this._sessionId) {
+      this.transport.send({
+        eventId: generateId(),
+        sessionId: this._sessionId,
+        timestamp: Date.now(),
+        eventType: 'session',
+        appName: 'user_update',
+        connectedAt: Date.now(),
+        sdkVersion: SDK_VERSION,
+        user: this._user,
+      });
+    }
+  }
+
+  /**
+   * Add a manual breadcrumb to the event trail.
+   * Use this to mark meaningful moments that help debug errors
+   * (e.g., "user opened settings", "form validated", "retry attempt 2").
+   */
+  static addBreadcrumb(
+    message: string,
+    data?: Record<string, unknown>
+  ): void {
+    if (!this.transport || !this._sessionId) return;
+
+    const event: UIInteractionEvent = {
+      eventId: generateId(),
+      sessionId: this._sessionId,
+      timestamp: Date.now(),
+      eventType: 'ui',
+      action: 'breadcrumb',
+      target: 'manual',
+      text: message,
+      ...(data && { data }),
+    };
+
+    this.transport.send(event);
+  }
+
   static disconnect(): void {
     // Run all interceptor restore functions
     for (const fn of this.restoreFns) {
@@ -305,6 +409,7 @@ export default RuntimeScope;
 export type {
   RuntimeScopeConfig,
   BuildMeta,
+  UserContext,
   NetworkEvent,
   ConsoleEvent,
   SessionEvent,
@@ -314,5 +419,6 @@ export type {
   PerformanceEvent,
   NavigationEvent,
   CustomEvent,
+  UIInteractionEvent,
   RuntimeEvent,
 } from './types.js';

@@ -1,6 +1,8 @@
 import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, CodeBlock, FilterBar } from '@/components/ui';
+import { ExportButton } from '@/components/ui/export-button';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { formatDuration, formatNumber } from '@/lib/format';
@@ -130,6 +132,7 @@ export function DatabasePage() {
   const [opFilter, setOpFilter] = useState<string | null>(null);
   const connected = useConnected();
   const queries = useDataStore((s) => s.database);
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
 
   // Filtered queries
   const filtered = useMemo(() => {
@@ -199,6 +202,7 @@ export function DatabasePage() {
                   {slowCount > 0 && <span className="text-amber ml-1">({slowCount} slow)</span>}
                 </span>
               </div>
+              <ExportButton data={filtered as unknown as Record<string, unknown>[]} filename="database-queries" />
             </FilterBar>
           )}
 
@@ -213,6 +217,10 @@ export function DatabasePage() {
           )}
 
           <div className="flex-1 overflow-auto">
+            {!initialLoadDone && queries.length === 0 ? (
+              <TableSkeleton rows={8} />
+            ) : (
+            <>
             {activeTab === 'queries' && (
               <DataTable
                 columns={[
@@ -411,6 +419,8 @@ export function DatabasePage() {
                 selectedIndex={detailIndex ?? undefined}
                 onRowClick={(_, i) => setDetailIndex(i)}
               />
+            )}
+            </>
             )}
           </div>
         </div>

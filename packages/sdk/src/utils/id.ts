@@ -1,6 +1,6 @@
-/** 8-char random hex string for event IDs. */
+/** 16-char random hex string for event IDs. */
 export function generateId(): string {
-  const arr = new Uint8Array(4);
+  const arr = new Uint8Array(8);
   crypto.getRandomValues(arr);
   return Array.from(arr, (b) => b.toString(16).padStart(2, '0')).join('');
 }

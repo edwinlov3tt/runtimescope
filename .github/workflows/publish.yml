@@ -17,7 +17,7 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
-      - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/collector -w packages/mcp-server
+      - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
       - run: npm test
 
       # Publish in dependency order
@@ -26,6 +26,10 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - run: npm publish -w packages/server-sdk --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish -w packages/workers-sdk --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

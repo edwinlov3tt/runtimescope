@@ -22,10 +22,10 @@ export function registerScannerTools(
         .default('my-app')
         .describe('Name for the app in RuntimeScope (e.g., "echo-frontend", "dashboard")'),
       framework: z
-        .enum(['html', 'react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt', 'flask', 'django', 'rails', 'php', 'wordpress', 'other'])
+        .enum(['html', 'react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt', 'flask', 'django', 'rails', 'php', 'wordpress', 'workers', 'other'])
         .optional()
         .default('html')
-        .describe('The framework/tech stack of the project. Use "html" for any plain HTML or server-rendered pages.'),
+        .describe('The framework/tech stack of the project. Use "html" for any plain HTML or server-rendered pages. Use "workers" for Cloudflare Workers.'),
     },
     async ({ app_name, framework }) => {
       const scriptTagSnippet = `<!-- RuntimeScope — paste before </body> -->
@@ -45,9 +45,36 @@ RuntimeScope.init({
   endpoint: 'ws://localhost:${COLLECTOR_PORT}',
 });`;
 
+      const workersSnippet = `// npm install @runtimescope/workers-sdk
+import { withRuntimeScope, scopeD1, scopeKV, scopeR2, track, addBreadcrumb } from '@runtimescope/workers-sdk';
+
+export default withRuntimeScope({
+  async fetch(request, env, ctx) {
+    // Instrument bindings (optional — use the ones you have)
+    // const db = scopeD1(env.DB);
+    // const kv = scopeKV(env.KV);
+    // const bucket = scopeR2(env.BUCKET);
+
+    // Track custom events
+    // track('request.processed', { path: new URL(request.url).pathname });
+
+    // Add breadcrumbs for debugging
+    // addBreadcrumb('handler started', { method: request.method });
+
+    return new Response('Hello!');
+  },
+}, {
+  appName: '${app_name}',
+  httpEndpoint: 'http://localhost:${HTTP_PORT}/api/events',
+  // captureConsole: true,    // Capture console.log/warn/error (default: true)
+  // captureHeaders: false,   // Include request/response headers (default: false)
+  // sampleRate: 1.0,         // 0.0-1.0 probabilistic sampling (default: 1.0)
+});`;
+
       // Determine which snippet to use
-      const usesNpm = ['react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt'].includes(framework);
-      const primarySnippet = usesNpm ? npmSnippet : scriptTagSnippet;
+      const isWorkers = framework === 'workers';
+      const usesNpm = isWorkers || ['react', 'vue', 'angular', 'svelte', 'nextjs', 'nuxt'].includes(framework);
+      const primarySnippet = isWorkers ? workersSnippet : usesNpm ? npmSnippet : scriptTagSnippet;
 
       // Framework-specific placement hints
       const placementHints: Record<string, string> = {
@@ -63,31 +90,55 @@ RuntimeScope.init({
         rails: 'Add the <script> tags to your application layout (app/views/layouts/application.html.erb) before </body>.',
         php: 'Add the <script> tags to your layout/footer file before </body>.',
         wordpress: 'Add the <script> tags to your theme\'s footer.php before </body>, or use a custom HTML plugin.',
+        workers: 'Wrap your default export with withRuntimeScope in your Worker entry file (src/index.ts). Enable nodejs_compat in wrangler.toml.',
         other: 'Add the <script> tags to your HTML template before </body>. Works in any HTML page.',
       };
 
+      const workersCaptures = [
+        'Incoming HTTP requests with timing, status, and Cloudflare properties',
+        'Console logs, warnings, and errors with stack traces',
+        'D1 database queries with SQL parsing, timing, and N+1 detection',
+        'KV namespace operations (get/put/delete/list) with timing',
+        'R2 bucket operations (get/put/delete/list/head) with size tracking',
+        'Custom business events via track()',
+        'Request breadcrumbs via addBreadcrumb()',
+      ];
+
+      const browserCaptures = [
+        'Network requests (fetch/XHR) with timing and headers',
+        'Console logs, warnings, and errors with stack traces',
+        'React/Vue/Svelte component renders (if applicable)',
+        'State store changes (Redux, Zustand, Pinia)',
+        'Web Vitals (LCP, FCP, CLS, TTFB, INP)',
+        'Unhandled errors and promise rejections',
+      ];
+
       const response = {
-        summary: `SDK snippet for ${framework} project "${app_name}". ${usesNpm ? 'Uses npm import.' : 'Uses <script> tag — no build system required.'}`,
+        summary: isWorkers
+          ? `Workers SDK snippet for Cloudflare Worker "${app_name}". Captures requests, D1/KV/R2 operations, console, custom events, and breadcrumbs.`
+          : `SDK snippet for ${framework} project "${app_name}". ${usesNpm ? 'Uses npm import.' : 'Uses <script> tag — no build system required.'}`,
         data: {
           snippet: primarySnippet,
           placement: placementHints[framework] || placementHints.other,
-          alternativeSnippet: usesNpm ? scriptTagSnippet : npmSnippet,
-          alternativeNote: usesNpm
-            ? 'If you prefer, you can also use a <script> tag instead of npm:'
-            : 'If the project uses npm/Node.js, you can also install via:',
-          requirements: [
-            'RuntimeScope MCP server must be running (it starts automatically with Claude Code)',
-            `SDK bundle served at http://localhost:${HTTP_PORT}/runtimescope.js`,
-            `WebSocket collector at ws://localhost:${COLLECTOR_PORT}`,
-          ],
-          whatItCaptures: [
-            'Network requests (fetch/XHR) with timing and headers',
-            'Console logs, warnings, and errors with stack traces',
-            'React/Vue/Svelte component renders (if applicable)',
-            'State store changes (Redux, Zustand, Pinia)',
-            'Web Vitals (LCP, FCP, CLS, TTFB, INP)',
-            'Unhandled errors and promise rejections',
-          ],
+          alternativeSnippet: isWorkers ? undefined : usesNpm ? scriptTagSnippet : npmSnippet,
+          alternativeNote: isWorkers
+            ? undefined
+            : usesNpm
+              ? 'If you prefer, you can also use a <script> tag instead of npm:'
+              : 'If the project uses npm/Node.js, you can also install via:',
+          requirements: isWorkers
+            ? [
+                'RuntimeScope collector must be reachable from your Worker',
+                `HTTP collector endpoint at http://localhost:${HTTP_PORT}/api/events`,
+                'Add nodejs_compat to compatibility_flags in wrangler.toml',
+                'For production: set httpEndpoint to your hosted collector URL',
+              ]
+            : [
+                'RuntimeScope MCP server must be running (it starts automatically with Claude Code)',
+                `SDK bundle served at http://localhost:${HTTP_PORT}/runtimescope.js`,
+                `WebSocket collector at ws://localhost:${COLLECTOR_PORT}`,
+              ],
+          whatItCaptures: isWorkers ? workersCaptures : browserCaptures,
         },
         issues: [],
         metadata: { timeRange: { from: 0, to: 0 }, eventCount: 0, sessionId: null },

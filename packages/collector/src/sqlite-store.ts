@@ -1,5 +1,5 @@
-import Database from 'better-sqlite3';
 import { renameSync, existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import type {
   RuntimeEvent,
   HistoricalFilter,
@@ -12,7 +12,26 @@ import type {
 // ============================================================
 // SQLite Persistence Layer
 // Uses write buffering for high-throughput event ingestion
+// Loads better-sqlite3 lazily — if not available, SqliteStore
+// cannot be instantiated (guarded by isSqliteAvailable()).
 // ============================================================
+
+// Lazy-load better-sqlite3 to avoid crashing when the native module isn't installed
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+let DatabaseConstructor: any;
+function getDatabase(): any {
+  if (!DatabaseConstructor) {
+    const require = createRequire(import.meta.url);
+    DatabaseConstructor = require('better-sqlite3');
+  }
+  return DatabaseConstructor;
+}
+
+// Use 'any' for DB instance since we lazy-load the module
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type DatabaseInstance = any;
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type Statement = any;
 
 export interface SqliteStoreOptions {
   dbPath: string;
@@ -22,7 +41,7 @@ export interface SqliteStoreOptions {
 }
 
 export class SqliteStore {
-  private db: InstanceType<typeof Database>;
+  private db: DatabaseInstance;
   private writeBuffer: { event: RuntimeEvent; project: string }[] = [];
   private flushTimer: ReturnType<typeof setInterval> | null = null;
   private readonly batchSize: number;
@@ -30,9 +49,9 @@ export class SqliteStore {
 
   private static readonly MAX_SNAPSHOTS_PER_SESSION = 50;
 
-  private insertEventStmt!: Database.Statement;
-  private insertSessionStmt!: Database.Statement;
-  private updateSessionDisconnectedStmt!: Database.Statement;
+  private insertEventStmt!: Statement;
+  private insertSessionStmt!: Statement;
+  private updateSessionDisconnectedStmt!: Statement;
 
   constructor(options: SqliteStoreOptions) {
     this.dbPath = options.dbPath;
@@ -45,9 +64,10 @@ export class SqliteStore {
     this.flushTimer = setInterval(() => this.flush(), flushInterval);
   }
 
-  private openDatabase(options: SqliteStoreOptions): InstanceType<typeof Database> {
+  private openDatabase(options: SqliteStoreOptions): DatabaseInstance {
+    const Db = getDatabase();
     try {
-      const db = new Database(options.dbPath);
+      const db = new Db(options.dbPath);
       if (options.walMode !== false) {
         db.pragma('journal_mode = WAL');
       }
@@ -82,7 +102,7 @@ export class SqliteStore {
         }
       } catch { /* best effort */ }
 
-      const db = new Database(options.dbPath);
+      const db = new Db(options.dbPath);
       if (options.walMode !== false) {
         db.pragma('journal_mode = WAL');
       }
@@ -93,7 +113,7 @@ export class SqliteStore {
     }
   }
 
-  private prepareStatements(db: InstanceType<typeof Database>): void {
+  private prepareStatements(db: DatabaseInstance): void {
     this.insertEventStmt = db.prepare(`
       INSERT INTO events (event_id, session_id, project, event_type, timestamp, data)
       VALUES (?, ?, ?, ?, ?, ?)
@@ -111,7 +131,7 @@ export class SqliteStore {
     `);
   }
 
-  private createSchema(db?: InstanceType<typeof Database>): void {
+  private createSchema(db?: DatabaseInstance): void {
     const d = db ?? this.db;
     d.exec(`
       CREATE TABLE IF NOT EXISTS events (
@@ -429,7 +449,7 @@ export class SqliteStore {
 
   // --- Migration ---
 
-  private migrateSessionMetrics(db: InstanceType<typeof Database>): void {
+  private migrateSessionMetrics(db: DatabaseInstance): void {
     const hasOldTable = db.prepare(
       "SELECT name FROM sqlite_master WHERE type='table' AND name='session_metrics'"
     ).get();

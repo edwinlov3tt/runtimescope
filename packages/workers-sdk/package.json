@@ -1,0 +1,39 @@
+{
+  "name": "@runtimescope/workers-sdk",
+  "version": "0.8.0",
+  "description": "RuntimeScope SDK for Cloudflare Workers — instruments requests, D1, KV, R2, console, and errors",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "runtimescope",
+    "cloudflare",
+    "workers",
+    "observability",
+    "telemetry",
+    "d1",
+    "kv",
+    "r2",
+    "edge"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20240512.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
+}

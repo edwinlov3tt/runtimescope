@@ -19,4 +19,5 @@ export { StatusDot } from './status-dot';
 export { Select } from './select';
 export { Tabs } from './tabs';
 export { Textarea } from './textarea';
+export { Skeleton, TableSkeleton, CardsSkeleton, ListSkeleton } from './skeleton';
 export { WaterfallBar } from './waterfall-bar';

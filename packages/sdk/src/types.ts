@@ -11,7 +11,8 @@ export type EventType =
   | 'performance'
   | 'database'
   | 'custom'
-  | 'navigation';
+  | 'navigation'
+  | 'ui';
 
 export interface BaseEvent {
   eventId: string;
@@ -68,6 +69,7 @@ export interface SessionEvent extends BaseEvent {
   connectedAt: number;
   sdkVersion: string;
   buildMeta?: BuildMeta;
+  user?: UserContext;
 }
 
 export interface StateEvent extends BaseEvent {
@@ -155,6 +157,19 @@ export interface CustomEvent extends BaseEvent {
   properties?: Record<string, unknown>;
 }
 
+export type UIInteractionAction = 'click' | 'breadcrumb';
+
+export interface UIInteractionEvent extends BaseEvent {
+  eventType: 'ui';
+  action: UIInteractionAction;
+  /** CSS selector or element description */
+  target: string;
+  /** Visible text (button label, link text) */
+  text?: string;
+  /** Optional extra context */
+  data?: Record<string, unknown>;
+}
+
 export type RuntimeEvent =
   | NetworkEvent
   | ConsoleEvent
@@ -164,7 +179,15 @@ export type RuntimeEvent =
   | DomSnapshotEvent
   | PerformanceEvent
   | NavigationEvent
-  | CustomEvent;
+  | CustomEvent
+  | UIInteractionEvent;
+
+export interface UserContext {
+  id?: string;
+  email?: string;
+  name?: string;
+  [key: string]: unknown;
+}
 
 export interface RuntimeScopeConfig {
   enabled?: boolean;
@@ -183,6 +206,7 @@ export interface RuntimeScopeConfig {
   capturePerformance?: boolean;
   captureRenders?: boolean;
   captureNavigation?: boolean;
+  captureClicks?: boolean;
   stores?: Record<string, unknown>;
   beforeSend?: (event: RuntimeEvent) => RuntimeEvent | null;
   redactHeaders?: string[];
@@ -190,4 +214,10 @@ export interface RuntimeScopeConfig {
   redactPatterns?: { pattern: string; replacement: string }[];
   batchSize?: number;
   flushIntervalMs?: number;
+  /** Probabilistic sample rate: 0.0–1.0 (default: 1.0 = keep all). Set to 0.1 for production. */
+  sampleRate?: number;
+  /** Max events per second before dropping (default: unlimited) */
+  maxEventsPerSecond?: number;
+  /** Initial user context attached to all events */
+  user?: UserContext;
 }

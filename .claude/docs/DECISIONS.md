@@ -135,6 +135,69 @@ Use `tsup` (esbuild wrapper) for all package builds.
 
 ---
 
+## D008: Smart Polling — WS-Connected Skips HTTP Polling
+
+- **Date**: 2026-03-20
+- **Status**: Active
+
+### Context
+The dashboard polled the collector HTTP API every 2 seconds for runtime events, even when a WebSocket connection was actively pushing those same events in real-time. This doubled collector load for no benefit.
+
+### Decision
+When the WS connection is open (`connected === true`), skip interval polling entirely. Still perform a single fetch on tab switch for fresh data, but no timer. Fall back to 2s polling only when WS is disconnected.
+
+### Alternatives
+1. **Reduce poll interval when WS connected**: Simpler but still wasteful
+2. **Remove polling entirely**: Risky — WS can miss events during brief disconnects
+
+### Consequences
+- **Positive**: Halves collector request load during normal operation, reduces browser network chatter
+- **Negative**: Brief gap if WS reconnects and first push hasn't arrived yet (mitigated by the one-shot fetch on tab switch)
+
+---
+
+## D009: Zustand-Based Toast Notification System
+
+- **Date**: 2026-03-20
+- **Status**: Active
+
+### Context
+PM store operations (task create, git commit, note save, etc.) completed silently with no user feedback. Users couldn't tell if actions succeeded or failed.
+
+### Decision
+Lightweight Zustand store (`use-toast-store`) with `toast.success()`/`toast.error()`/`toast.info()` shorthands. Auto-dismiss after 3 seconds. Fixed-position container in app shell.
+
+### Alternatives
+1. **React context + portal**: More boilerplate for same result
+2. **Third-party toast library (react-hot-toast, sonner)**: Adds dependency for a simple feature
+
+### Consequences
+- **Positive**: Zero dependencies, consistent with existing Zustand pattern, callable from store actions (outside React tree)
+- **Negative**: No toast stacking animations (acceptable for MVP)
+
+---
+
+## D010: MCP Tool Response Size Limits
+
+- **Date**: 2026-03-20
+- **Status**: Active
+
+### Context
+MCP tools could return unbounded event arrays (10K+ events), causing context window overflow in Claude Code and slow responses.
+
+### Decision
+Default limit of 200 events per tool response, hard max of 1000. Add `truncated: boolean` and `totalCount: number` to metadata so Claude knows when data was cut.
+
+### Alternatives
+1. **Pagination with cursor**: More complex, requires stateful server
+2. **No limit**: Status quo — causes context overflow
+
+### Consequences
+- **Positive**: Prevents context overflow, Claude can request more with explicit `limit` parameter
+- **Negative**: Default may miss tail events — mitigated by newest-first ordering
+
+---
+
 ## Template
 
 ```markdown

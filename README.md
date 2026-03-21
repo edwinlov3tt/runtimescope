@@ -115,6 +115,34 @@ RuntimeScope.instrumentBetterSqlite3(db);
 app.use(RuntimeScope.middleware());
 ```
 
+### Cloudflare Workers SDK
+
+For Cloudflare Workers, Pages Functions, and Durable Objects:
+
+```bash
+npm install @runtimescope/workers-sdk
+```
+
+```typescript
+import { withRuntimeScope, scopeD1, scopeKV, scopeR2 } from '@runtimescope/workers-sdk';
+
+export default withRuntimeScope({
+  async fetch(request, env, ctx) {
+    const db = scopeD1(env.DB);        // Auto-instrumented D1
+    const kv = scopeKV(env.KV);        // Auto-instrumented KV
+    const bucket = scopeR2(env.BUCKET); // Auto-instrumented R2
+
+    const users = await db.prepare('SELECT * FROM users').all();
+    return Response.json(users);
+  },
+}, {
+  appName: 'my-worker',
+  httpEndpoint: 'https://collector.example.com/api/events',
+});
+```
+
+Zero dependencies, uses `ctx.waitUntil()` for non-blocking flush, captures D1/KV/R2 operations with timing, Cloudflare-specific metadata (colo, country, Ray ID), and console output.
+
 ### Full-Stack (Both SDKs)
 
 For full-stack apps (e.g. Next.js with API routes, Express + React), install both SDKs. They share the same collector — both browser and server events appear in the same MCP tools.
@@ -664,6 +692,7 @@ Use get_historical_events to show me network events from the last 2 hours for my
 |---------|---------|-------------|
 | [`@runtimescope/sdk`](https://www.npmjs.com/package/@runtimescope/sdk) | `npm install @runtimescope/sdk` | Browser SDK (zero deps, ~3KB gzipped) |
 | [`@runtimescope/server-sdk`](https://www.npmjs.com/package/@runtimescope/server-sdk) | `npm install @runtimescope/server-sdk` | Node.js server SDK |
+| [`@runtimescope/workers-sdk`](https://www.npmjs.com/package/@runtimescope/workers-sdk) | `npm install @runtimescope/workers-sdk` | Cloudflare Workers SDK (zero deps) |
 | [`@runtimescope/mcp-server`](https://www.npmjs.com/package/@runtimescope/mcp-server) | `npx -y @runtimescope/mcp-server` | MCP server (46 tools) |
 | [`@runtimescope/collector`](https://www.npmjs.com/package/@runtimescope/collector) | Internal dependency | Event collector (used by mcp-server) |
 
@@ -673,6 +702,7 @@ Use get_historical_events to show me network events from the last 2 hours for my
 packages/
   sdk/           # Browser SDK (zero deps, ~3KB gzipped) — ESM + IIFE via <script> tag
   server-sdk/    # Node.js server SDK (Prisma, Drizzle, pg, Knex, MySQL2, better-sqlite3)
+  workers-sdk/   # Cloudflare Workers SDK (zero deps, D1/KV/R2 instrumentation)
   collector/     # WebSocket receiver + ring buffer + issue detection + HTTP API
   mcp-server/    # MCP stdio server with 46 tools + Playwright scanner
   extension/     # Technology detection engine (7,221 technologies from webappanalyzer)

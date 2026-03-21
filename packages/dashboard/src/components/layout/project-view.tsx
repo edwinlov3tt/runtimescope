@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, memo, useMemo } from 'react';
+import { useState, useEffect, useRef, useCallback, memo, useMemo, lazy, Suspense } from 'react';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useDataStore } from '@/stores/use-data-store';
@@ -8,20 +8,23 @@ import { Tabs } from '@/components/ui/tabs';
 import { Badge, Button } from '@/components/ui';
 import { StatusDot } from '@/components/ui/status-dot';
 import { EmptyState } from '@/components/ui/empty-state';
-import { RuntimePage } from './runtime-page';
-import { TasksPage } from '@/pages/pm/tasks-page';
-import { PmSessionsPage } from '@/pages/pm/sessions-page';
-import { NotesPage } from '@/pages/pm/notes-page';
-import { MemoryPage } from '@/pages/pm/memory-page';
-import { RulesPage } from '@/pages/pm/rules-page';
-import { CapexPage } from '@/pages/pm/capex-page';
-import { GitPage } from '@/pages/pm/git-page';
+import { ListSkeleton } from '@/components/ui/skeleton';
 import { Tag, ChevronDown, Play, Square, Loader2, ExternalLink, Link2, Plus, X } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { startDevServer, stopDevServer, fetchProjectScripts } from '@/lib/pm-api';
 import { boostProjectPoll } from '@/App';
 import type { ProjectTab, PmProject } from '@/lib/pm-types';
 import type { ProjectInfo } from '@/lib/api';
+
+// Lazy-loaded tab pages
+const RuntimePage = lazy(() => import('./runtime-page').then((m) => ({ default: m.RuntimePage })));
+const TasksPage = lazy(() => import('@/pages/pm/tasks-page').then((m) => ({ default: m.TasksPage })));
+const PmSessionsPage = lazy(() => import('@/pages/pm/sessions-page').then((m) => ({ default: m.PmSessionsPage })));
+const NotesPage = lazy(() => import('@/pages/pm/notes-page').then((m) => ({ default: m.NotesPage })));
+const MemoryPage = lazy(() => import('@/pages/pm/memory-page').then((m) => ({ default: m.MemoryPage })));
+const RulesPage = lazy(() => import('@/pages/pm/rules-page').then((m) => ({ default: m.RulesPage })));
+const CapexPage = lazy(() => import('@/pages/pm/capex-page').then((m) => ({ default: m.CapexPage })));
+const GitPage = lazy(() => import('@/pages/pm/git-page').then((m) => ({ default: m.GitPage })));
 
 const PROJECT_TABS: { id: ProjectTab; label: string }[] = [
   { id: 'sessions', label: 'Sessions' },
@@ -465,14 +468,16 @@ export function ProjectView() {
 
       {/* Content */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
-        {activeProjectTab === 'tasks' && <TasksPage projectId={project.id} />}
-        {activeProjectTab === 'git' && <GitPage projectId={project.id} projectPath={project.path} />}
-        {activeProjectTab === 'sessions' && <PmSessionsPage projectId={project.id} />}
-        {activeProjectTab === 'runtime' && <RuntimePage project={project} />}
-        {activeProjectTab === 'notes' && <NotesPage projectId={project.id} />}
-        {activeProjectTab === 'memory' && <MemoryPage projectId={project.id} claudeProjectKey={project.claudeProjectKey} />}
-        {activeProjectTab === 'rules' && <RulesPage projectId={project.id} />}
-        {activeProjectTab === 'capex' && <CapexPage projectId={project.id} />}
+        <Suspense fallback={<ListSkeleton rows={8} />}>
+          {activeProjectTab === 'tasks' && <TasksPage projectId={project.id} />}
+          {activeProjectTab === 'git' && <GitPage projectId={project.id} projectPath={project.path} />}
+          {activeProjectTab === 'sessions' && <PmSessionsPage projectId={project.id} />}
+          {activeProjectTab === 'runtime' && <RuntimePage project={project} />}
+          {activeProjectTab === 'notes' && <NotesPage projectId={project.id} />}
+          {activeProjectTab === 'memory' && <MemoryPage projectId={project.id} claudeProjectKey={project.claudeProjectKey} />}
+          {activeProjectTab === 'rules' && <RulesPage projectId={project.id} />}
+          {activeProjectTab === 'capex' && <CapexPage projectId={project.id} />}
+        </Suspense>
       </div>
     </div>
   );

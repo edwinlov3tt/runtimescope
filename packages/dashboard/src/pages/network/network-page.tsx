@@ -10,6 +10,8 @@ import {
   CodeBlock,
   WaterfallBar,
 } from '@/components/ui';
+import { ExportButton } from '@/components/ui/export-button';
+import { TableSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { useKeyboardNav } from '@/hooks/use-keyboard-nav';
@@ -53,6 +55,7 @@ export function NetworkPage() {
   const [search, setSearch] = useState('');
   const connected = useConnected();
   const liveNetwork = useDataStore((s) => s.network);
+  const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const allData = liveNetwork;
 
   const filtered = useMemo(() => {
@@ -102,8 +105,13 @@ export function NetworkPage() {
             search={search}
             onSearchChange={setSearch}
             searchPlaceholder="Filter by URL or name..."
-          />
+          >
+            <ExportButton data={filtered as unknown as Record<string, unknown>[]} filename="network-events" />
+          </FilterBar>
           <div className="flex-1 overflow-auto">
+            {!initialLoadDone && allData.length === 0 ? (
+              <TableSkeleton rows={10} />
+            ) : (
             <DataTable
               columns={[
                 {
@@ -180,6 +188,7 @@ export function NetworkPage() {
               selectedIndex={detailIndex ?? selectedIndex}
               onRowClick={(_, i) => setDetailIndex(i)}
             />
+            )}
           </div>
         </div>
 

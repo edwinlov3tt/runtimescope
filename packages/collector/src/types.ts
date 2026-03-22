@@ -71,6 +71,8 @@ export interface ConsoleEvent extends BaseEvent {
   args: unknown[];
   stackTrace?: string;
   sourceFile?: string;
+  /** Where this log originated: browser, server (Node.js), or workers (Cloudflare) */
+  source?: 'browser' | 'server' | 'workers';
 }
 
 // --- Build Metadata ---

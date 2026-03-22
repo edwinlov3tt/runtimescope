@@ -44,6 +44,7 @@ export interface ConsoleEvent {
   args: unknown[];
   stackTrace?: string;
   sourceFile?: string;
+  source?: 'browser' | 'server' | 'workers';
 }
 
 // --- Network Events (mirrors collector's NetworkEvent) ---

@@ -3,6 +3,19 @@ import { safeSerialize } from '../utils/serialize.js';
 import { getSessionId } from '../context.js';
 import type { ConsoleEvent, ConsoleLevel, ServerRuntimeEvent } from '../types.js';
 
+/** Extract caller's source file from an Error stack trace (Node.js format). */
+function extractSourceFile(stack: string | undefined): string | undefined {
+  if (!stack) return undefined;
+  const lines = stack.split('\n').slice(3);
+  for (const line of lines) {
+    const match = line.match(/at\s+(?:.*?\s+\()?(.+?):(\d+):(\d+)\)?/);
+    if (match && !match[1].includes('interceptor') && !match[1].includes('runtimescope')) {
+      return `${match[1]}:${match[2]}`;
+    }
+  }
+  return undefined;
+}
+
 type EmitFn = (event: ConsoleEvent) => void;
 
 const LEVELS: ConsoleLevel[] = ['log', 'warn', 'error', 'info', 'debug', 'trace'];
@@ -30,6 +43,9 @@ export function interceptConsole(
         .map((a) => (typeof a === 'string' ? a : stringifyArg(a)))
         .join(' ');
 
+      const stack = (captureStack && (level === 'error' || level === 'trace'))
+        ? new Error().stack : undefined;
+
       const event: ConsoleEvent = {
         eventId: generateId(),
         sessionId: getSessionId(sessionId),
@@ -38,11 +54,9 @@ export function interceptConsole(
         level,
         message,
         args: args.map((a) => safeSerialize(a, 3)),
-        stackTrace:
-          captureStack && (level === 'error' || level === 'trace')
-            ? new Error().stack?.split('\n').slice(2).join('\n')
-            : undefined,
-        sourceFile: undefined,
+        stackTrace: stack?.split('\n').slice(2).join('\n'),
+        sourceFile: extractSourceFile(stack),
+        source: 'server',
       };
 
       if (options?.beforeSend) {

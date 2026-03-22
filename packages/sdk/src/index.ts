@@ -214,8 +214,11 @@ export class RuntimeScope {
       this.restoreFns.push(
         interceptConsole(emit, this._sessionId, resolved.beforeSend)
       );
-      // Also capture uncaught errors, resource load failures, and unhandled rejections
-      // These appear in DevTools console but don't go through console.* API
+    }
+
+    // Error interceptor (uncaught errors, resource failures, unhandled rejections)
+    // Independent from captureConsole — these don't go through console.* API
+    if (config.captureErrors !== false) {
       this.restoreFns.push(
         interceptErrors(emit, this._sessionId, resolved.beforeSend)
       );

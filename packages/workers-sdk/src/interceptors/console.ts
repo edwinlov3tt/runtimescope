@@ -43,6 +43,7 @@ export function interceptConsole(
           level === 'error' || level === 'trace'
             ? new Error().stack?.split('\n').slice(2).join('\n')
             : undefined,
+        source: 'workers',
       };
 
       // emit() already applies beforeSend — don't double-filter

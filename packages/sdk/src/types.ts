@@ -54,6 +54,7 @@ export interface ConsoleEvent extends BaseEvent {
   args: unknown[];
   stackTrace?: string;
   sourceFile?: string;
+  source?: 'browser' | 'server' | 'workers';
 }
 
 export interface BuildMeta {

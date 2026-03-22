@@ -17,6 +17,7 @@ export interface ConsoleEvent {
   args: unknown[];
   stackTrace?: string;
   sourceFile?: string;
+  source?: 'browser' | 'server' | 'workers';
 }
 
 export type DatabaseOperation = 'SELECT' | 'INSERT' | 'UPDATE' | 'DELETE' | 'OTHER';

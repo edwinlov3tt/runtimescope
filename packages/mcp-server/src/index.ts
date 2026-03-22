@@ -43,6 +43,7 @@ import { registerProcessMonitorTools } from './tools/process-monitor.js';
 import { registerInfraTools } from './tools/infra-connector.js';
 import { registerSessionDiffTools } from './tools/session-diff.js';
 import { registerQaCheckTools } from './tools/qa-check.js';
+import { registerSetupTools } from './tools/setup.js';
 
 // --- Recon tools (extension-powered UI analysis) ---
 import { registerReconMetadataTools } from './tools/recon-metadata.js';
@@ -306,6 +307,9 @@ async function main() {
 
   // --- QA Check (1 — snapshot + detect issues in one call) ---
   registerQaCheckTools(mcp, store, sessionManager, collector, apiDiscovery);
+
+  // --- Project Setup (1 — deterministic setup_project tool) ---
+  registerSetupTools(mcp, store, collector, projectManager);
 
   // --- Recon / UI Analysis (9 new — extension-powered) ---
   registerReconMetadataTools(mcp, store, collector);

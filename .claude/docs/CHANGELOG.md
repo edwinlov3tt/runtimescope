@@ -2,6 +2,51 @@
 
 All notable changes documented here.
 
+## [0.9.1] - 2026-03-22
+
+### Added
+- **Project ID system** — `projectId` field (`proj_xxx`) across all 3 SDKs, collector, and MCP tools. Auto-generated on connect for backwards compat.
+- **`project_id` param on all MCP tools** — 26 tools updated with optional project scoping via `projectIdParam` + `resolveSessionContext()` shared helper
+- **`setup_project` MCP tool** — deterministic, single-call project setup replacing markdown-based `/setup` command. Detects framework, scaffolds config, generates snippets, registers hooks.
+- **`runtime_qa_check` MCP tool** — snapshot + detect_issues in one call for quick health checks
+- **`get_project_config` MCP tool** — reads and inspects `.runtimescope/config.json`
+- **`.runtimescope/config.json`** — git-committable project config (projectId, SDKs, capture settings, phase, category). Server SDK auto-reads it.
+- **XLSX CapEx export** — multi-sheet workbook (Summary, Daily Detail, Monthly) via exceljs. Cross-project export with category filtering.
+- **Claude Code hooks** — PostToolUse hook POSTs tool timing to collector + local JSONL audit trail. Includes project dir and projectId.
+- **ResponseViewer component** — pretty-print JSON, format conversion (XML, CSV, YAML), binary detection with download button, RSC wire format parser, fullscreen modal
+- **Config-aware empty states** — State, Renders, Performance, Database, Breadcrumbs pages show setup instructions when no data
+- **Web Vitals descriptions** — Performance tab shows metric explanations and common causes of poor scores
+- **Console capture enhancements** — `source` field (browser/server/workers), `sourceFile` from stack trace, `console.assert/time/timeEnd/table/count/countReset`
+- **`/update-runtime` command** — updates SDK packages, checks for `.runtimescope/config.json`, scaffolds if missing
+- **Cross-platform process utilities** — `platform.ts` replaces macOS-only lsof with ss/netstat/proc fallbacks
+
+### Changed
+- **Unified default ports** — MCP server and standalone collector both default to 9090/9091
+- **Dashboard project scoping** — uses `project_id` filtering instead of single `session_id[0]`
+- **CapEx chart** — replaced monthly bar chart with weekly/daily area chart with Day|Week toggle
+- **CapEx table** — added Active Hours column, rounded active minutes
+- **Rules tab** — reorder to Local > Project > Global
+- **CapEx page** — full width layout
+- **SDK auto-disable in production** — no-op when no explicit endpoint and not on localhost
+- **`captureErrors` independent** — no longer tied to `captureConsole`
+- **`autoLinkApp` uses projectId** — exact match before fuzzy appName matching
+
+### Fixed
+- **Workers SDK crash** — `withRuntimeScope` catches init errors and falls back to pass-through
+- **Workers SDK types** — `scopeD1/scopeKV/scopeR2` use generics `<T extends Binding>` for correct return types
+- **Workers SDK crypto** — `generateSessionId` uses Math.random fallback when crypto.randomUUID unavailable at module eval
+- **AsyncLocalStorage import** — lazy `require()` with global-variable fallback for environments without `node:async_hooks`
+- **WaterfallBar formatting** — raw floats (119.299...) now rounded to `119ms`
+- **Dashboard render performance** — extracted inline column arrays, useMemo for aggregations, O(n²) → O(1) Map lookup in state page
+- **History tool test** — updated mock ProjectManager for new methods
+
+## [0.9.0] - 2026-03-21
+
+### Added
+- Custom event tracking (`RuntimeScope.track()`) and breadcrumbs
+- Workers SDK hardening
+- Auto-link SDK sessions to PM projects
+
 ## [0.7.2] - 2026-03-20
 
 ### Added

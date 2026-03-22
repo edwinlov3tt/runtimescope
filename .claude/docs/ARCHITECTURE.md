@@ -9,10 +9,10 @@
 | Collector | Node.js, `ws` library | WebSocket server + ring buffer + issue detection engine |
 | Server SDK | TypeScript, `ws` | Node.js instrumentation (Prisma, pg, Knex, Drizzle, MySQL2, SQLite) |
 | Dashboard | React 19, Vite, Zustand, Tailwind CSS | Real-time monitoring UI with PM features |
-| MCP Server | `@modelcontextprotocol/sdk`, `zod` | stdio transport MCP server exposing 44 tools to Claude Code |
-| Build | `tsup`, TypeScript 5.4+ | Bundling for all 6 packages (CJS/ESM/IIFE for SDK) |
-| Monorepo | npm workspaces | 6 packages under `packages/` |
-| Tests | Vitest | 444 tests across 32 files |
+| MCP Server | `@modelcontextprotocol/sdk`, `zod` | stdio transport MCP server exposing 50+ tools to Claude Code |
+| Build | `tsup`, TypeScript 5.4+ | Bundling for all 8 packages (CJS/ESM/IIFE for SDK) |
+| Monorepo | npm workspaces | 8 packages under `packages/` |
+| Tests | Vitest | 500 tests across 39 files |
 
 ## Directory Structure
 

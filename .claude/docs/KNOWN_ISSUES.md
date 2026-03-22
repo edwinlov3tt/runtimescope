@@ -6,18 +6,35 @@
 - **ID**: KI-002
 - **Location**: `packages/mcp-server/src/tools/dom-snapshot.ts`
 - **Symptom**: `capture_dom_snapshot` uses `getFirstSessionId()` — may snapshot the wrong app if multiple are connected
-- **Workaround**: Only connect one app at a time
-- **Proper Fix**: Add `sessionId` parameter to the tool
+- **Workaround**: Use `project_id` param (added in v0.9.0) to scope to correct project
+- **Proper Fix**: Fully resolved with project_id scoping
 - **Added**: 2026-02-11
 
-### ~~[LOW] Port Cleanup Uses macOS-Specific lsof~~
-- **ID**: KI-003
-- **Resolved**: 2026-03-21
-- **Fix**: Created `packages/collector/src/platform.ts` with cross-platform utilities. Uses `lsof` on macOS, `lsof`/`ss`/`/proc` on Linux, `netstat`/`tasklist` on Windows. Applied to all 4 callsites: `killStaleProcess`, `getListenPorts`, `getProcessCwd`, and `findPidsInDirectory`.
+### [MEDIUM] Workers SDK DTS Build Fails
+- **ID**: KI-006
+- **Location**: `packages/workers-sdk/tsconfig.json`
+- **Symptom**: `tsup` DTS build fails with "Cannot find type definition file for '@cloudflare/workers-types'" — JS build succeeds
+- **Workaround**: JS output works fine, only type declarations are affected
+- **Proper Fix**: Install `@cloudflare/workers-types` as devDependency
+- **Added**: 2026-03-22
+
+### [LOW] MCP Server Process Runs Old Code Until Restart
+- **ID**: KI-007
+- **Location**: MCP server (started by Claude Code)
+- **Symptom**: Code changes to MCP server/collector require Claude Code restart to take effect. The running MCP process uses the compiled dist/ from when it started.
+- **Workaround**: Restart Claude Code session, or use standalone collector for dashboard
+- **Added**: 2026-03-22
+
+---
 
 ---
 
 ## Resolved Issues
+
+### [LOW] Port Cleanup Uses macOS-Specific lsof
+- **ID**: KI-003
+- **Resolved**: 2026-03-21
+- **Fix**: Created `packages/collector/src/platform.ts` with cross-platform utilities. Uses `lsof` on macOS, `lsof`/`ss`/`/proc` on Linux, `netstat`/`tasklist` on Windows.
 
 ### [MEDIUM] No Event Persistence — Data Lost on Restart
 - **ID**: KI-001

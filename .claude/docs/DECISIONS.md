@@ -198,6 +198,91 @@ Default limit of 200 events per tool response, hard max of 1000. Add `truncated:
 
 ---
 
+## D011: Project ID System (proj_xxx)
+
+- **Date**: 2026-03-21
+- **Status**: Active
+
+### Context
+Multiple SDKs for the same project (browser, server, worker) used different `appName` strings and were matched via fuzzy heuristics in `autoLinkApp()`. This was fragile and couldn't reliably group sessions.
+
+### Decision
+Add a `projectId` field (`proj_` + 12 alphanumeric chars) across all SDKs, collector, and MCP tools. Auto-generated on connect if not provided. Persisted in `~/.runtimescope/` via ProjectManager.
+
+### Consequences
+- **Positive**: Deterministic grouping, all MCP tools accept `project_id` param, works across environments
+- **Negative**: Adds a field to every config, handshake, and session — but optional/backwards-compatible
+
+---
+
+## D012: Unified Default Ports (9090/9091)
+
+- **Date**: 2026-03-21
+- **Status**: Active
+
+### Context
+MCP server and standalone collector used different default ports (9090/9091 vs 9092/9093) to allow simultaneous operation. This caused confusion about which collector the SDK was connecting to.
+
+### Decision
+Both MCP server and standalone collector default to 9090/9091. Only one should run at a time.
+
+### Consequences
+- **Positive**: Single mental model, SDK always connects to same port, dashboard always proxies to same port
+- **Negative**: Can't run both simultaneously without env var overrides
+
+---
+
+## D013: .runtimescope/ Project Config Directory
+
+- **Date**: 2026-03-22
+- **Status**: Active
+
+### Context
+Project settings (projectId, capture flags, SDK entries) had no git-committable home. `.claude/` is gitignored, `~/.runtimescope/` is user-global.
+
+### Decision
+Create `.runtimescope/config.json` at the project root. Git-safe (no secrets). Server SDK auto-reads it. `/setup` scaffolds it.
+
+### Consequences
+- **Positive**: Settings travel with the repo, new Claude instances auto-discover projectId, central config surface
+- **Negative**: Another dotfile directory in projects
+
+---
+
+## D014: setup_project as Deterministic MCP Tool
+
+- **Date**: 2026-03-22
+- **Status**: Active
+
+### Context
+The `/setup` command was a 200-line markdown file that instructed Claude to run bash commands and make judgment calls. Claude often missed steps or got confused.
+
+### Decision
+Replace with a `setup_project` MCP tool that does framework detection, config scaffolding, snippet generation, and hook registration in a single programmatic call.
+
+### Consequences
+- **Positive**: Deterministic, testable, single call does everything, no prompt-dependent behavior
+- **Negative**: Framework detection is file-based heuristics (can miss exotic setups)
+
+---
+
+## D015: SDK Auto-Disable in Production
+
+- **Date**: 2026-03-21
+- **Status**: Active
+
+### Context
+Users deploying to Vercel/Netlify with `RuntimeScope.init()` and no explicit endpoint would attempt to connect to `ws://localhost:9090` in production, generating useless WebSocket errors.
+
+### Decision
+If no explicit `serverUrl`/`endpoint` is configured and `window.location.hostname` is not localhost/127.0.0.1/private IP, the SDK becomes a no-op.
+
+### Consequences
+- **Positive**: Zero-config production safety, no Vercel deployment issues
+- **Negative**: Users with hosted collectors must explicitly set their endpoint
+
+---
+
 ## Template
 
 ```markdown

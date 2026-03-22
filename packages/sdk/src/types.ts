@@ -209,6 +209,8 @@ export interface RuntimeScopeConfig {
   captureRenders?: boolean;
   captureNavigation?: boolean;
   captureClicks?: boolean;
+  /** Capture uncaught errors and unhandled promise rejections (default: true). */
+  captureErrors?: boolean;
   stores?: Record<string, unknown>;
   beforeSend?: (event: RuntimeEvent) => RuntimeEvent | null;
   redactHeaders?: string[];

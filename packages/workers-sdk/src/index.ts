@@ -74,24 +74,24 @@ import type {
  * }, { appName: 'my-worker' });
  * ```
  */
-export function scopeD1(db: D1DatabaseBinding): D1DatabaseBinding {
+export function scopeD1<T extends D1DatabaseBinding>(db: T): T {
   const ctx = getActiveContext();
   if (!ctx) return db; // No active context — return unwrapped (safe for non-instrumented calls)
-  return _instrumentD1(db, ctx.emit, { sessionId: ctx.sessionId });
+  return _instrumentD1(db, ctx.emit, { sessionId: ctx.sessionId }) as T;
 }
 
 /** Instrument a KV namespace using the active request context. */
-export function scopeKV(kv: KVNamespaceBinding): KVNamespaceBinding {
+export function scopeKV<T extends KVNamespaceBinding>(kv: T): T {
   const ctx = getActiveContext();
   if (!ctx) return kv;
-  return _instrumentKV(kv, ctx.emit, { sessionId: ctx.sessionId });
+  return _instrumentKV(kv, ctx.emit, { sessionId: ctx.sessionId }) as T;
 }
 
 /** Instrument an R2 bucket using the active request context. */
-export function scopeR2(bucket: R2BucketBinding): R2BucketBinding {
+export function scopeR2<T extends R2BucketBinding>(bucket: T): T {
   const ctx = getActiveContext();
   if (!ctx) return bucket;
-  return _instrumentR2(bucket, ctx.emit, { sessionId: ctx.sessionId });
+  return _instrumentR2(bucket, ctx.emit, { sessionId: ctx.sessionId }) as T;
 }
 
 // ============================================================

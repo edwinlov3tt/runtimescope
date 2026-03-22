@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from 'node:async_hooks';
 import type {
   WorkersConfig,
   WorkersRuntimeEvent,
@@ -25,13 +24,29 @@ export interface RuntimeScopeContext {
   emit: (event: WorkersRuntimeEvent) => void;
 }
 
-// Per-request context — AsyncLocalStorage ensures isolation under concurrent requests.
-// Available in Workers runtime with nodejs_compat flag and in Node.js 16+.
-const _contextStorage = new AsyncLocalStorage<RuntimeScopeContext>();
+// Per-request context — AsyncLocalStorage for isolation under concurrent requests.
+// Lazy-loaded to avoid crashing in environments where node:async_hooks isn't available.
+let _contextStorage: { run: <T>(ctx: RuntimeScopeContext, fn: () => T) => T; getStore: () => RuntimeScopeContext | undefined } | null = null;
+
+try {
+  const { AsyncLocalStorage } = require('node:async_hooks');
+  _contextStorage = new AsyncLocalStorage<RuntimeScopeContext>();
+} catch {
+  // Fallback: simple global context (safe for single-request-at-a-time dev mode)
+  let _currentContext: RuntimeScopeContext | undefined;
+  _contextStorage = {
+    run<T>(ctx: RuntimeScopeContext, fn: () => T): T {
+      const prev = _currentContext;
+      _currentContext = ctx;
+      try { return fn(); } finally { _currentContext = prev; }
+    },
+    getStore() { return _currentContext; },
+  };
+}
 
 /** Get the active RuntimeScope context (used by binding wrappers) */
 export function getActiveContext(): RuntimeScopeContext | null {
-  return _contextStorage.getStore() ?? null;
+  return _contextStorage?.getStore() ?? null;
 }
 
 const DEFAULT_REDACT_HEADERS = ['authorization', 'cookie', 'set-cookie'];
@@ -60,6 +75,19 @@ export interface WorkersFetchHandler {
  * ```
  */
 export function withRuntimeScope(
+  handler: WorkersFetchHandler,
+  config: WorkersConfig,
+): WorkersFetchHandler {
+  // Never crash the app — if SDK init fails, pass through to the original handler
+  try {
+    return _withRuntimeScope(handler, config);
+  } catch (err) {
+    console.warn('[RuntimeScope] SDK init failed, running without instrumentation:', (err as Error).message);
+    return handler;
+  }
+}
+
+function _withRuntimeScope(
   handler: WorkersFetchHandler,
   config: WorkersConfig,
 ): WorkersFetchHandler {

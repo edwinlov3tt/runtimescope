@@ -2,14 +2,26 @@
 // Utility functions — no Node.js APIs, Workers-safe
 // ============================================================
 
-/** Generate a random event ID using Web Crypto API (available in Workers) */
+/** Generate a random event ID. Uses Web Crypto API with fallback for environments where it's unavailable at init time. */
 export function generateId(): string {
-  return crypto.randomUUID();
+  try {
+    return crypto.randomUUID();
+  } catch {
+    // Fallback: manual random hex (for environments where crypto.randomUUID isn't available at module eval time)
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+      const r = (Math.random() * 16) | 0;
+      return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+    });
+  }
 }
 
 /** Generate a session ID with worker prefix */
 export function generateSessionId(): string {
-  return `wk-${crypto.randomUUID().slice(0, 16)}`;
+  try {
+    return `wk-${crypto.randomUUID().slice(0, 16)}`;
+  } catch {
+    return `wk-${generateId().replace(/-/g, '').slice(0, 16)}`;
+  }
 }
 
 /** Safely serialize a value, handling circular references, functions, symbols, and errors. */

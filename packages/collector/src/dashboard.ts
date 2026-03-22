@@ -20,7 +20,8 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
-const REPO_ROOT = resolve(__dirname, '..', '..');
+// dist/ is at packages/collector/dist/, so repo root is 3 levels up
+const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
 const MCP_WS_PORT = 9090;
 const MCP_HTTP_PORT = 9091;

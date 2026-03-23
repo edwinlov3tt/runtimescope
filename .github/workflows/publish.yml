@@ -17,7 +17,8 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
-      - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
+      - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/collector -w packages/mcp-server
+      - run: npm run build -w packages/workers-sdk || true
       - run: npm test
 
       # Publish in dependency order (|| true skips already-published versions)

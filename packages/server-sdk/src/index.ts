@@ -25,7 +25,7 @@ import type { MiddlewareOptions } from './interceptors/middleware.js';
 // to the RuntimeScope collector via WebSocket
 // ============================================================
 
-const SDK_VERSION = '0.9.1';
+const SDK_VERSION = '0.9.2';
 
 // Re-export _log for integration modules (lives in utils/log.js to avoid circular deps)
 export { _log } from './utils/log.js';

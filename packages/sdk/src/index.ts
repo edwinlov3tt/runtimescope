@@ -11,7 +11,7 @@ import { interceptClicks } from './interceptors/clicks.js';
 import { generateId, generateSessionId } from './utils/id.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, UIInteractionEvent, UserContext } from './types.js';
 
-const SDK_VERSION = '0.9.1';
+const SDK_VERSION = '0.9.2';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.

@@ -272,6 +272,48 @@ export function getCapexExportAllUrl(opts?: { category?: string }): string {
   return url;
 }
 
+export interface GlobalCapexSummary {
+  totalCost: number;
+  capitalizable: number;
+  expensed: number;
+  activeMinutes: number;
+  activeHours: number;
+  confirmed: number;
+  unconfirmed: number;
+  projectCount: number;
+}
+
+export interface GlobalCapexByProject {
+  projectId: string;
+  projectName: string;
+  category?: string;
+  totalCost: number;
+  capitalizable: number;
+  expensed: number;
+  activeMinutes: number;
+  activeHours: number;
+  confirmed: number;
+  total: number;
+}
+
+export async function fetchGlobalCapex(category?: string): Promise<{
+  summary: GlobalCapexSummary;
+  byProject: GlobalCapexByProject[];
+  entries: unknown[];
+} | null> {
+  const url = category
+    ? `${BASE}/api/pm/capex-all?category=${encodeURIComponent(category)}`
+    : `${BASE}/api/pm/capex-all`;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const json = await res.json();
+    return json.data ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // --- Git ---
 
 import type { GitStatus, GitCommit } from './pm-types';

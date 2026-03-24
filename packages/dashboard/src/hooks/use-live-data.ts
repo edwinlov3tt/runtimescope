@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { useAppStore } from '@/stores/use-app-store';
 import { useDataStore } from '@/stores/use-data-store';
+import { usePmStore } from '@/stores/use-pm-store';
 import {
   fetchNetworkEvents,
   fetchConsoleEvents,
@@ -16,21 +17,59 @@ import {
 const POLL_INTERVAL = 2000;
 
 /**
- * Resolve selectedProject → project_id for API filtering.
- * Uses projectId (proj_xxx) when available for reliable cross-session scoping,
- * falls back to session_id for backwards compatibility.
+ * Resolve the active context → session_id(s) for API filtering.
+ *
+ * The core insight: multi-app projects (e.g., "runtimescope" with browser + dashboard SDKs)
+ * have DIFFERENT projectIds per app. We can't filter by a single projectId.
+ * Instead, we collect ALL session IDs from ALL runtime apps that belong to this PM project.
  */
 function getProjectFilter(): { project_id?: string; session_id?: string } {
-  const { selectedProject, projects } = useAppStore.getState();
+  const { selectedProject, selectedPmProject, projects } = useAppStore.getState();
+
+  // Path 1: PM project is selected (via sidebar click)
+  if (selectedPmProject) {
+    const pmProjects = usePmStore.getState().projects;
+    const pmProject = pmProjects.find((p) => p.id === selectedPmProject);
+
+    if (pmProject) {
+      // Collect ALL sessions from ALL runtime apps belonging to this PM project
+      const appNames: string[] = pmProject.runtimeApps
+        ?? [pmProject.runtimescopeProject, pmProject.name].filter(Boolean) as string[];
+
+      const allSessions: string[] = [];
+      const allProjectIds: string[] = [];
+
+      for (const appName of appNames) {
+        const rp = projects.find((p) => p.appName.toLowerCase() === appName.toLowerCase());
+        if (rp) {
+          allSessions.push(...rp.sessions);
+          if (rp.projectId) allProjectIds.push(rp.projectId);
+        }
+      }
+
+      // If all apps share the same projectId, use it (optimal — single filter)
+      const uniqueProjectIds = [...new Set(allProjectIds)];
+      if (uniqueProjectIds.length === 1) {
+        return { project_id: uniqueProjectIds[0] };
+      }
+
+      // Multiple projectIds (multi-app project) — fall back to session_id list
+      if (allSessions.length > 0) {
+        return { session_id: allSessions.join(',') };
+      }
+
+      // No runtime connections found
+      return { session_id: '__none__' };
+    }
+  }
+
+  // Path 2: Standalone runtime project selected
   if (!selectedProject) return {};
 
   const project = projects.find((p) => p.appName === selectedProject);
   if (!project || project.sessions.length === 0) return { session_id: '__none__' };
 
-  // Prefer project_id (scopes all sessions for this project)
   if (project.projectId) return { project_id: project.projectId };
-
-  // Fallback: use first session_id (legacy, pre-projectId)
   return { session_id: project.sessions[0] };
 }
 

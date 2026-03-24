@@ -1,6 +1,7 @@
 import { readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { generateProjectId } from './project-id.js';
+import type { ProjectManager } from './project-manager.js';
 
 // ============================================================
 // .runtimescope/config.json — project-level config
@@ -169,4 +170,86 @@ export function resolveProjectAppNames(config: RuntimeScopeProjectConfig): strin
     if (sdk.appName) names.add(sdk.appName);
   }
   return Array.from(names);
+}
+
+// ============================================================
+// Project ID Migration
+// ============================================================
+
+interface MigratablePmStore {
+  listProjects(): Array<{
+    id: string;
+    name: string;
+    path?: string;
+    runtimeApps?: string[];
+    runtimeProjectId?: string;
+  }>;
+  updateProject(id: string, updates: Record<string, unknown>): void;
+}
+
+interface MigrationResult {
+  unified: number;
+  skipped: number;
+  details: string[];
+}
+
+/**
+ * Scan PM projects with multiple runtimeApps and ensure all their
+ * appNames share the same canonical projectId (from .runtimescope/config.json).
+ */
+export function migrateProjectIds(
+  projectManager: ProjectManager,
+  pmStore?: MigratablePmStore | null,
+): MigrationResult {
+  const result: MigrationResult = { unified: 0, skipped: 0, details: [] };
+  if (!pmStore) return result;
+
+  for (const project of pmStore.listProjects()) {
+    // Only migrate multi-app projects
+    if (!project.runtimeApps || project.runtimeApps.length < 2) continue;
+    if (!project.path) { result.skipped++; continue; }
+
+    // Read the project-level .runtimescope/config.json
+    let canonicalId: string | null = null;
+    try {
+      const configPath = join(project.path, '.runtimescope', 'config.json');
+      if (existsSync(configPath)) {
+        const config = JSON.parse(readFileSync(configPath, 'utf-8'));
+        if (config.projectId) canonicalId = config.projectId;
+      }
+    } catch { /* non-fatal */ }
+
+    // If no project-level config, try the PM project's runtimeProjectId
+    if (!canonicalId && project.runtimeProjectId) {
+      canonicalId = project.runtimeProjectId;
+    }
+
+    // If still no canonical ID, use the first appName's existing projectId
+    if (!canonicalId) {
+      for (const appName of project.runtimeApps) {
+        const existing = projectManager.getProjectIdForApp(appName);
+        if (existing) { canonicalId = existing; break; }
+      }
+    }
+
+    if (!canonicalId) { result.skipped++; continue; }
+
+    // Unify: set ALL appNames to the canonical projectId
+    for (const appName of project.runtimeApps) {
+      const current = projectManager.getProjectIdForApp(appName);
+      if (current !== canonicalId) {
+        projectManager.setProjectIdForApp(appName, canonicalId);
+        result.details.push(`Unified ${appName}: ${current ?? 'none'} → ${canonicalId}`);
+        result.unified++;
+      }
+    }
+
+    // Update PM project's runtimeProjectId if different
+    if (project.runtimeProjectId !== canonicalId) {
+      pmStore.updateProject(project.id, { runtimeProjectId: canonicalId });
+      result.details.push(`PM project ${project.name}: runtimeProjectId → ${canonicalId}`);
+    }
+  }
+
+  return result;
 }

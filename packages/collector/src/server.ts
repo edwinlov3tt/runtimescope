@@ -2,7 +2,8 @@ import { createServer as createHttpsServer } from 'node:https';
 import { WebSocketServer, type WebSocket } from 'ws';
 import { EventStore } from './store.js';
 import { ProjectManager } from './project-manager.js';
-import { getOrCreateProjectId } from './project-id.js';
+import { getOrCreateProjectId, resolveProjectId } from './project-id.js';
+import type { PmStoreLike } from './project-id.js';
 import { SqliteStore } from './sqlite-store.js';
 import { isSqliteAvailable } from './sqlite-check.js';
 import { AuthManager } from './auth.js';
@@ -56,6 +57,7 @@ export class CollectorServer {
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
   private tlsConfig: TlsConfig | null = null;
+  private pmStore: PmStoreLike | null = null;
 
   constructor(options: CollectorServerOptions = {}) {
     this.store = new EventStore(options.bufferSize ?? 10_000);
@@ -101,6 +103,11 @@ export class CollectorServer {
 
   getRateLimiter(): SessionRateLimiter {
     return this.rateLimiter;
+  }
+
+  /** Set the PmStore for project ID resolution (called after construction when PmStore is available). */
+  setPmStore(pmStore: PmStoreLike | null): void {
+    this.pmStore = pmStore;
   }
 
   onConnect(cb: (sessionId: string, projectName: string, projectId?: string) => void): void {
@@ -340,7 +347,7 @@ export class CollectorServer {
         const projectName = payload.appName;
         // Auto-generate a projectId if the SDK didn't send one (backwards compat)
         const projectId = payload.projectId
-          ?? (this.projectManager ? getOrCreateProjectId(this.projectManager, projectName) : undefined);
+          ?? (this.projectManager ? resolveProjectId(this.projectManager, projectName, this.pmStore) : undefined);
 
         this.clients.set(ws, {
           sessionId: payload.sessionId,

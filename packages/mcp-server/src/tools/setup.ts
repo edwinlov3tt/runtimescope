@@ -323,9 +323,17 @@ export function registerSetupTools(
         }
       }
 
-      // Persist projectId to global ProjectManager too
+      // Persist projectId to global ProjectManager for ALL appNames in the project
       projectManager.ensureProjectDir(resolvedAppName);
       projectManager.setProjectIdForApp(resolvedAppName, config.projectId);
+      for (const sdk of config.sdks) {
+        if (sdk.appName && sdk.appName !== resolvedAppName) {
+          projectManager.ensureProjectDir(sdk.appName);
+          projectManager.setProjectIdForApp(sdk.appName, config.projectId);
+        }
+      }
+      // Rebuild the reverse index so future connections resolve correctly
+      projectManager.rebuildAppIndex();
 
       // --- 5. Generate snippets for each SDK type ---
       const snippets = frameworks.map((fw) => ({

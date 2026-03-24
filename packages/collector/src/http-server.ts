@@ -2,7 +2,7 @@ import { createServer, type IncomingMessage, type ServerResponse, type Server } 
 import { createServer as createHttpsServer } from 'node:https';
 import { readFileSync, existsSync } from 'node:fs';
 import type { ProjectManager } from './project-manager.js';
-import { getOrCreateProjectId } from './project-id.js';
+import { getOrCreateProjectId, resolveProjectId } from './project-id.js';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer, type WebSocket } from 'ws';
@@ -335,7 +335,7 @@ export class HttpServer {
       const projectId = typeof payload.projectId === 'string'
         ? payload.projectId
         : (payload.appName && this.projectManager
-          ? getOrCreateProjectId(this.projectManager, payload.appName)
+          ? resolveProjectId(this.projectManager, payload.appName, this.pmStore)
           : undefined);
 
       if (!payload.sessionId || !Array.isArray(payload.events) || payload.events.length === 0) {

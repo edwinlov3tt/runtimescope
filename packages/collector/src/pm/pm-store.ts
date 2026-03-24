@@ -307,6 +307,14 @@ export class PmStore {
     return match.id;
   }
 
+  /** Find a project's runtimeProjectId by checking if appName appears in any project's runtimeApps. */
+  findProjectIdByApp(appName: string): string | null {
+    const row = this.db
+      .prepare(`SELECT runtime_project_id FROM pm_projects WHERE runtime_apps LIKE ? AND runtime_project_id IS NOT NULL LIMIT 1`)
+      .get(`%"${appName}"%`) as { runtime_project_id: string } | undefined;
+    return row?.runtime_project_id ?? null;
+  }
+
   listCategories(): string[] {
     const rows = this.db
       .prepare('SELECT DISTINCT category FROM pm_projects WHERE category IS NOT NULL ORDER BY category ASC')
@@ -891,6 +899,7 @@ export class PmStore {
       unconfirmed_count: number;
     };
 
+    // Group by day (period is YYYY-MM-DD)
     const monthlyRows = this.db.prepare(`
       SELECT
         period,

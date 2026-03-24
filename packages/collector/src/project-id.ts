@@ -1,6 +1,11 @@
 import { randomBytes } from 'node:crypto';
 import type { ProjectManager } from './project-manager.js';
 
+/** Minimal interface for PmStore to avoid circular dependencies. */
+export interface PmStoreLike {
+  findProjectIdByApp(appName: string): string | null;
+}
+
 // ============================================================
 // Project ID — stable identifier for grouping all SDKs in a project
 // Format: proj_ + 12 alphanumeric chars (e.g., proj_a1b2c3d4e5f6)
@@ -41,4 +46,34 @@ export function getOrCreateProjectId(projectManager: ProjectManager, appName: st
   projectManager.ensureProjectDir(appName);
   projectManager.setProjectIdForApp(appName, projectId);
   return projectId;
+}
+
+/**
+ * Resolve a projectId for an appName using a priority chain:
+ * 1. ProjectManager cached index (fastest — scans project configs)
+ * 2. PmStore lookup (PM project's runtimeProjectId)
+ * 3. Existing per-appName config (~/.runtimescope/projects/<appName>/)
+ * 4. Generate new (last resort)
+ */
+export function resolveProjectId(
+  projectManager: ProjectManager,
+  appName: string,
+  pmStore?: PmStoreLike | null,
+): string {
+  // Step 1: Check cached reverse index
+  const fromIndex = projectManager.resolveAppProjectId(appName);
+  if (fromIndex) return fromIndex;
+
+  // Step 2: Check PM store
+  if (pmStore) {
+    const fromPm = pmStore.findProjectIdByApp(appName);
+    if (fromPm) {
+      // Cache it for next time
+      projectManager.setProjectIdForApp(appName, fromPm);
+      return fromPm;
+    }
+  }
+
+  // Step 3+4: Existing or generate new (original behavior)
+  return getOrCreateProjectId(projectManager, appName);
 }

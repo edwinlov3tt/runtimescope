@@ -229,8 +229,8 @@ export function BreadcrumbsPage() {
       ...consoleToBreadcrumbs(consoleEvents),
       ...networkToBreadcrumbs(networkEvents),
     ];
-    // Sort chronologically (oldest first)
-    all.sort((a, b) => a.timestamp - b.timestamp);
+    // Sort newest first so latest events appear at the top
+    all.sort((a, b) => b.timestamp - a.timestamp);
     return all;
   }, [uiEvents, consoleEvents, networkEvents]);
 

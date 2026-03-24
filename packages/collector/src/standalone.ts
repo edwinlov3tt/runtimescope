@@ -24,6 +24,7 @@ import { isSqliteAvailable } from './sqlite-check.js';
 import { AuthManager } from './auth.js';
 import { Redactor } from './redactor.js';
 import { resolveTlsConfig } from './tls.js';
+import { migrateProjectIds } from './project-config.js';
 
 const HOST = process.env.RUNTIMESCOPE_HOST ?? '127.0.0.1';
 // Same default ports as MCP server — only one should run at a time
@@ -130,9 +131,28 @@ async function main() {
     pmStore = new PmStore({ dbPath: pmDbPath });
     discovery = new ProjectDiscovery(pmStore, projectManager);
 
+    // Wire PM store into collector so handshake can resolve projectIds
+    collector.setPmStore(pmStore);
+
     // Run discovery in background (non-blocking)
     discovery.discoverAll().then((result) => {
       console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
+
+      // Rebuild app index after discovery completes
+      projectManager.rebuildAppIndex(pmStore);
+
+      // Migrate project IDs — unify multi-app projects
+      try {
+        const migrationResult = migrateProjectIds(projectManager, pmStore);
+        if (migrationResult.unified > 0) {
+          console.error(`[RuntimeScope] Unified ${migrationResult.unified} project IDs`);
+          for (const detail of migrationResult.details) {
+            console.error(`[RuntimeScope]   ${detail}`);
+          }
+          // Rebuild the app index after migration
+          projectManager.rebuildAppIndex(pmStore);
+        }
+      } catch { /* non-fatal */ }
     }).catch((err) => {
       console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
     });

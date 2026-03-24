@@ -941,6 +941,82 @@ export function createPmRouter(
     }
   });
 
+  // JSON capex summary across all projects (for home page dashboard)
+  route('GET', '/api/pm/capex-all', (_req, res, params) => {
+    const category = params.get('category') ?? undefined;
+    const projects = pmStore.listProjects();
+    const filteredProjects = category
+      ? projects.filter((p) => p.category === category)
+      : projects;
+
+    const allEntries: Array<Record<string, unknown>> = [];
+    let totalCost = 0;
+    let totalCapitalizable = 0;
+    let totalExpensed = 0;
+    let totalMinutes = 0;
+    let totalConfirmed = 0;
+    let totalUnconfirmed = 0;
+
+    const byProject: Array<Record<string, unknown>> = [];
+
+    for (const project of filteredProjects) {
+      const entries = pmStore.listCapexEntries(project.id);
+      let projCost = 0;
+      let projCap = 0;
+      let projExp = 0;
+      let projMins = 0;
+      let projConfirmed = 0;
+
+      for (const e of entries) {
+        allEntries.push({ ...e, projectName: project.name });
+        projCost += e.adjustedCostMicrodollars;
+        projMins += e.activeMinutes;
+        if (e.classification === 'capitalizable') projCap += e.adjustedCostMicrodollars;
+        else projExp += e.adjustedCostMicrodollars;
+        if (e.confirmed) projConfirmed++;
+      }
+
+      if (entries.length > 0) {
+        byProject.push({
+          projectId: project.id,
+          projectName: project.name,
+          category: project.category,
+          totalCost: projCost,
+          capitalizable: projCap,
+          expensed: projExp,
+          activeMinutes: projMins,
+          activeHours: +(projMins / 60).toFixed(2),
+          confirmed: projConfirmed,
+          total: entries.length,
+        });
+      }
+
+      totalCost += projCost;
+      totalCapitalizable += projCap;
+      totalExpensed += projExp;
+      totalMinutes += projMins;
+      totalConfirmed += projConfirmed;
+      totalUnconfirmed += entries.length - projConfirmed;
+    }
+
+    helpers.json(res, {
+      data: {
+        summary: {
+          totalCost,
+          capitalizable: totalCapitalizable,
+          expensed: totalExpensed,
+          activeMinutes: totalMinutes,
+          activeHours: +(totalMinutes / 60).toFixed(2),
+          confirmed: totalConfirmed,
+          unconfirmed: totalUnconfirmed,
+          projectCount: byProject.length,
+        },
+        byProject,
+        entries: allEntries.sort((a, b) => (b as any).createdAt - (a as any).createdAt),
+      },
+    });
+  });
+
   // XLSX export — all projects (optional ?category= filter)
   route('GET', '/api/pm/capex-report-all', async (_req, res, params) => {
     const startDate = params.get('start_date') ?? undefined;

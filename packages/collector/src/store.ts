@@ -35,6 +35,17 @@ import type {
   EventType,
 } from './types.js';
 
+/**
+ * Check if a sessionId matches a filter value.
+ * Supports comma-separated session IDs for multi-app project queries.
+ */
+function matchesSessionFilter(eventSessionId: string, filterSessionId: string): boolean {
+  if (filterSessionId.includes(',')) {
+    return filterSessionId.split(',').includes(eventSessionId);
+  }
+  return eventSessionId === filterSessionId;
+}
+
 export class EventStore {
   private buffer: RingBuffer<RuntimeEvent>;
   private sessions: Map<string, SessionInfo> = new Map();
@@ -115,7 +126,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'network') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ne = e as NetworkEvent;
       if (ne.timestamp < since) return false;
@@ -134,7 +145,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'console') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ce = e as ConsoleEvent;
       if (ce.timestamp < since) return false;
@@ -165,7 +176,7 @@ export class EventStore {
     // toArray returns oldest→newest (chronological order)
     return this.buffer.toArray().filter((e) => {
       if (e.timestamp < since) return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (typeSet && !typeSet.has(e.eventType)) return false;
       return true;
@@ -194,10 +205,23 @@ export class EventStore {
       .map((s) => s.sessionId);
   }
 
+  /** Re-tag all sessions with oldProjectId to use newProjectId. */
+  retagSessions(oldProjectId: string, newProjectId: string): void {
+    for (const [, session] of this.sessions) {
+      if (session.projectId === oldProjectId) {
+        session.projectId = newProjectId;
+      }
+    }
+  }
+
   /** Check if an event belongs to the given projectId (via its session). */
   private matchesProjectId(sessionId: string, projectId: string): boolean {
     const session = this.sessions.get(sessionId);
-    return session?.projectId === projectId;
+    if (!session?.projectId) return false;
+    if (projectId.includes(',')) {
+      return projectId.split(',').includes(session.projectId);
+    }
+    return session.projectId === projectId;
   }
 
   getStateEvents(filter: StateFilter = {}): StateEvent[] {
@@ -207,7 +231,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'state') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const se = e as StateEvent;
       if (se.timestamp < since) return false;
@@ -223,7 +247,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'render') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const re = e as RenderEvent;
       if (re.timestamp < since) return false;
@@ -244,7 +268,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'performance') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const pe = e as PerformanceEvent;
       if (pe.timestamp < since) return false;
@@ -260,7 +284,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'database') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const de = e as DatabaseEvent;
       if (de.timestamp < since) return false;
@@ -286,7 +310,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'custom') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ce = e as CustomEvent;
       if (ce.timestamp < since) return false;
@@ -302,7 +326,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== 'ui') return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       const ue = e as UIInteractionEvent;
       if (ue.timestamp < since) return false;
@@ -326,7 +350,7 @@ export class EventStore {
     // query() returns newest-first, so the first match is the most recent
     const results = this.buffer.query((e) => {
       if (e.eventType !== eventType) return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (e.timestamp < since) return false;
       if (filter.url) {
@@ -349,7 +373,7 @@ export class EventStore {
 
     return this.buffer.query((e) => {
       if (e.eventType !== eventType) return false;
-      if (filter.sessionId && e.sessionId !== filter.sessionId) return false;
+      if (filter.sessionId && !matchesSessionFilter(e.sessionId, filter.sessionId)) return false;
       if (filter.projectId && !this.matchesProjectId(e.sessionId, filter.projectId)) return false;
       if (e.timestamp < since) return false;
       if (filter.url) {

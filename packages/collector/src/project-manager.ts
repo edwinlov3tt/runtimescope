@@ -72,8 +72,14 @@ const DEFAULT_GLOBAL_CONFIG: GlobalConfig = {
   httpPort: 9091,
 };
 
+/** Minimal interface for PmStore used by rebuildAppIndex (avoids circular deps). */
+export interface PmStoreIndexSource {
+  listProjects(): Array<{ runtimeApps?: string[]; runtimeProjectId?: string; path?: string }>;
+}
+
 export class ProjectManager {
   private readonly baseDir: string;
+  private appProjectIndex: Map<string, string> = new Map();
 
   constructor(baseDir?: string) {
     this.baseDir = baseDir ?? join(homedir(), '.runtimescope');
@@ -219,6 +225,70 @@ export class ProjectManager {
       if (config?.projectId === projectId) return name;
     }
     return null;
+  }
+
+  // --- Reverse index: appName → projectId ---
+
+  /**
+   * Build reverse index: appName -> projectId.
+   * Scans all project configs, PM projects with runtimeApps + runtimeProjectId,
+   * and project-level .runtimescope/config.json files from PM project paths.
+   */
+  rebuildAppIndex(pmStore?: PmStoreIndexSource): void {
+    this.appProjectIndex.clear();
+
+    // Source 1: ~/.runtimescope/projects/*/config.json
+    for (const name of this.listProjects()) {
+      const config = this.getProjectConfig(name);
+      if (config?.projectId) {
+        this.appProjectIndex.set(name.toLowerCase(), config.projectId);
+      }
+    }
+
+    // Source 2: PM projects with runtimeApps + runtimeProjectId
+    if (pmStore) {
+      for (const p of pmStore.listProjects()) {
+        if (p.runtimeProjectId && p.runtimeApps) {
+          for (const app of p.runtimeApps) {
+            this.appProjectIndex.set(app.toLowerCase(), p.runtimeProjectId);
+          }
+        }
+      }
+    }
+
+    // Source 3: Project-level .runtimescope/config.json files
+    if (pmStore) {
+      for (const p of pmStore.listProjects()) {
+        if (p.path) {
+          try {
+            const configPath = join(p.path, '.runtimescope', 'config.json');
+            if (existsSync(configPath)) {
+              const content = readFileSync(configPath, 'utf-8');
+              const config = JSON.parse(content);
+              if (config.projectId) {
+                // Index the top-level appName
+                if (config.appName) {
+                  this.appProjectIndex.set(config.appName.toLowerCase(), config.projectId);
+                }
+                // Index all SDK appNames
+                if (Array.isArray(config.sdks)) {
+                  for (const sdk of config.sdks) {
+                    if (sdk.appName) {
+                      this.appProjectIndex.set(sdk.appName.toLowerCase(), config.projectId);
+                    }
+                  }
+                }
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
+      }
+    }
+  }
+
+  /** O(1) lookup from the cached index. */
+  resolveAppProjectId(appName: string): string | null {
+    return this.appProjectIndex.get(appName.toLowerCase()) ?? null;
   }
 
   // --- Environment variable resolution ---

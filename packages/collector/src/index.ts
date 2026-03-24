@@ -4,13 +4,14 @@ export { EventStore } from './store.js';
 export { RingBuffer } from './ring-buffer.js';
 export { detectIssues } from './issue-detector.js';
 export { ProjectManager } from './project-manager.js';
-export type { GlobalConfig, ProjectConfig, InfrastructureConfig } from './project-manager.js';
+export type { GlobalConfig, ProjectConfig, InfrastructureConfig, PmStoreIndexSource } from './project-manager.js';
 export { generateProjectId, isValidProjectId, getOrCreateProjectId } from './project-id.js';
 export {
   readProjectConfig,
   writeProjectConfig,
   scaffoldProjectConfig,
   resolveProjectAppNames,
+  migrateProjectIds,
 } from './project-config.js';
 export type {
   RuntimeScopeProjectConfig,

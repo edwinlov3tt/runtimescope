@@ -217,6 +217,17 @@ export function createPmRouter(
     }
   });
 
+  route('DELETE', '/api/pm/projects/:id', (_req, res, params) => {
+    const id = params.get('id')!;
+    const project = pmStore.getProject(id);
+    if (!project) {
+      helpers.json(res, { error: 'Project not found' }, 404);
+      return;
+    }
+    pmStore.deleteProject(id);
+    helpers.json(res, { ok: true, deleted: project.name });
+  });
+
   // ============================================================
   // Tasks
   // ============================================================

@@ -1,4 +1,4 @@
-import { useState, useMemo, memo } from 'react';
+import { useState, useEffect, useMemo, memo } from 'react';
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
@@ -15,6 +15,7 @@ import {
   WifiOff,
   Layers,
   FolderOpen,
+  Trash2,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -144,11 +145,44 @@ const ProjectItem = memo(function ProjectItem({
   onToggleExpand: () => void;
 }) {
   const hasApps = group.apps.length > 1;
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const deleteProject = usePmStore((s) => s.deleteProject);
+
+  const handleContextMenu = (e: React.MouseEvent) => {
+    e.preventDefault();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  };
+
+  const handleDelete = async () => {
+    setMenuPos(null);
+    if (
+      window.confirm(
+        `Delete "${group.project.name}"? This removes the project and all its data from the dashboard. You can recover it by running /setup again.`,
+      )
+    ) {
+      await deleteProject(group.project.id);
+    }
+  };
+
+  useEffect(() => {
+    if (!menuPos) return;
+    const close = () => setMenuPos(null);
+    const handleKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') close();
+    };
+    window.addEventListener('click', close);
+    window.addEventListener('keydown', handleKey);
+    return () => {
+      window.removeEventListener('click', close);
+      window.removeEventListener('keydown', handleKey);
+    };
+  }, [menuPos]);
 
   return (
     <div>
       <button
         onClick={onSelect}
+        onContextMenu={handleContextMenu}
         className={cn(
           'w-full flex items-center gap-2 h-8 px-2.5 rounded-md text-[13px] font-medium transition-colors cursor-pointer group',
           isActive
@@ -226,6 +260,22 @@ const ProjectItem = memo(function ProjectItem({
               )}
             </div>
           ))}
+        </div>
+      )}
+
+      {/* Context menu */}
+      {menuPos && (
+        <div
+          className="fixed z-50 bg-bg-elevated border border-border-default rounded-lg shadow-lg py-1 min-w-[160px]"
+          style={{ left: menuPos.x, top: menuPos.y }}
+        >
+          <button
+            onClick={handleDelete}
+            className="w-full flex items-center gap-2 text-left px-3 py-1.5 text-[13px] text-red-400 hover:bg-bg-hover cursor-pointer"
+          >
+            <Trash2 size={13} />
+            Delete Project
+          </button>
         </div>
       )}
     </div>

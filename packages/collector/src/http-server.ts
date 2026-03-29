@@ -615,14 +615,12 @@ export class HttpServer {
     // Serve a ready-to-paste snippet for any tech stack
     if (req.method === 'GET' && url.pathname === '/snippet') {
       const appName = (url.searchParams.get('app') || 'my-app').replace(/[^a-zA-Z0-9_-]/g, '');
-      const wsPort = process.env.RUNTIMESCOPE_PORT ?? '9090';
+      const projectId = url.searchParams.get('project_id') || 'proj_xxx';
+      const dsn = `runtimescope://${projectId}@localhost:${this.activePort}/${appName}`;
       const snippet = `<!-- RuntimeScope SDK — paste before </body> -->
 <script src="http://localhost:${this.activePort}/runtimescope.js"></script>
 <script>
-  RuntimeScope.init({
-    appName: '${appName}',
-    endpoint: 'ws://localhost:${wsPort}',
-  });
+  RuntimeScope.init({ dsn: '${dsn}' });
 </script>`;
       res.writeHead(200, {
         'Content-Type': 'text/plain',

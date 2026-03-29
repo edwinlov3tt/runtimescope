@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { RuntimeScope } from '@runtimescope/sdk';
+import { useAppStore } from '@/stores/use-app-store';
 import { toast } from '@/stores/use-toast-store';
 import type {
   PmProject,
@@ -23,6 +24,7 @@ interface PmState {
   projectsLoading: boolean;
   fetchProjects: () => Promise<void>;
   updateProject: (id: string, data: Partial<PmProject>) => Promise<void>;
+  deleteProject: (id: string) => Promise<void>;
 
   // Categories
   categories: string[];
@@ -110,6 +112,20 @@ export const usePmStore = create<PmState>((set, get) => ({
     await pmApi.updatePmProject(id, data);
     // Optimistic update
     set({ projects: get().projects.map((p) => (p.id === id ? { ...p, ...data } : p)) });
+  },
+  deleteProject: async (id) => {
+    const ok = await pmApi.deletePmProject(id);
+    if (ok) {
+      set({ projects: get().projects.filter((p) => p.id !== id) });
+      // If the deleted project was selected, go back to home
+      const appStore = useAppStore.getState();
+      if (appStore.selectedPmProject === id) {
+        appStore.setActiveView('home');
+      }
+      toast.success('Project deleted');
+    } else {
+      toast.error('Failed to delete project');
+    }
   },
 
   // --- Categories ---

@@ -105,6 +105,8 @@ export type WorkersRuntimeEvent = ConsoleEvent | DatabaseEvent | NetworkEvent | 
 // --- Configuration ---
 
 export interface WorkersConfig {
+  /** DSN connection string (e.g., runtimescope://proj_abc123@localhost:9091/my-worker) */
+  dsn?: string;
   /** App name — identifies this worker in session info */
   appName: string;
   /** Project ID — links this worker to a PM project */

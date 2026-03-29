@@ -15,6 +15,8 @@ export { instrumentR2 } from './bindings/r2.js';
 export { WorkersTransport } from './transport.js';
 export { Sampler } from './sampler.js';
 export { generateId, generateSessionId } from './utils.js';
+export { parseDsn, buildDsn } from './dsn.js';
+export type { ParsedDsn } from './dsn.js';
 
 export type {
   WorkersConfig,

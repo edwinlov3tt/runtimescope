@@ -121,11 +121,12 @@ function generateSnippet(
   sdkType: SdkType,
   appName: string,
   projectId: string,
-): { snippet: string; placement: string; installCmd?: string } {
-  const projectIdLine = `\n    projectId: '${projectId}',`;
+): { snippet: string; placement: string; installCmd?: string; dsn: string } {
+  const dsn = `runtimescope://${projectId}@localhost:${HTTP_PORT}/${appName}`;
 
   if (sdkType === 'workers') {
     return {
+      dsn,
       snippet: `import { withRuntimeScope, scopeD1, scopeKV, scopeR2 } from '@runtimescope/workers-sdk';
 
 export default withRuntimeScope({
@@ -135,8 +136,8 @@ export default withRuntimeScope({
     return yourApp.fetch(request, env, ctx);
   },
 }, {
-  appName: '${appName}',${projectIdLine}
-  httpEndpoint: 'http://localhost:${HTTP_PORT}/api/events',
+  dsn: '${dsn}',
+  appName: '${appName}',
 });`,
       placement: 'Wrap your default export in the Worker entry file (src/index.ts).',
       installCmd: 'npm install @runtimescope/workers-sdk',
@@ -145,13 +146,12 @@ export default withRuntimeScope({
 
   if (sdkType === 'server') {
     return {
+      dsn,
       snippet: `import { RuntimeScope } from '@runtimescope/server-sdk';
 
 RuntimeScope.connect({
-  appName: '${appName}',${projectIdLine}
-  captureConsole: true,
-  captureHttp: true,
-  capturePerformance: true,
+  dsn: '${dsn}',
+  appName: '${appName}',
 });
 
 // Instrument your ORM:
@@ -169,14 +169,10 @@ RuntimeScope.connect({
 
   if (usesNpm) {
     return {
+      dsn,
       snippet: `import { RuntimeScope } from '@runtimescope/sdk';
 
-RuntimeScope.init({
-  appName: '${appName}',${projectIdLine}
-  endpoint: 'ws://localhost:${COLLECTOR_PORT}',
-  capturePerformance: true,
-  captureRenders: true,
-});`,
+RuntimeScope.init({ dsn: '${dsn}' });`,
       placement: framework === 'nextjs'
         ? 'Add to app/providers.tsx (client component) or pages/_app.tsx.'
         : framework === 'react' ? 'Add to src/main.tsx before createRoot().'
@@ -197,12 +193,10 @@ RuntimeScope.init({
   };
 
   return {
+    dsn,
     snippet: `<script src="http://localhost:${HTTP_PORT}/runtimescope.js"></script>
 <script>
-  RuntimeScope.init({
-    appName: '${appName}',${projectIdLine}
-    endpoint: 'ws://localhost:${COLLECTOR_PORT}',
-  });
+  RuntimeScope.init({ dsn: '${dsn}' });
 </script>`,
     placement: placements[framework] ?? placements.html,
   };
@@ -346,6 +340,9 @@ export function registerSetupTools(
       // Deduplicate by sdkType
       const uniqueSnippets = snippets.filter((s, i, arr) => arr.findIndex((x) => x.sdkType === s.sdkType) === i);
 
+      // Primary DSN for the project (from first snippet)
+      const primaryDsn = uniqueSnippets[0]?.dsn ?? `runtimescope://${config.projectId}@localhost:${HTTP_PORT}/${resolvedAppName}`;
+
       // --- 6. Check existing connection ---
       const sessions = store.getSessionInfo();
       const projectSessions = sessions.filter((s) => s.projectId === config.projectId || s.appName === resolvedAppName);
@@ -387,6 +384,7 @@ export function registerSetupTools(
           : `${resolvedAppName} set up (${config.projectId}). ${uniqueSnippets.length} SDK snippet(s) generated. ${phase === 'awaiting_installation' ? 'Install the SDK to connect.' : 'Start your app to connect.'}`,
         data: {
           phase,
+          dsn: primaryDsn,
           project: {
             projectId: config.projectId,
             appName: resolvedAppName,
@@ -396,6 +394,7 @@ export function registerSetupTools(
           snippets: uniqueSnippets.map((s) => ({
             sdkType: s.sdkType,
             framework: s.framework,
+            dsn: s.dsn,
             snippet: s.snippet,
             placement: s.placement,
             installCmd: s.installCmd,

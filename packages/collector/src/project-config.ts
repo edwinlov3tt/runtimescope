@@ -14,6 +14,9 @@ export interface RuntimeScopeProjectConfig {
   /** Stable project identifier (proj_xxx). Groups all SDKs for this project. */
   projectId: string;
 
+  /** DSN connection string: runtimescope://<projectId>@<host>:<port>/<appName> */
+  dsn?: string;
+
   /** Human-readable project name. */
   appName: string;
 
@@ -138,8 +141,13 @@ export function scaffoldProjectConfig(
     return existing;
   }
 
+  const projectId = generateProjectId();
+  const httpPort = process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091';
+  const dsn = `runtimescope://${projectId}@localhost:${httpPort}/${opts.appName}`;
+
   const config: RuntimeScopeProjectConfig = {
-    projectId: generateProjectId(),
+    projectId,
+    dsn,
     appName: opts.appName,
     description: opts.description,
     sdks: opts.sdkType

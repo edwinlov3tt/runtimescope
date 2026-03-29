@@ -152,6 +152,13 @@ export class PmStore {
       CREATE INDEX IF NOT EXISTS idx_pm_capex_project ON pm_capex_entries(project_id);
       CREATE INDEX IF NOT EXISTS idx_pm_capex_period ON pm_capex_entries(period);
       CREATE INDEX IF NOT EXISTS idx_pm_capex_confirmed ON pm_capex_entries(confirmed);
+
+      CREATE TABLE IF NOT EXISTS pm_deleted_projects (
+        path TEXT PRIMARY KEY,
+        name TEXT,
+        deleted_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_deleted_path ON pm_deleted_projects(path);
     `);
   }
 
@@ -1123,6 +1130,48 @@ export class PmStore {
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
+  }
+
+  // ============================================================
+  // Deleted Projects Blocklist
+  // ============================================================
+
+  deleteProject(id: string): void {
+    const project = this.getProject(id);
+    if (!project) return;
+
+    // Add to blocklist so discovery never re-imports
+    if (project.path) {
+      this.db.prepare(
+        'INSERT OR REPLACE INTO pm_deleted_projects (path, name, deleted_at) VALUES (?, ?, ?)'
+      ).run(project.path, project.name, Date.now());
+    }
+    // Also block by claude project key
+    if (project.claudeProjectKey) {
+      this.db.prepare(
+        'INSERT OR REPLACE INTO pm_deleted_projects (path, name, deleted_at) VALUES (?, ?, ?)'
+      ).run(project.claudeProjectKey, project.name, Date.now());
+    }
+
+    // Cascade delete all related data
+    this.db.prepare('DELETE FROM pm_capex_entries WHERE project_id = ?').run(id);
+    this.db.prepare('DELETE FROM pm_notes WHERE project_id = ?').run(id);
+    this.db.prepare('DELETE FROM pm_tasks WHERE project_id = ?').run(id);
+    this.db.prepare('DELETE FROM pm_sessions WHERE project_id = ?').run(id);
+    this.db.prepare('DELETE FROM pm_projects WHERE id = ?').run(id);
+  }
+
+  isDeletedPath(path: string): boolean {
+    const row = this.db.prepare('SELECT 1 FROM pm_deleted_projects WHERE path = ?').get(path);
+    return !!row;
+  }
+
+  recoverProject(path: string): void {
+    this.db.prepare('DELETE FROM pm_deleted_projects WHERE path = ?').run(path);
+  }
+
+  listDeletedProjects(): Array<{ path: string; name: string; deletedAt: number }> {
+    return this.db.prepare('SELECT path, name, deleted_at as deletedAt FROM pm_deleted_projects ORDER BY deleted_at DESC').all() as any;
   }
 
   // ============================================================

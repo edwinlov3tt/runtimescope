@@ -103,6 +103,10 @@ export async function updatePmProject(id: string, data: Partial<PmProject>) {
   return put<PmProject>(`/api/pm/projects/${id}`, data);
 }
 
+export async function deletePmProject(id: string): Promise<boolean> {
+  return del(`/api/pm/projects/${id}`);
+}
+
 export async function fetchCategories(): Promise<string[] | null> {
   const envelope = await get<{ data: string[] }>('/api/pm/categories');
   return envelope?.data ?? null;

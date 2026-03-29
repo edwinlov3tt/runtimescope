@@ -15,6 +15,7 @@ import { interceptErrors } from './interceptors/errors.js';
 import { interceptHttp } from './interceptors/http.js';
 import { startPerfMetrics } from './interceptors/perf-metrics.js';
 import { runtimeScopeMiddleware } from './interceptors/middleware.js';
+import { parseDsn } from './dsn.js';
 import type { DatabaseEvent, ServerSdkConfig, ServerRuntimeEvent } from './types.js';
 import type { MiddlewareOptions } from './interceptors/middleware.js';
 
@@ -44,6 +45,23 @@ class RuntimeScopeServer {
   }
 
   connect(config: ServerSdkConfig = {}): void {
+    // DSN resolution: env var → explicit config → individual fields
+    const dsnString = config.dsn ?? (typeof process !== 'undefined' ? process.env.RUNTIMESCOPE_DSN : undefined);
+    if (dsnString) {
+      try {
+        const parsed = parseDsn(dsnString);
+        config = {
+          ...config,
+          serverUrl: parsed.wsEndpoint,
+          projectId: parsed.projectId,
+          httpEndpoint: parsed.httpEndpoint + '/api/events',
+          ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),
+        };
+      } catch {
+        // Invalid DSN — continue with individual fields
+      }
+    }
+
     // Auto-read .runtimescope/config.json for projectId and appName if not explicitly set
     if (!config.projectId || !config.appName) {
       try {
@@ -361,3 +379,5 @@ export { runWithContext, getRequestContext, getSessionId } from './context.js';
 export { Sampler } from './sampler.js';
 export { HttpTransport } from './http-transport.js';
 export type { HttpTransportOptions } from './http-transport.js';
+export { parseDsn, buildDsn } from './dsn.js';
+export type { ParsedDsn } from './dsn.js';

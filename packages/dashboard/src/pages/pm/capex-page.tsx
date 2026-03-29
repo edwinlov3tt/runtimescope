@@ -486,7 +486,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
                   <Tooltip
                     contentStyle={CHART_TOOLTIP_STYLE}
                     labelStyle={CHART_TOOLTIP_LABEL_STYLE}
-                    formatter={(value: number) => [`$${value.toFixed(2)}`, '']}
+                    formatter={(value: number) => [`$${value.toFixed(2)}`, ''] as [string, string]}
                     separator=""
                   />
                   <Area

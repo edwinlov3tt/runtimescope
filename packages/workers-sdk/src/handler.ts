@@ -9,6 +9,7 @@ import { WorkersTransport } from './transport.js';
 import { Sampler } from './sampler.js';
 import { interceptConsole } from './interceptors/console.js';
 import { generateId } from './utils.js';
+import { parseDsn } from './dsn.js';
 
 // ============================================================
 // withRuntimeScope — wraps a Workers fetch handler
@@ -91,6 +92,21 @@ function _withRuntimeScope(
   handler: WorkersFetchHandler,
   config: WorkersConfig,
 ): WorkersFetchHandler {
+  // DSN resolution
+  if (config.dsn) {
+    try {
+      const parsed = parseDsn(config.dsn);
+      config = {
+        ...config,
+        httpEndpoint: parsed.httpEndpoint + '/api/events',
+        projectId: parsed.projectId,
+        ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),
+      };
+    } catch {
+      // Invalid DSN — continue with individual fields
+    }
+  }
+
   const transport = new WorkersTransport(config);
   const sampler = config.sampleRate !== undefined && config.sampleRate < 1
     ? new Sampler({ sampleRate: config.sampleRate })

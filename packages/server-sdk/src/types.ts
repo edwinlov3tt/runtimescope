@@ -112,6 +112,8 @@ export type ServerRuntimeEvent = DatabaseEvent | ConsoleEvent | NetworkEvent | P
 // --- Configuration ---
 
 export interface ServerSdkConfig {
+  /** DSN connection string (e.g., runtimescope://proj_abc123@localhost:9091/my-app) */
+  dsn?: string;
   serverUrl?: string;
   /** Alias for serverUrl — matches the browser SDK's config */
   endpoint?: string;

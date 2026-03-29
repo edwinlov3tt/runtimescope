@@ -337,6 +337,9 @@ export class ProjectDiscovery {
             await this.pmStore.upsertProject(updated);
             result.projectsUpdated = (result.projectsUpdated ?? 0) + 1;
           } else {
+            // Skip if this project was previously deleted (blocklist)
+            if (this.pmStore.isDeletedPath(sourcePath)) continue;
+
             // Resolve filesystem path from project dir
             const fsPath = projectDir;
 
@@ -506,6 +509,10 @@ export class ProjectDiscovery {
       await this.pmStore.upsertProject(updated);
       result.projectsUpdated = (result.projectsUpdated ?? 0) + 1;
     } else {
+      // Skip if this project was previously deleted (blocklist)
+      if (fsPath && this.pmStore.isDeletedPath(fsPath)) return;
+      if (this.pmStore.isDeletedPath(key)) return;
+
       const project: PmProject = {
         id,
         name,

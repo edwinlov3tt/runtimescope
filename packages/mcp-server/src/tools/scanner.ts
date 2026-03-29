@@ -56,24 +56,19 @@ export function registerScannerTools(
       if (!resolvedProjectId) {
         resolvedProjectId = projectManager ? getOrCreateProjectId(projectManager, app_name) : undefined;
       }
-      const projectIdLine = resolvedProjectId ? `\n    projectId: '${resolvedProjectId}',` : '';
+      const dsn = `runtimescope://${resolvedProjectId ?? 'proj_xxx'}@localhost:${HTTP_PORT}/${app_name}`;
       const scriptTagSnippet = `<!-- RuntimeScope — paste before </body> -->
 <script src="http://localhost:${HTTP_PORT}/runtimescope.js"></script>
 <script>
-  RuntimeScope.init({
-    appName: '${app_name}',${projectIdLine}
-    endpoint: 'ws://localhost:${COLLECTOR_PORT}',
-  });
+  RuntimeScope.init({ dsn: '${dsn}' });
 </script>`;
 
       const npmSnippet = `// npm install @runtimescope/sdk
 import { RuntimeScope } from '@runtimescope/sdk';
 
-RuntimeScope.init({
-  appName: '${app_name}',${projectIdLine}
-  endpoint: 'ws://localhost:${COLLECTOR_PORT}',
-});`;
+RuntimeScope.init({ dsn: '${dsn}' });`;
 
+      const workersDsn = `runtimescope://${resolvedProjectId ?? 'proj_xxx'}@localhost:${HTTP_PORT}/${app_name}`;
       const workersSnippet = `// npm install @runtimescope/workers-sdk
 import { withRuntimeScope, scopeD1, scopeKV, scopeR2, track, addBreadcrumb } from '@runtimescope/workers-sdk';
 
@@ -93,11 +88,8 @@ export default withRuntimeScope({
     return new Response('Hello!');
   },
 }, {
-  appName: '${app_name}',${projectIdLine}
-  httpEndpoint: 'http://localhost:${HTTP_PORT}/api/events',
-  // captureConsole: true,    // Capture console.log/warn/error (default: true)
-  // captureHeaders: false,   // Include request/response headers (default: false)
-  // sampleRate: 1.0,         // 0.0-1.0 probabilistic sampling (default: 1.0)
+  dsn: '${workersDsn}',
+  appName: '${app_name}',
 });`;
 
       // Determine which snippet to use
@@ -147,6 +139,7 @@ export default withRuntimeScope({
           ? `Workers SDK snippet for Cloudflare Worker "${app_name}". Captures requests, D1/KV/R2 operations, console, custom events, and breadcrumbs.`
           : `SDK snippet for ${framework} project "${app_name}". ${usesNpm ? 'Uses npm import.' : 'Uses <script> tag — no build system required.'}`,
         data: {
+          dsn,
           snippet: primarySnippet,
           placement: placementHints[framework] || placementHints.other,
           alternativeSnippet: isWorkers ? undefined : usesNpm ? scriptTagSnippet : npmSnippet,

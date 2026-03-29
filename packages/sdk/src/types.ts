@@ -192,6 +192,9 @@ export interface UserContext {
 }
 
 export interface RuntimeScopeConfig {
+  /** DSN connection string — replaces separate projectId + endpoint + appName fields.
+   *  Format: runtimescope://proj_abc123@localhost:9091/my-app */
+  dsn?: string;
   enabled?: boolean;
   serverUrl?: string;
   /** Alias for `serverUrl` — used by script-tag snippets */

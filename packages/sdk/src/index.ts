@@ -12,7 +12,7 @@ import { generateId, generateSessionId } from './utils/id.js';
 import { parseDsn } from './dsn.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, UIInteractionEvent, UserContext } from './types.js';
 
-const SDK_VERSION = '0.9.2';
+const SDK_VERSION = '0.9.3';
 
 // Save original console.debug BEFORE interceptors patch it.
 // debug-level messages are hidden by default in Chrome DevTools.

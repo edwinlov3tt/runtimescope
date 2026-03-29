@@ -83,7 +83,7 @@ From the README, extract:
 
 ---
 
-## Phase 4: Ensure Project Config
+## Phase 4: Ensure Project Config + DSN Migration
 
 Check if `.runtimescope/config.json` exists:
 
@@ -93,39 +93,75 @@ cat .runtimescope/config.json 2>/dev/null || echo "NOT_FOUND"
 
 ### If NOT found — scaffold it:
 
-1. Detect the framework (same as `/setup` Phase 1):
-```bash
-cat package.json 2>/dev/null | grep -E '"(next|react|vue|svelte|angular|nuxt|wrangler)"' | head -5
-ls wrangler.toml 2>/dev/null
+**Try `setup_project` first** (preferred):
+```
+setup_project({ project_dir: "<absolute path>" })
 ```
 
-2. Determine the app name from `package.json` name field or directory basename:
+**If `setup_project` unavailable**, call `get_sdk_snippet` with `project_dir` set to the current directory. This auto-creates `.runtimescope/config.json`.
+
+### If found — check for DSN:
+
+1. Read the config and check if it has a `dsn` field:
 ```bash
-cat package.json 2>/dev/null | grep '"name"' | head -1
-basename "$PWD"
+cat .runtimescope/config.json | grep '"dsn"' || echo "NO_DSN"
 ```
 
-3. Call `get_sdk_snippet` with `project_dir` set to the current working directory. This auto-creates `.runtimescope/config.json` with:
-   - A stable `projectId`
-   - Detected framework and SDK type
-   - Default capture settings (performance, renders, console, etc.)
+2. **If NO DSN** — this is an older config. Generate and add a DSN:
+```bash
+# Read existing projectId and appName
+PROJ_ID=$(cat .runtimescope/config.json | grep -o '"projectId":"[^"]*"' | cut -d'"' -f4)
+APP_NAME=$(cat .runtimescope/config.json | grep -o '"appName":"[^"]*"' | cut -d'"' -f4)
+DSN="runtimescope://${PROJ_ID}@localhost:9091/${APP_NAME}"
+echo "DSN: $DSN"
+```
 
-4. Check if the SDK init code already has `projectId`. If not, show the user what to add — just the `projectId: 'proj_xxx',` line.
+Add the `dsn` field to `.runtimescope/config.json` (after the projectId line).
 
-5. Check if global hooks are registered:
+3. **Migrate SDK init to use DSN**:
+
+Find existing SDK init calls:
+```bash
+grep -rn "RuntimeScope\.\(init\|connect\)" --include="*.ts" --include="*.tsx" --include="*.js" . 2>/dev/null | grep -v node_modules | grep -v dist/
+```
+
+Replace the old multi-field config:
+```typescript
+// OLD — replace this:
+RuntimeScope.init({
+  appName: 'my-app',
+  endpoint: 'ws://localhost:9090',
+  projectId: 'proj_xxx',
+});
+
+// NEW — with this:
+RuntimeScope.init({
+  dsn: 'runtimescope://proj_xxx@localhost:9091/my-app',
+});
+```
+
+For server SDK:
+```typescript
+// OLD:
+RuntimeScope.connect({
+  appName: 'my-api',
+  serverUrl: 'ws://localhost:9090',
+  projectId: 'proj_xxx',
+});
+
+// NEW:
+RuntimeScope.connect({
+  dsn: 'runtimescope://proj_xxx@localhost:9091/my-api',
+});
+// Or set RUNTIMESCOPE_DSN env var and call RuntimeScope.connect() with no args
+```
+
+4. Verify the DSN matches the config's projectId — they must be the same.
+
+5. Check hooks are registered:
 ```bash
 cat ~/.claude/settings.json 2>/dev/null | grep -c "9091" || echo "0"
 ```
-If hooks are not registered, offer to add them (same as `/setup` Phase 7).
-
-### If found — verify it:
-
-Use `get_project_config` to read it and check:
-- Does it have a `projectId`?
-- Are all installed SDKs listed in `sdks[]`?
-- Are capture settings up to date?
-
-If the SDK init code has a `projectId` that doesn't match the config, flag it.
 
 ---
 

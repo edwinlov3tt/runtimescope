@@ -56,10 +56,20 @@ mkdir -p .runtimescope
 
 Then write `.runtimescope/config.json` with this structure (fill in detected values):
 
+Generate the projectId and DSN:
+```bash
+PROJ_ID="proj_$(cat /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | head -c 12)"
+APP_NAME="<detected app name>"
+DSN="runtimescope://${PROJ_ID}@localhost:9091/${APP_NAME}"
+echo "ProjectId: $PROJ_ID"
+echo "DSN: $DSN"
+```
+
 ```json
 {
-  "projectId": "proj_<generate 12 random alphanumeric chars>",
+  "projectId": "proj_<generated>",
   "appName": "<detected app name>",
+  "dsn": "runtimescope://proj_<generated>@localhost:9091/<app name>",
   "sdks": [
     {
       "type": "<browser|server|workers>",
@@ -78,20 +88,29 @@ Then write `.runtimescope/config.json` with this structure (fill in detected val
 }
 ```
 
-Generate the projectId:
-```bash
-echo "proj_$(cat /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | head -c 12)"
-```
+### 2.5 Update SDK init to use DSN
 
-### 2.5 Add projectId to existing SDK init
-
-If the SDK is already installed but missing `projectId`, find the init call and add it:
-
+Find existing SDK init calls:
 ```bash
 grep -rn "RuntimeScope\.\(init\|connect\)" --include="*.ts" --include="*.tsx" --include="*.js" . 2>/dev/null | grep -v node_modules | grep -v dist/
 ```
 
-Add `projectId: '<the generated projectId>',` to the init config object.
+**If using old format** (separate appName/endpoint/projectId), replace with DSN:
+```typescript
+// Replace this:
+RuntimeScope.init({
+  appName: 'my-app',
+  endpoint: 'ws://localhost:9090',
+  projectId: 'proj_xxx',
+});
+
+// With this:
+RuntimeScope.init({
+  dsn: 'runtimescope://proj_xxx@localhost:9091/my-app',
+});
+```
+
+**If no SDK init found**, add one using the DSN from the config.
 
 ### 2.6 Add to .gitignore (only the sensitive parts)
 
@@ -106,8 +125,9 @@ grep -q "\.runtimescope/\.env" .gitignore 2>/dev/null || echo ".runtimescope/.en
 If `.runtimescope/config.json` exists, check for:
 
 1. **Has `projectId`?** — If missing, generate one and add it
-2. **Has `appName`?** — If missing, detect from package.json
-3. **Has `sdks` array?** — If missing, detect from codebase
+2. **Has `dsn`?** — If missing, generate from projectId + appName: `runtimescope://proj_xxx@localhost:9091/app-name`
+3. **Has `appName`?** — If missing, detect from package.json
+4. **Has `sdks` array?** — If missing, detect from codebase
 4. **Has `capture` object?** — If missing, add defaults
 5. **Does SDK init have matching `projectId`?** — If not, update the init call
 

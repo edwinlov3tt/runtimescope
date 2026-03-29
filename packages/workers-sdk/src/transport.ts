@@ -7,7 +7,7 @@ import { generateSessionId } from './utils.js';
 // Matches collector's POST /api/events endpoint.
 // ============================================================
 
-const SDK_VERSION = '0.9.2';
+const SDK_VERSION = '0.9.3';
 const DEFAULT_ENDPOINT = 'http://localhost:9091/api/events';
 
 export class WorkersTransport {

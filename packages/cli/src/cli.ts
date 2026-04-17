@@ -606,12 +606,13 @@ function printHelp() {
   log(`  ${BOLD}runtimescope${RESET} — runtime observability for web apps`);
   log('');
   log(`  ${BOLD}Commands:${RESET}`);
-  log(`    ${BOLD}init${RESET}      Set up RuntimeScope in your project (interactive)`);
-  log(`    ${BOLD}start${RESET}     Start the collector server in the foreground`);
-  log(`    ${BOLD}stop${RESET}      Stop any running collector on :6767/:6768`);
-  log(`    ${BOLD}status${RESET}    Show collector health and connected projects`);
-  log(`    ${BOLD}doctor${RESET}    Diagnose common problems and suggest fixes`);
-  log(`    ${DIM}(no args)${RESET} Start the collector (same as ${BOLD}start${RESET})`);
+  log(`    ${BOLD}init${RESET}          Set up RuntimeScope in your project (interactive)`);
+  log(`    ${BOLD}start${RESET}         Start the collector server in the foreground`);
+  log(`    ${BOLD}stop${RESET}          Stop any running collector on :6767/:6768`);
+  log(`    ${BOLD}status${RESET}        Show collector health and connected projects`);
+  log(`    ${BOLD}doctor${RESET}        Diagnose common problems and suggest fixes`);
+  log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/logs)`);
+  log(`    ${DIM}(no args)${RESET}     Start the collector (same as ${BOLD}start${RESET})`);
   log('');
   log(`  ${BOLD}Packages:${RESET}`);
   log(`    import { RuntimeScope } from '@runtimescope/sdk'          Browser SDK`);
@@ -639,6 +640,13 @@ switch (command) {
   case 'doctor':
     doctor().catch((e) => { err(e.message); process.exit(1); });
     break;
+  case 'service': {
+    // Lazy-load so the CLI stays fast for non-service commands
+    import('./service.js').then(({ serviceCommand }) =>
+      serviceCommand(process.argv[3]),
+    ).catch((e) => { err(e.message); process.exit(1); });
+    break;
+  }
   case 'help':
   case '--help':
   case '-h':

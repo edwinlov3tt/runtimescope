@@ -22,4 +22,11 @@ export default defineConfig([
     target: 'node20',
     banner: { js: '#!/usr/bin/env node' },
   },
+  // Service manager — split into its own entry so the CLI lazy-loads it
+  {
+    entry: { service: 'src/service.ts' },
+    format: ['esm'],
+    sourcemap: true,
+    target: 'node20',
+  },
 ]);

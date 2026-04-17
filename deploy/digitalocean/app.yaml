@@ -1,0 +1,51 @@
+# DigitalOcean App Platform spec for RuntimeScope Collector
+# Deploy: https://cloud.digitalocean.com/apps/new?repo=https://github.com/edwinlov3tt/runtimescope/tree/main
+#
+# Or via CLI:
+#   doctl apps create --spec deploy/digitalocean/app.yaml
+#
+# Pricing: $5/mo basic-xxs (512MB RAM, 1 vCPU shared) — sufficient for most teams
+#
+name: runtimescope-collector
+region: nyc
+services:
+  - name: collector
+    dockerfile_path: Dockerfile
+    source_dir: /
+    github:
+      repo: edwinlov3tt/runtimescope
+      branch: main
+      deploy_on_push: true
+    instance_count: 1
+    instance_size_slug: basic-xxs
+    http_port: 9091
+    # Internal WebSocket port — clients connect via HTTPS/WSS through the LB
+    internal_ports:
+      - 9090
+    health_check:
+      http_path: /api/health
+      initial_delay_seconds: 10
+      period_seconds: 15
+      timeout_seconds: 3
+      success_threshold: 1
+      failure_threshold: 3
+    envs:
+      - key: RUNTIMESCOPE_HOST
+        value: "0.0.0.0"
+      - key: RUNTIMESCOPE_PORT
+        value: "9090"
+      - key: RUNTIMESCOPE_HTTP_PORT
+        value: "9091"
+      - key: RUNTIMESCOPE_BUFFER_SIZE
+        value: "10000"
+      - key: RUNTIMESCOPE_RETENTION_DAYS
+        value: "30"
+      - key: RUNTIMESCOPE_AUTH_TOKEN
+        type: SECRET
+        # Set this in the DigitalOcean dashboard after first deploy:
+        # App Settings → App-Level Environment Variables
+        value: "CHANGE_ME_GENERATE_A_SECURE_TOKEN"
+    # Persistent volume for SQLite event storage (1 GB included in basic-xxs)
+    volumes:
+      - name: runtimescope-data
+        mount_path: /home/runtimescope/.runtimescope

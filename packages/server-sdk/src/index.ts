@@ -88,6 +88,19 @@ class RuntimeScopeServer {
       }
     }
 
+    // Auto-disable in production if no explicit endpoint configured
+    // If NODE_ENV is production and no DSN/serverUrl/endpoint was provided,
+    // the SDK is completely inert — no connection attempts, no monkey-patching
+    const hasExplicitEndpoint = !!(dsnString || config.serverUrl || config.endpoint || config.httpEndpoint);
+    if (!hasExplicitEndpoint) {
+      const nodeEnv = typeof process !== 'undefined' ? process.env.NODE_ENV : undefined;
+      const isLocalhost = true; // Server SDK defaults to localhost, so always "local" unless endpoint set
+      if (nodeEnv === 'production') {
+        // Production without explicit endpoint = silent no-op
+        return;
+      }
+    }
+
     this.config = config;
     this.sessionId = config.sessionId ?? generateSessionId();
 
@@ -127,6 +140,14 @@ class RuntimeScopeServer {
       });
 
       this.transport.connect();
+
+      // Warn if collector is unreachable after 10 seconds
+      const transport = this.transport;
+      setTimeout(() => {
+        if (transport && !(transport as any).connected) {
+          console.debug('[RuntimeScope] Could not connect to collector at %s — is it running?', serverUrl);
+        }
+      }, 10_000);
     }
 
     // Set up sampler if rate limiting or sampling is configured

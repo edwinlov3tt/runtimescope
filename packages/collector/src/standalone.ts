@@ -42,9 +42,27 @@ async function main() {
   const globalConfig = projectManager.getGlobalConfig();
 
   // 2. Security: auth, TLS, redaction, CORS
+  // RUNTIMESCOPE_AUTH_TOKEN env var provides a quick way to enable auth in Docker
+  // deployments without mounting a config file. Multiple tokens can be passed
+  // comma-separated. If set, it takes precedence over the config file.
+  const envAuthToken = process.env.RUNTIMESCOPE_AUTH_TOKEN;
+  const authFromEnv = envAuthToken
+    ? {
+        enabled: true,
+        apiKeys: envAuthToken
+          .split(',')
+          .map((t) => t.trim())
+          .filter(Boolean)
+          .map((key, i) => ({
+            key,
+            label: `env-token-${i + 1}`,
+            createdAt: Date.now(),
+          })),
+      }
+    : null;
   const authManager = new AuthManager({
-    enabled: globalConfig.auth?.enabled ?? false,
-    apiKeys: globalConfig.auth?.apiKeys ?? [],
+    enabled: authFromEnv?.enabled ?? globalConfig.auth?.enabled ?? false,
+    apiKeys: authFromEnv?.apiKeys ?? globalConfig.auth?.apiKeys ?? [],
   });
 
   const tlsConfig = resolveTlsConfig() ?? globalConfig.tls ?? undefined;
@@ -63,7 +81,9 @@ async function main() {
     ?? globalConfig.corsOrigins;
 
   if (authManager.isEnabled()) {
-    console.error(`[RuntimeScope] Auth enabled (${globalConfig.auth?.apiKeys?.length ?? 0} API keys)`);
+    const keyCount = (authFromEnv?.apiKeys?.length ?? globalConfig.auth?.apiKeys?.length ?? 0);
+    const source = authFromEnv ? 'env' : 'config';
+    console.error(`[RuntimeScope] Auth enabled (${keyCount} API key${keyCount === 1 ? '' : 's'} from ${source})`);
   }
   if (tlsConfig) {
     console.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);

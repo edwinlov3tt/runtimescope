@@ -1,0 +1,70 @@
+# Fly.io deployment for RuntimeScope Collector
+# Deploy: fly launch --copy-config deploy/fly/fly.toml
+#
+# Pricing: ~$3/mo shared-cpu-1x 256MB (can scale to 0 when idle)
+
+app = "runtimescope-collector"
+primary_region = "iad"  # Ashburn, VA — low latency to most US users
+
+[build]
+  dockerfile = "../../Dockerfile"
+
+[env]
+  RUNTIMESCOPE_HOST = "0.0.0.0"
+  RUNTIMESCOPE_PORT = "9090"
+  RUNTIMESCOPE_HTTP_PORT = "9091"
+  RUNTIMESCOPE_BUFFER_SIZE = "10000"
+  RUNTIMESCOPE_RETENTION_DAYS = "30"
+
+# HTTP API (REST + SDK bundle)
+[[services]]
+  internal_port = 9091
+  protocol = "tcp"
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 500
+
+  [[services.http_checks]]
+    interval = "15s"
+    timeout = "3s"
+    grace_period = "10s"
+    method = "get"
+    path = "/api/health"
+
+# WebSocket for browser/server SDK
+[[services]]
+  internal_port = 9090
+  protocol = "tcp"
+
+  [[services.ports]]
+    port = 9090
+    handlers = ["tls"]
+
+  [services.concurrency]
+    type = "connections"
+    hard_limit = 1000
+    soft_limit = 500
+
+[mounts]
+  source = "runtimescope_data"
+  destination = "/home/runtimescope/.runtimescope"
+
+[[vm]]
+  cpu_kind = "shared"
+  cpus = 1
+  memory_mb = 256

@@ -1,0 +1,31 @@
+# Render.com deployment spec for RuntimeScope Collector
+# Deploy: https://render.com/deploy?repo=https://github.com/edwinlov3tt/runtimescope
+#
+# Pricing: $7/mo starter plan (512MB RAM, 0.5 CPU)
+
+services:
+  - type: web
+    name: runtimescope-collector
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    region: oregon
+    branch: main
+    healthCheckPath: /api/health
+    envVars:
+      - key: RUNTIMESCOPE_HOST
+        value: "0.0.0.0"
+      - key: RUNTIMESCOPE_PORT
+        value: "9090"
+      - key: RUNTIMESCOPE_HTTP_PORT
+        value: "9091"
+      - key: RUNTIMESCOPE_BUFFER_SIZE
+        value: "10000"
+      - key: RUNTIMESCOPE_RETENTION_DAYS
+        value: "30"
+      - key: RUNTIMESCOPE_AUTH_TOKEN
+        generateValue: true  # Render auto-generates a secure random token
+    disk:
+      name: runtimescope-data
+      mountPath: /home/runtimescope/.runtimescope
+      sizeGB: 1

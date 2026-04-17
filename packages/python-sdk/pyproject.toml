@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "runtimescope"
+version = "0.9.3"
+description = "RuntimeScope SDK for Python — runtime profiling and telemetry for Django, Flask, FastAPI, and any Python app"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+authors = [
+    { name = "RuntimeScope" },
+]
+keywords = ["runtime", "profiler", "telemetry", "observability", "django", "flask", "fastapi", "sentry-alternative"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Software Development :: Debuggers",
+    "Topic :: System :: Monitoring",
+]
+# Zero required deps — everything is in stdlib. Integrations are opt-in.
+dependencies = []
+
+[project.optional-dependencies]
+django = ["django>=3.2"]
+flask = ["flask>=2.0"]
+fastapi = ["fastapi>=0.100", "starlette>=0.27"]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.21",
+    "pytest-cov>=4.0",
+    "ruff>=0.1",
+    "mypy>=1.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/edwinlov3tt/runtimescope"
+Documentation = "https://github.com/edwinlov3tt/runtimescope#readme"
+Repository = "https://github.com/edwinlov3tt/runtimescope"
+Issues = "https://github.com/edwinlov3tt/runtimescope/issues"
+
+[tool.setuptools.packages.find]
+include = ["runtimescope*"]
+exclude = ["tests*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
+[tool.ruff]
+line-length = 100
+target-version = "py38"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "SIM"]
+ignore = ["E501"]

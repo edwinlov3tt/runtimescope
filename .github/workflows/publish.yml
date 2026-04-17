@@ -18,7 +18,7 @@ jobs:
 
       - run: npm ci
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
-      - run: npm run build -w packages/nextjs
+      - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite
       - run: npm test
 
       # Publish in dependency order (|| true skips already-published versions)
@@ -35,6 +35,18 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - run: npm publish -w packages/nextjs --access public || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish -w packages/remix --access public || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish -w packages/sveltekit --access public || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - run: npm publish -w packages/vite --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

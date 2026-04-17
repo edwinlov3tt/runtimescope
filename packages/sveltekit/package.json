@@ -1,0 +1,47 @@
+{
+  "name": "@runtimescope/sveltekit",
+  "version": "0.9.3",
+  "description": "RuntimeScope for SvelteKit — one install, works in hooks.client.ts and hooks.server.ts",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
+    },
+    "./client": {
+      "types": "./dist/client/index.d.ts",
+      "import": "./dist/client/index.js",
+      "require": "./dist/client/index.cjs"
+    },
+    "./server": {
+      "types": "./dist/server/index.d.ts",
+      "import": "./dist/server/index.js",
+      "require": "./dist/server/index.cjs"
+    }
+  },
+  "files": ["dist", "README.md"],
+  "keywords": ["sveltekit", "svelte", "runtime", "profiler", "telemetry", "observability"],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist"
+  },
+  "dependencies": {
+    "@runtimescope/sdk": "0.9.3",
+    "@runtimescope/server-sdk": "0.9.3"
+  },
+  "peerDependencies": {
+    "@sveltejs/kit": ">=1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@sveltejs/kit": { "optional": true }
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
+}

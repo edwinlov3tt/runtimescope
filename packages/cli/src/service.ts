@@ -68,6 +68,90 @@ function resolveCollectorPath(): string {
   );
 }
 
+// ---------- Install-method + version detection ----------
+
+type InstallMethod = 'global-npm' | 'local-node-modules' | 'monorepo' | 'unknown';
+
+function detectInstallMethod(): InstallMethod {
+  const cliPath = new URL(import.meta.url).pathname;
+  // Monorepo: path contains `/packages/cli/` (we're running the in-repo build)
+  if (cliPath.includes('/packages/cli/')) return 'monorepo';
+  // Global npm: path contains `/node_modules/runtimescope/` AND `/npm/` or similar global location
+  if (cliPath.includes('/lib/node_modules/runtimescope/')) return 'global-npm';
+  if (cliPath.includes('/.nvm/') && cliPath.includes('/node_modules/runtimescope/')) return 'global-npm';
+  // Local node_modules
+  if (cliPath.includes('/node_modules/runtimescope/')) return 'local-node-modules';
+  return 'unknown';
+}
+
+function getInstalledCliVersion(): string | null {
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require('runtimescope/package.json') as { version?: string };
+    return pkg.version ?? null;
+  } catch {
+    // Monorepo — read from source
+    try {
+      const cliPath = new URL(import.meta.url).pathname;
+      // cli/dist/service.js → walk up to cli/package.json
+      const packageJson = resolve(cliPath, '..', '..', 'package.json');
+      if (existsSync(packageJson)) {
+        const pkg = JSON.parse(readFileSync(packageJson, 'utf-8')) as { version?: string };
+        return pkg.version ?? null;
+      }
+    } catch {
+      /* give up */
+    }
+    return null;
+  }
+}
+
+async function fetchLatestNpmVersion(): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 3000);
+    const res = await fetch('https://registry.npmjs.org/runtimescope/latest', {
+      signal: controller.signal,
+      headers: { Accept: 'application/json' },
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { version?: string };
+    return data.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+async function fetchRunningCollectorVersion(port: number): Promise<string | null> {
+  try {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 500);
+    const res = await fetch(`http://127.0.0.1:${port}/api/health`, {
+      signal: controller.signal,
+    });
+    clearTimeout(timer);
+    if (!res.ok) return null;
+    const data = (await res.json()) as { version?: string };
+    return data.version ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compare semver-like strings. -1 if a<b, 0 if equal, 1 if a>b. */
+function compareVersions(a: string, b: string): number {
+  const pa = a.split('.').map((n) => parseInt(n, 10) || 0);
+  const pb = b.split('.').map((n) => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const x = pa[i] ?? 0;
+    const y = pb[i] ?? 0;
+    if (x < y) return -1;
+    if (x > y) return 1;
+  }
+  return 0;
+}
+
 function ensureLogsDir(): void {
   if (!existsSync(LOGS_DIR)) mkdirSync(LOGS_DIR, { recursive: true });
 }
@@ -174,7 +258,7 @@ function uninstallLaunchd(): void {
   success('Service uninstalled');
 }
 
-function statusLaunchd(): void {
+async function statusLaunchd(): Promise<void> {
   if (!existsSync(LAUNCHD_PLIST)) {
     info('Service not installed. Run: runtimescope service install');
     return;
@@ -195,6 +279,8 @@ function statusLaunchd(): void {
     }
     info(`Plist: ${LAUNCHD_PLIST}`);
     info(`Logs:  ${LOGS_DIR}`);
+
+    await printVersionInfo();
   } catch {
     warn('Service installed but launchctl could not query it');
   }
@@ -279,7 +365,7 @@ function uninstallSystemd(): void {
   success('Service uninstalled');
 }
 
-function statusSystemd(): void {
+async function statusSystemd(): Promise<void> {
   if (!existsSync(SYSTEMD_UNIT)) {
     info('Service not installed. Run: runtimescope service install');
     return;
@@ -300,6 +386,8 @@ function statusSystemd(): void {
   }
   info(`Unit file: ${SYSTEMD_UNIT}`);
   info('Logs: journalctl --user -u runtimescope -f');
+
+  await printVersionInfo();
 }
 
 function restartSystemd(): void {
@@ -309,6 +397,107 @@ function restartSystemd(): void {
   }
   execFileSync('systemctl', ['--user', 'restart', 'runtimescope.service']);
   success('Service restarted');
+}
+
+// ---------- Version info + update ----------
+
+async function printVersionInfo(): Promise<void> {
+  const installed = getInstalledCliVersion();
+  const runningCollector = await fetchRunningCollectorVersion(6768);
+  const latest = await fetchLatestNpmVersion();
+
+  if (installed) info(`CLI version: ${installed}`);
+  if (runningCollector) info(`Running collector version: ${runningCollector}`);
+  if (installed && latest) {
+    const cmp = compareVersions(installed, latest);
+    if (cmp < 0) {
+      warn(`Newer version available: ${latest} (you have ${installed})`);
+      info(`  Run: ${CYAN}runtimescope service update${RESET}`);
+    }
+  }
+}
+
+async function updateService(): Promise<void> {
+  const os = platform();
+  if (os !== 'darwin' && os !== 'linux') {
+    err(`Platform '${os}' not supported.`);
+    return;
+  }
+
+  log('');
+  log(`  ${BOLD}Updating RuntimeScope service…${RESET}`);
+  log('');
+
+  const installed = getInstalledCliVersion();
+  const latest = await fetchLatestNpmVersion();
+  const installMethod = detectInstallMethod();
+
+  info(`Installed CLI: ${installed ?? 'unknown'}`);
+  info(`Latest on npm: ${latest ?? 'unknown (offline?)'}`);
+  info(`Install method: ${installMethod}`);
+  log('');
+
+  if (installed && latest && compareVersions(installed, latest) >= 0) {
+    success('Already running the latest version.');
+    log('');
+    info('Restarting the service anyway to reload any local changes…');
+    if (os === 'darwin') restartLaunchd();
+    else restartSystemd();
+    return;
+  }
+
+  // Update the package
+  switch (installMethod) {
+    case 'global-npm': {
+      info('Running npm install -g runtimescope@latest…');
+      try {
+        execFileSync('npm', ['install', '-g', 'runtimescope@latest'], { stdio: 'inherit' });
+        success('npm package updated.');
+      } catch {
+        err('npm install failed. Try manually: npm install -g runtimescope@latest');
+        return;
+      }
+      break;
+    }
+    case 'local-node-modules': {
+      info('Running npm install runtimescope@latest in this project…');
+      try {
+        execFileSync('npm', ['install', 'runtimescope@latest'], { stdio: 'inherit' });
+        success('npm package updated.');
+      } catch {
+        err('npm install failed. Try manually: npm install runtimescope@latest');
+        return;
+      }
+      break;
+    }
+    case 'monorepo': {
+      warn('Running from a monorepo — no package to update via npm.');
+      info('Pull the latest changes and rebuild:');
+      info('  git pull && npm install && npm run build -w packages/collector -w packages/cli');
+      info('Then re-run this command to regenerate the service plist and restart.');
+      break;
+    }
+    case 'unknown': {
+      warn('Could not detect install method — skipping package update.');
+      break;
+    }
+  }
+
+  // Regenerate plist/unit (paths may have changed when Node version changed etc.)
+  info('Regenerating service configuration with current paths…');
+  if (os === 'darwin') installLaunchd();
+  else installSystemd();
+
+  // Already restarted as part of install, but double-check health
+  log('');
+  const port = 6768;
+  const runningVersion = await fetchRunningCollectorVersion(port);
+  if (runningVersion) {
+    success(`Collector is up — version ${runningVersion}`);
+  } else {
+    warn('Collector not responding yet. Give it a few seconds, then run `runtimescope service status`.');
+  }
+  log('');
 }
 
 // ---------- Logs ----------
@@ -394,8 +583,8 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       log('');
       log(`  ${BOLD}RuntimeScope Service Status${RESET}`);
       log('');
-      if (os === 'darwin') statusLaunchd();
-      else statusSystemd();
+      if (os === 'darwin') await statusLaunchd();
+      else await statusSystemd();
       log('');
       break;
     }
@@ -404,6 +593,10 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       if (os === 'darwin') restartLaunchd();
       else restartSystemd();
       log('');
+      break;
+    }
+    case 'update': {
+      await updateService();
       break;
     }
     case 'logs': {
@@ -424,7 +617,8 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       log(`  ${BOLD}Subcommands:${RESET}`);
       log(`    ${BOLD}install${RESET}     Install as a background service (auto-start on login)`);
       log(`    ${BOLD}uninstall${RESET}   Remove the background service`);
-      log(`    ${BOLD}status${RESET}      Show current service status`);
+      log(`    ${BOLD}status${RESET}      Show current service status (+ version check)`);
+      log(`    ${BOLD}update${RESET}      Update the collector to the latest version and restart`);
       log(`    ${BOLD}restart${RESET}     Restart the service`);
       log(`    ${BOLD}logs${RESET}        Show recent logs (last 50 lines)`);
       log('');
@@ -435,7 +629,7 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
     }
     default: {
       err(`Unknown subcommand: ${subcmd}`);
-      info('Valid: install, uninstall, status, restart, logs');
+      info('Valid: install, uninstall, status, update, restart, logs');
       process.exit(1);
     }
   }

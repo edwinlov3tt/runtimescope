@@ -22,6 +22,20 @@ import { createPmRouter } from './pm/pm-routes.js';
 // Uses Node.js built-in http module (no framework deps)
 // ============================================================
 
+// Collector version — loaded from the package.json sibling to dist/.
+// Used by /api/health so clients can detect out-of-date collectors.
+const COLLECTOR_VERSION = (() => {
+  try {
+    const here = dirname(fileURLToPath(import.meta.url));
+    // dist/http-server.js lives in dist/; package.json is one level up
+    const pkgJson = readFileSync(resolve(here, '..', 'package.json'), 'utf-8');
+    const pkg = JSON.parse(pkgJson) as { version?: string };
+    return pkg.version ?? 'unknown';
+  } catch {
+    return 'unknown';
+  }
+})();
+
 export interface HttpServerOptions {
   port?: number;
   host?: string;
@@ -90,6 +104,7 @@ export class HttpServer {
     this.routes.set('GET /api/health', (_req, res) => {
       this.json(res, {
         status: 'ok',
+        version: COLLECTOR_VERSION,
         timestamp: Date.now(),
         uptime: Math.floor((Date.now() - this.startedAt) / 1000),
         sessions: this.store.getSessionInfo().filter(s => s.isConnected).length,

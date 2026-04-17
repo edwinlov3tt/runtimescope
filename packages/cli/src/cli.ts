@@ -460,10 +460,11 @@ async function status() {
     return;
   }
 
-  let health: { status?: string; uptime?: number; sessions?: number; authEnabled?: boolean } = {};
+  let health: { status?: string; version?: string; uptime?: number; sessions?: number; authEnabled?: boolean } = {};
   try { health = JSON.parse(healthJson); } catch { /* non-JSON — still running */ }
 
   success(`Collector running — status: ${health.status ?? 'unknown'}`);
+  if (health.version) info(`Version: ${health.version}`);
   info(`Uptime: ${health.uptime ?? 0}s`);
   info(`Live sessions: ${health.sessions ?? 0}`);
   info(`Auth: ${health.authEnabled ? 'enabled' : 'disabled'}`);

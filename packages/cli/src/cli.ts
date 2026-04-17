@@ -175,8 +175,8 @@ function deriveAppName(cwd: string): string {
 // ── Collector management ─────────────────────────────────────
 
 function isCollectorRunning(): boolean {
-  const result = run('curl -sf http://127.0.0.1:9092 2>&1') ??
-                 run('curl -sf http://127.0.0.1:9093/api/health 2>&1');
+  const result = run('curl -sf http://127.0.0.1:9090 2>&1') ??
+                 run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
   return result !== null;
 }
 
@@ -317,8 +317,8 @@ async function init() {
   } else {
     const started = startCollector();
     if (started) {
-      success('Collector started on ws://localhost:9092');
-      info('Dashboard at http://localhost:9093');
+      success('Collector started on ws://localhost:9090');
+      info('Dashboard at http://localhost:9091');
     } else {
       warn('Could not start collector automatically');
       info('Run manually: npx runtimescope start');
@@ -410,8 +410,8 @@ async function init() {
   log('');
   log(`  ${GREEN}${BOLD}Done!${RESET} RuntimeScope is ready.`);
   log('');
-  info('Collector:  ws://localhost:9092');
-  info('Dashboard:  http://localhost:9093');
+  info('Collector:  ws://localhost:9090');
+  info('Dashboard:  http://localhost:9091');
   info('MCP tools:  46 tools available in Claude Code');
   log('');
 }
@@ -423,7 +423,7 @@ async function start() {
 
   if (isCollectorRunning()) {
     success('Collector is already running');
-    info('Dashboard: http://localhost:9093');
+    info('Dashboard: http://localhost:9091');
     return;
   }
 
@@ -447,18 +447,175 @@ async function start() {
   child.on('exit', (code) => process.exit(code ?? 0));
 }
 
+async function status() {
+  log('');
+  log(`  ${BOLD}RuntimeScope Status${RESET}`);
+  log('');
+
+  const healthJson = run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
+  if (!healthJson) {
+    err('Collector is NOT running');
+    info('Start with: npx runtimescope start');
+    log('');
+    return;
+  }
+
+  let health: { status?: string; uptime?: number; sessions?: number; authEnabled?: boolean } = {};
+  try { health = JSON.parse(healthJson); } catch { /* non-JSON — still running */ }
+
+  success(`Collector running — status: ${health.status ?? 'unknown'}`);
+  info(`Uptime: ${health.uptime ?? 0}s`);
+  info(`Live sessions: ${health.sessions ?? 0}`);
+  info(`Auth: ${health.authEnabled ? 'enabled' : 'disabled'}`);
+  info(`Ports: ws://localhost:9090  •  http://localhost:9091`);
+
+  const projJson = run('curl -sf http://127.0.0.1:9091/api/projects 2>&1');
+  if (projJson) {
+    try {
+      const data = JSON.parse(projJson) as { data: Array<{ appName: string; sessions: string[]; isConnected: boolean; eventCount: number; projectId?: string }> };
+      const connected = data.data.filter((p) => p.isConnected);
+      if (connected.length > 0) {
+        log('');
+        log(`  ${BOLD}Connected projects:${RESET}`);
+        for (const p of connected) {
+          log(`  ${GREEN}●${RESET} ${p.appName.padEnd(30)} ${DIM}events=${p.eventCount}  projectId=${p.projectId ?? 'none'}${RESET}`);
+        }
+      } else {
+        log('');
+        info('No SDK connections yet. Start your app with a DSN configured.');
+      }
+    } catch { /* ignore */ }
+  }
+
+  log('');
+}
+
+async function stop() {
+  log('');
+  log(`  ${BOLD}Stopping RuntimeScope Collector${RESET}`);
+  log('');
+
+  if (!isCollectorRunning()) {
+    info('Collector is not running');
+    return;
+  }
+
+  let killed = 0;
+  for (const port of [9090, 9091]) {
+    try {
+      // execFileSync with explicit args — no shell, no injection
+      const pidList = execFileSync('lsof', ['-ti', `:${port}`], { encoding: 'utf-8' }).trim();
+      for (const pid of pidList.split('\n').filter(Boolean)) {
+        try {
+          const pidNum = parseInt(pid, 10);
+          if (Number.isFinite(pidNum)) {
+            process.kill(pidNum);
+            killed++;
+          }
+        } catch { /* already gone */ }
+      }
+    } catch {
+      // lsof returns non-zero when port is free — that's expected
+    }
+  }
+
+  if (killed > 0) {
+    success(`Stopped ${killed} collector process${killed === 1 ? '' : 'es'}`);
+  } else {
+    warn('Could not find a running collector process to stop');
+  }
+  log('');
+}
+
+async function doctor() {
+  log('');
+  log(`  ${BOLD}RuntimeScope Doctor${RESET}`);
+  log('');
+
+  const checks: Array<{ label: string; ok: boolean; detail?: string }> = [];
+
+  const nodeVersion = process.version;
+  const nodeMajor = parseInt(nodeVersion.slice(1).split('.')[0] ?? '0', 10);
+  checks.push({
+    label: `Node.js ${nodeVersion}`,
+    ok: nodeMajor >= 18,
+    detail: nodeMajor < 18 ? 'Requires Node 18+' : undefined,
+  });
+
+  const healthJson = run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
+  checks.push({
+    label: 'Collector on :9091',
+    ok: healthJson !== null,
+    detail: healthJson === null ? 'Not running — start with `npx runtimescope start`' : undefined,
+  });
+
+  const wsListen = run('lsof -ti :9090 2>/dev/null');
+  checks.push({
+    label: 'WebSocket on :9090',
+    ok: wsListen !== null && wsListen !== '',
+    detail: wsListen === null || wsListen === '' ? 'Not listening — collector may be stopped' : undefined,
+  });
+
+  const collectorPids = run('lsof -ti :9091 2>/dev/null')?.split('\n').filter(Boolean) ?? [];
+  checks.push({
+    label: `Port :9091 owned by ${collectorPids.length} process${collectorPids.length === 1 ? '' : 'es'}`,
+    ok: collectorPids.length <= 1,
+    detail: collectorPids.length > 1 ? 'Multiple processes fighting for :9091 — `npx runtimescope stop` and restart' : undefined,
+  });
+
+  const mcpRegistered = isMcpRegistered();
+  checks.push({
+    label: 'MCP server registered with Claude Code',
+    ok: mcpRegistered,
+    detail: !mcpRegistered ? 'Run `claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server`' : undefined,
+  });
+
+  const localConfigPath = join(process.cwd(), '.runtimescope', 'config.json');
+  const hasLocalConfig = existsSync(localConfigPath);
+  checks.push({
+    label: `.runtimescope/config.json in ${basename(process.cwd())}`,
+    ok: hasLocalConfig,
+    detail: !hasLocalConfig ? 'Run `npx runtimescope init` to scaffold' : undefined,
+  });
+
+  const dsn = process.env.RUNTIMESCOPE_DSN;
+  checks.push({
+    label: 'RUNTIMESCOPE_DSN env var',
+    ok: !!dsn,
+    detail: !dsn ? 'Not required for dev, but needed in production' : undefined,
+  });
+
+  for (const check of checks) {
+    if (check.ok) success(check.label);
+    else err(check.label);
+    if (check.detail) info(`  ${check.detail}`);
+  }
+
+  const failures = checks.filter((c) => !c.ok).length;
+  log('');
+  if (failures === 0) {
+    log(`  ${GREEN}${BOLD}All ${checks.length} checks passed.${RESET}`);
+  } else {
+    log(`  ${YELLOW}${failures} of ${checks.length} checks need attention.${RESET}`);
+  }
+  log('');
+}
+
 function printHelp() {
   log('');
   log(`  ${BOLD}runtimescope${RESET} — runtime observability for web apps`);
   log('');
-  log(`  ${BOLD}Usage:${RESET}`);
-  log(`    npx runtimescope init     Set up RuntimeScope in your project`);
-  log(`    npx runtimescope start    Start the collector server`);
-  log(`    npx runtimescope          Start the collector (default)`);
+  log(`  ${BOLD}Commands:${RESET}`);
+  log(`    ${BOLD}init${RESET}      Set up RuntimeScope in your project (interactive)`);
+  log(`    ${BOLD}start${RESET}     Start the collector server in the foreground`);
+  log(`    ${BOLD}stop${RESET}      Stop any running collector on :9090/:9091`);
+  log(`    ${BOLD}status${RESET}    Show collector health and connected projects`);
+  log(`    ${BOLD}doctor${RESET}    Diagnose common problems and suggest fixes`);
+  log(`    ${DIM}(no args)${RESET} Start the collector (same as ${BOLD}start${RESET})`);
   log('');
   log(`  ${BOLD}Packages:${RESET}`);
-  log(`    import { RuntimeScope } from 'runtimescope'          Browser SDK`);
-  log(`    import { RuntimeScope } from 'runtimescope/server'   Server SDK`);
+  log(`    import { RuntimeScope } from '@runtimescope/sdk'          Browser SDK`);
+  log(`    import { RuntimeScope } from '@runtimescope/server-sdk'   Server SDK`);
   log('');
 }
 
@@ -472,6 +629,15 @@ switch (command) {
     break;
   case 'start':
     start().catch((e) => { err(e.message); process.exit(1); });
+    break;
+  case 'stop':
+    stop().catch((e) => { err(e.message); process.exit(1); });
+    break;
+  case 'status':
+    status().catch((e) => { err(e.message); process.exit(1); });
+    break;
+  case 'doctor':
+    doctor().catch((e) => { err(e.message); process.exit(1); });
     break;
   case 'help':
   case '--help':

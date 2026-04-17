@@ -30,7 +30,10 @@ export interface RuntimeScopeContext {
 let _contextStorage: { run: <T>(ctx: RuntimeScopeContext, fn: () => T) => T; getStore: () => RuntimeScopeContext | undefined } | null = null;
 
 try {
-  const { AsyncLocalStorage } = require('node:async_hooks');
+  // eslint-disable-next-line @typescript-eslint/no-require-imports
+  const req: (id: string) => unknown = (globalThis as Record<string, unknown>).require as never
+    ?? (Function('m', 'return require(m)') as (id: string) => unknown);
+  const { AsyncLocalStorage } = req('node:async_hooks') as { AsyncLocalStorage: new <T>() => { run: <R>(ctx: T, fn: () => R) => R; getStore: () => T | undefined } };
   _contextStorage = new AsyncLocalStorage<RuntimeScopeContext>();
 } catch {
   // Fallback: simple global context (safe for single-request-at-a-time dev mode)
@@ -161,7 +164,7 @@ function _withRuntimeScope(
         emit,
       };
 
-      return _contextStorage.run(rsContext, async () => {
+      return _contextStorage!.run(rsContext, async () => {
         try {
           const response = await handler.fetch(request, env, ctx);
           const duration = Date.now() - start;

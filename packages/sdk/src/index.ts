@@ -177,6 +177,29 @@ export class RuntimeScope {
     this.transport.connect();
     _log(`[RuntimeScope] SDK v${SDK_VERSION} initializing — app: ${resolved.appName}, server: ${resolved.serverUrl}`);
 
+    // If the transport isn't connected within 10s, emit a visible warning so
+    // Claude Code (and humans) see the problem. We use console.warn once —
+    // not the patched console (that routes to RuntimeScope itself, which is
+    // pointless here) — so the message appears in the user's terminal /
+    // browser DevTools.
+    const originalWarn = getOrSaveOriginals().consoleMethods.warn;
+    const warnTransportRef = this.transport;
+    const warnServerUrl = resolved.serverUrl;
+    setTimeout(() => {
+      // Only warn if init wasn't replaced (user didn't disconnect) AND the
+      // transport still hasn't connected. `isConnected()` is a cheap check.
+      if (this.transport !== warnTransportRef) return;
+      if (warnTransportRef.isConnected?.()) return;
+      const isLocalUrl = /localhost|127\.0\.0\.1/.test(warnServerUrl);
+      const fix = isLocalUrl
+        ? 'Run `npx runtimescope start` in a terminal.'
+        : `Check that ${warnServerUrl} is reachable and the collector is running.`;
+      originalWarn(
+        `[RuntimeScope] Couldn't connect to ${warnServerUrl} after 10s. No events are being captured.`,
+        `\n  Fix: ${fix}`,
+      );
+    }, 10_000);
+
     const emit = (event: RuntimeEvent) => {
       // Session, custom, and UI events always pass through (never sampled out)
       if (event.eventType !== 'session' && event.eventType !== 'custom' && event.eventType !== 'ui') {

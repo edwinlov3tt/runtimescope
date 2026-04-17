@@ -26,6 +26,11 @@ export class Transport {
   private connected = false;
   private stopped = false;
   private config: TransportConfig;
+
+  /** True when the WebSocket handshake has completed and we can send events. */
+  isConnected(): boolean {
+    return this.connected;
+  }
   private commandHandler: ((cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => void) | null = null;
   private hasEverConnected = false;
   private connectionWarningTimer: ReturnType<typeof setTimeout> | null = null;

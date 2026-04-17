@@ -1,65 +1,78 @@
 # ============================================================
 # RuntimeScope Standalone Collector
-# Multi-stage build for better-sqlite3 native compilation
+# Multi-stage build — optimized for small image size
 # ============================================================
 
-# Stage 1: Build
-FROM node:20-slim AS builder
+# ---------- Stage 1: Build native modules + TypeScript ----------
+FROM node:20-alpine AS builder
 
-RUN apt-get update && apt-get install -y \
-    python3 \
-    make \
-    g++ \
-  && rm -rf /var/lib/apt/lists/*
+# better-sqlite3 needs these to compile its native addon
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# Copy workspace root package files
+# Copy workspace root files
 COPY package.json package-lock.json ./
 
-# Copy only the packages needed for the standalone collector
+# Copy only the workspace packages needed for the standalone collector
 COPY packages/collector/package.json packages/collector/
 COPY packages/sdk/package.json packages/sdk/
 
-# Install dependencies (builds better-sqlite3 native addon)
+# Install ALL dependencies (including dev) to build
 RUN npm ci --workspace=packages/collector --workspace=packages/sdk
 
-# Copy source code
+# Copy source
 COPY tsconfig.base.json ./
 COPY packages/collector/ packages/collector/
 COPY packages/sdk/ packages/sdk/
 
-# Build the collector (includes standalone.ts entry point)
-RUN npm run build -w packages/collector
-# Build the SDK (needed for serving /runtimescope.js)
-RUN npm run build -w packages/sdk
+# Build both packages
+RUN npm run build -w packages/collector \
+ && npm run build -w packages/sdk
 
-# Stage 2: Runtime (non-root)
-FROM node:20-slim
+# ---------- Stage 2: Prune to production dependencies only ----------
+FROM node:20-alpine AS deps
 
-RUN useradd -r -m -s /bin/false runtimescope
+RUN apk add --no-cache python3 make g++
 
 WORKDIR /app
 
-# Copy built artifacts and dependencies
-COPY --from=builder /app/packages/collector/dist/ packages/collector/dist/
-COPY --from=builder /app/packages/collector/package.json packages/collector/
-COPY --from=builder /app/packages/sdk/dist/ packages/sdk/dist/
-COPY --from=builder /app/packages/sdk/package.json packages/sdk/
-COPY --from=builder /app/node_modules/ node_modules/
-COPY --from=builder /app/package.json ./
+COPY package.json package-lock.json ./
+COPY packages/collector/package.json packages/collector/
+COPY packages/sdk/package.json packages/sdk/
 
-# Create data directory owned by non-root user
-RUN mkdir -p /home/runtimescope/.runtimescope && \
-    chown -R runtimescope:runtimescope /home/runtimescope/.runtimescope
+# Production deps only — drops typescript, tsup, esbuild, rollup, @types, vitest, etc.
+RUN npm ci --workspace=packages/collector --workspace=packages/sdk --omit=dev \
+ && npm cache clean --force
+
+# ---------- Stage 3: Minimal runtime ----------
+FROM node:20-alpine
+
+# Non-root user
+RUN addgroup -S runtimescope && adduser -S runtimescope -G runtimescope
+
+WORKDIR /app
+
+# Built JS + production-only deps (no TypeScript, no build tools)
+COPY --from=builder  /app/packages/collector/dist/     packages/collector/dist/
+COPY --from=builder  /app/packages/collector/package.json packages/collector/
+COPY --from=builder  /app/packages/sdk/dist/           packages/sdk/dist/
+COPY --from=builder  /app/packages/sdk/package.json    packages/sdk/
+COPY --from=deps     /app/node_modules/                node_modules/
+COPY --from=deps     /app/package.json                 ./
+
+# Persistent data dir owned by non-root user
+RUN mkdir -p /home/runtimescope/.runtimescope \
+ && chown -R runtimescope:runtimescope /home/runtimescope/.runtimescope /app
 
 USER runtimescope
 
-# Default environment — bind to all interfaces for Docker networking
-ENV RUNTIMESCOPE_HOST=0.0.0.0
-ENV RUNTIMESCOPE_PORT=9090
-ENV RUNTIMESCOPE_HTTP_PORT=9091
-ENV HOME=/home/runtimescope
+# Bind to all interfaces for Docker networking
+ENV RUNTIMESCOPE_HOST=0.0.0.0 \
+    RUNTIMESCOPE_PORT=9090 \
+    RUNTIMESCOPE_HTTP_PORT=9091 \
+    HOME=/home/runtimescope \
+    NODE_ENV=production
 
 EXPOSE 9090 9091
 

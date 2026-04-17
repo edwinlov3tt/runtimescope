@@ -11,14 +11,14 @@ primary_region = "iad"  # Ashburn, VA — low latency to most US users
 
 [env]
   RUNTIMESCOPE_HOST = "0.0.0.0"
-  RUNTIMESCOPE_PORT = "9090"
-  RUNTIMESCOPE_HTTP_PORT = "9091"
+  RUNTIMESCOPE_PORT = "6767"
+  RUNTIMESCOPE_HTTP_PORT = "6768"
   RUNTIMESCOPE_BUFFER_SIZE = "10000"
   RUNTIMESCOPE_RETENTION_DAYS = "30"
 
 # HTTP API (REST + SDK bundle)
 [[services]]
-  internal_port = 9091
+  internal_port = 6768
   protocol = "tcp"
   auto_stop_machines = "stop"
   auto_start_machines = true
@@ -48,11 +48,11 @@ primary_region = "iad"  # Ashburn, VA — low latency to most US users
 
 # WebSocket for browser/server SDK
 [[services]]
-  internal_port = 9090
+  internal_port = 6767
   protocol = "tcp"
 
   [[services.ports]]
-    port = 9090
+    port = 6767
     handlers = ["tls"]
 
   [services.concurrency]

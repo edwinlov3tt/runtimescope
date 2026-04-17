@@ -70,8 +70,8 @@ import { registerBreadcrumbTools } from './tools/breadcrumbs.js';
 // --- Historical event persistence ---
 import { registerHistoryTools } from './tools/history.js';
 
-const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
-const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
+const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '6767', 10);
+const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
 
 /**
@@ -194,7 +194,7 @@ async function main() {
       '[RuntimeScope] Not starting a second one — use the existing instance.',
     );
     console.error(
-      '[RuntimeScope] If this is stuck, kill it manually: lsof -ti :9090 :9091 | xargs kill',
+      '[RuntimeScope] If this is stuck, kill it manually: lsof -ti :6767 :6768 | xargs kill',
     );
     // Exit without an error code so Claude Code doesn't log a fatal.
     process.exit(0);

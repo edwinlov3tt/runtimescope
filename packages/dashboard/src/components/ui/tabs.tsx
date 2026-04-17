@@ -39,7 +39,7 @@ export function Tabs({ tabs, activeTab, onTabChange, className }: TabsProps) {
             )}
           </span>
           {activeTab === tab.id && (
-            <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-brand rounded-full" />
+            <div className="absolute bottom-0 left-3 right-3 h-0.5 bg-accent rounded-full" />
           )}
         </button>
       ))}

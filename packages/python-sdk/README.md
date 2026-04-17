@@ -13,7 +13,7 @@ Zero required dependencies — the SDK uses only the Python standard library. Fr
 ```python
 from runtimescope import RuntimeScope
 
-RuntimeScope.connect(dsn="runtimescope://proj_xxx@localhost:9091/my-app")
+RuntimeScope.connect(dsn="runtimescope://proj_xxx@localhost:6768/my-app")
 # or set RUNTIMESCOPE_DSN in your environment and call with no args:
 RuntimeScope.connect()
 
@@ -35,7 +35,7 @@ MIDDLEWARE = [
 ]
 
 # Optional: set DSN via Django settings (otherwise uses RUNTIMESCOPE_DSN env var)
-RUNTIMESCOPE_DSN = "runtimescope://proj_xxx@localhost:9091/my-django-app"
+RUNTIMESCOPE_DSN = "runtimescope://proj_xxx@localhost:6768/my-django-app"
 ```
 
 ### Flask
@@ -84,7 +84,7 @@ RuntimeScope.connect(
 Same as every other RuntimeScope SDK:
 
 ```
-runtimescope://proj_xxx@host:9091/app-name
+runtimescope://proj_xxx@host:6768/app-name
 runtimescopes://proj_xxx@runtimescope.example.com/app-name   # TLS
 ```
 

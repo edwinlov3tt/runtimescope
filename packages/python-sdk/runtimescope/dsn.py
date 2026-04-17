@@ -19,12 +19,12 @@ class ParsedDsn:
 
 
 def parse_dsn(dsn: str) -> ParsedDsn:
-    """Parse a DSN string like `runtimescope://proj_abc@localhost:9091/my-app`.
+    """Parse a DSN string like `runtimescope://proj_abc@localhost:6768/my-app`.
 
     Raises ValueError for malformed DSNs.
 
     The HTTP port is the canonical port in the DSN. The WebSocket port is
-    derived as `http_port - 1` to match the collector's convention (9091/9090).
+    derived as `http_port - 1` to match the collector's convention (6768/6767).
     """
     if not isinstance(dsn, str):
         raise ValueError("DSN must be a string")
@@ -51,7 +51,7 @@ def parse_dsn(dsn: str) -> ParsedDsn:
     if not host:
         raise ValueError("Invalid RuntimeScope DSN: missing host")
 
-    http_port = url.port or 9091
+    http_port = url.port or 6768
     ws_port = http_port - 1
 
     app_name = url.path.lstrip("/") if url.path else ""
@@ -72,7 +72,7 @@ def parse_dsn(dsn: str) -> ParsedDsn:
 def build_dsn(
     project_id: str,
     host: str = "localhost",
-    port: int = 9091,
+    port: int = 6768,
     app_name: Optional[str] = None,
     tls: bool = False,
 ) -> str:

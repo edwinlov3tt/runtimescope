@@ -45,11 +45,9 @@ export function StatePage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="State"
         tabs={[{ id: 'stores', label: 'Stores' }, { id: 'mutations', label: 'Mutations' }]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        connected={connected}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -67,7 +65,7 @@ export function StatePage() {
           {activeTab === 'stores' && (
             <div className="p-5 space-y-3">
               {stores.map((store) => (
-                <div key={store.id} className="bg-bg-elevated border border-border-default rounded-lg p-4">
+                <div key={store.id} className="bg-bg-surface border border-border-strong rounded-lg p-4">
                   <div className="flex items-center justify-between mb-3">
                     <div className="flex items-center gap-2">
                       <span className="text-[15px] font-semibold text-text-primary">{store.id}</span>

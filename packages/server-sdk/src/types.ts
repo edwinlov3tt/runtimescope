@@ -112,7 +112,7 @@ export type ServerRuntimeEvent = DatabaseEvent | ConsoleEvent | NetworkEvent | P
 // --- Configuration ---
 
 export interface ServerSdkConfig {
-  /** DSN connection string (e.g., runtimescope://proj_abc123@localhost:9091/my-app) */
+  /** DSN connection string (e.g., runtimescope://proj_abc123@localhost:6768/my-app) */
   dsn?: string;
   serverUrl?: string;
   /** Alias for serverUrl — matches the browser SDK's config */
@@ -143,7 +143,7 @@ export interface ServerSdkConfig {
   // Transport
   /** Transport type: 'ws' (WebSocket, default) or 'http' (HTTP POST for serverless) */
   transport?: 'ws' | 'http';
-  /** HTTP endpoint URL for HTTP transport (e.g., 'http://collector:9091/api/events') */
+  /** HTTP endpoint URL for HTTP transport (e.g., 'http://collector:6768/api/events') */
   httpEndpoint?: string;
   /** HTTP batch flush interval in ms (default: 1000) */
   httpFlushIntervalMs?: number;

@@ -2,8 +2,8 @@
 
 /*
  * RuntimeScope Design Tokens
- * Supabase-matched warm-dark aesthetic with blue brand identity.
- * Dark-to-light color system: dark bg → lighter border → light text.
+ * Dark-first palette with teal accent (AgentOS-aligned).
+ * Three-layer nav: 64px rail + expandable sidebar + header.
  */
 
 @theme {
@@ -11,115 +11,131 @@
   --font-sans: 'Inter', -apple-system, BlinkMacSystemFont, system-ui, sans-serif;
   --font-mono: 'JetBrains Mono', 'SF Mono', 'Fira Code', monospace;
 
-  /* ── Background Layers (matched to Supabase rgb values) ── */
-  --color-bg-base: #0f0f0f;
-  --color-bg-app: #121212;
-  --color-bg-surface: #171717;
-  --color-bg-elevated: #1f1f1f;
-  --color-bg-overlay: #242424;
-  --color-bg-hover: rgba(255, 255, 255, 0.05);
-  --color-bg-active: rgba(255, 255, 255, 0.08);
-  --color-bg-input: #242424;
+  /* ── Background Layers ── */
+  --color-bg-base: #0a0a0a;
+  --color-bg-app: #0f0f0f;
+  --color-bg-surface: #141414;
+  --color-bg-elevated: #1a1a1a;
+  --color-bg-overlay: #222222;
+  --color-bg-hover: rgba(255, 255, 255, 0.04);
+  --color-bg-active: rgba(255, 255, 255, 0.07);
+  --color-bg-input: #1a1a1a;
 
-  /* ── Text Hierarchy (Supabase values) ── */
-  --color-text-primary: #fafafa;
-  --color-text-secondary: #d4d4d4;
-  --color-text-tertiary: #898989;
-  --color-text-muted: #525252;
-  --color-text-inverse: #09090b;
+  /* ── Text Hierarchy ── */
+  --color-text-primary: #f5f5f5;
+  --color-text-secondary: #cccccc;
+  --color-text-tertiary: #999999;
+  --color-text-muted: #666666;
+  --color-text-disabled: #555555;
+  --color-text-inverse: #0a0a0a;
 
-  /* ── Borders (Supabase values) ── */
-  --color-border-default: #2e2e2e;
-  --color-border-muted: #282828;
-  --color-border-strong: #363636;
-  --color-border-hover: #454545;
+  /* ── Borders ── */
+  --color-border-default: #282828;
+  --color-border-muted: #222222;
+  --color-border-strong: #333333;
+  --color-border-hover: #444444;
 
-  /* ── Brand: Blue (dark-to-light system) ── */
-  --color-brand: #3b82f6;
-  --color-brand-hover: #60a5fa;
-  --color-brand-dark: #003973;
-  --color-brand-muted: rgba(59, 130, 246, 0.15);
-  --color-brand-subtle: rgba(59, 130, 246, 0.08);
-  --color-brand-light: #93c5fd;
-  --color-brand-border: rgba(59, 130, 246, 0.35);
+  /* ── Brand: Teal Accent ── */
+  --color-accent: #2dd4bf;
+  --color-accent-hover: #5eead4;
+  --color-accent-dark: #042f2e;
+  --color-accent-muted: rgba(45, 212, 191, 0.12);
+  --color-accent-subtle: rgba(45, 212, 191, 0.06);
+  --color-accent-border: rgba(45, 212, 191, 0.25);
 
-  /* ── Green (dark-to-light — Supabase's actual green) ── */
-  --color-green: #3ecf8e;
-  --color-green-dark: #006239;
-  --color-green-muted: rgba(62, 207, 142, 0.15);
-  --color-green-light: #85e0ba;
-  --color-green-border: rgba(62, 207, 142, 0.35);
+  /* ── Legacy brand alias (blue) — for backward compat during migration ── */
+  --color-brand: #2dd4bf;
+  --color-brand-hover: #5eead4;
+  --color-brand-dark: #042f2e;
+  --color-brand-muted: rgba(45, 212, 191, 0.12);
+  --color-brand-subtle: rgba(45, 212, 191, 0.06);
+  --color-brand-light: #5eead4;
+  --color-brand-border: rgba(45, 212, 191, 0.25);
 
-  /* ── Blue / Info (dark-to-light) ── */
+  /* ── Green ── */
+  --color-green: #4ade80;
+  --color-green-dark: #052e16;
+  --color-green-muted: rgba(74, 222, 128, 0.09);
+  --color-green-light: #86efac;
+  --color-green-border: rgba(74, 222, 128, 0.25);
+
+  /* ── Blue / Info ── */
   --color-blue: #3b82f6;
   --color-blue-dark: #002d5c;
-  --color-blue-muted: rgba(59, 130, 246, 0.15);
+  --color-blue-muted: rgba(59, 130, 246, 0.12);
   --color-blue-light: #93c5fd;
   --color-blue-border: rgba(59, 130, 246, 0.35);
 
-  /* ── Purple (dark-to-light) ── */
-  --color-purple: #a855f7;
+  /* ── Purple ── */
+  --color-purple: #a78bfa;
   --color-purple-dark: #3b0062;
-  --color-purple-muted: rgba(168, 85, 247, 0.15);
+  --color-purple-muted: rgba(167, 139, 250, 0.09);
   --color-purple-light: #d8b4fe;
-  --color-purple-border: rgba(168, 85, 247, 0.35);
+  --color-purple-border: rgba(167, 139, 250, 0.35);
 
-  /* ── Amber (dark-to-light — Supabase's actual amber) ── */
-  --color-amber: #db8e00;
-  --color-amber-dark: rgba(219, 142, 0, 0.15);
-  --color-amber-muted: rgba(219, 142, 0, 0.1);
-  --color-amber-light: #fbbf24;
-  --color-amber-border: #693f05;
+  /* ── Amber ── */
+  --color-amber: #fbbf24;
+  --color-amber-dark: rgba(251, 191, 36, 0.09);
+  --color-amber-muted: rgba(251, 191, 36, 0.09);
+  --color-amber-light: #fde68a;
+  --color-amber-border: rgba(251, 191, 36, 0.25);
 
-  /* ── Red (dark-to-light) ── */
-  --color-red: #ef4444;
+  /* ── Red ── */
+  --color-red: #f87171;
   --color-red-dark: #620000;
-  --color-red-muted: rgba(239, 68, 68, 0.15);
+  --color-red-muted: rgba(248, 113, 113, 0.09);
   --color-red-light: #fca5a5;
-  --color-red-border: rgba(239, 68, 68, 0.35);
+  --color-red-border: rgba(248, 113, 113, 0.35);
 
-  /* ── Orange (dark-to-light) ── */
+  /* ── Orange ── */
   --color-orange: #f97316;
   --color-orange-dark: #622100;
   --color-orange-muted: rgba(249, 115, 22, 0.15);
   --color-orange-light: #fdba74;
   --color-orange-border: rgba(249, 115, 22, 0.35);
 
-  /* ── Cyan (dark-to-light) ── */
-  --color-cyan: #06b6d4;
+  /* ── Cyan ── */
+  --color-cyan: #a5f3fc;
   --color-cyan-dark: #004455;
-  --color-cyan-muted: rgba(6, 182, 212, 0.15);
-  --color-cyan-light: #67e8f9;
-  --color-cyan-border: rgba(6, 182, 212, 0.35);
+  --color-cyan-muted: rgba(165, 243, 252, 0.09);
+  --color-cyan-light: #cffafe;
+  --color-cyan-border: rgba(165, 243, 252, 0.25);
+
+  /* ── Indigo (for state events) ── */
+  --color-indigo: #818cf8;
+  --color-indigo-muted: rgba(99, 102, 241, 0.09);
 
   /* ── Chart Colors ── */
   --color-chart-line: #3b82f6;
   --color-chart-fill: rgba(59, 130, 246, 0.08);
   --color-chart-request: #3b82f6;
-  --color-chart-log: #db8e00;
-  --color-chart-render: #3ecf8e;
+  --color-chart-log: #fbbf24;
+  --color-chart-render: #4ade80;
   --color-chart-grid: #282828;
-  --color-chart-label: #898989;
+  --color-chart-label: #999999;
 
-  /* ── Radii (Supabase uses 6px default) ── */
+  /* ── Radii ── */
   --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
+  --radius-md: 8px;
+  --radius-lg: 10px;
   --radius-xl: 12px;
   --radius-2xl: 16px;
   --radius-full: 9999px;
 
-  /* ── Shadows (used sparingly — borders do the heavy lifting) ── */
-  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
-  --shadow-glow: 0 0 0 1px rgba(59, 130, 246, 0.25);
+  /* ── Shadows ── */
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --shadow-lg: 0 8px 32px rgba(0, 0, 0, 0.6);
+  --shadow-glow: 0 0 0 1px rgba(45, 212, 191, 0.25);
 
   /* ── Layout ── */
-  --sidebar-width: 240px;
-  --sidebar-collapsed: 56px;
-  --topbar-height: 48px;
+  --rail-width: 64px;
+  --sidebar-width: 200px;
+  --header-height: 56px;
   --detail-panel-width: 380px;
+  /* Legacy aliases */
+  --sidebar-collapsed: 0px;
+  --topbar-height: 56px;
 }
 
 /* ── Global Resets ── */
@@ -136,20 +152,20 @@ body {
   color: var(--color-text-primary);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  font-size: 14px;
+  font-size: 13px;
   line-height: 1.5;
 }
 
 /* ── Selection ── */
 ::selection {
-  background: var(--color-brand-muted);
+  background: var(--color-accent-muted);
   color: var(--color-text-primary);
 }
 
-/* ── Scrollbar (Supabase-style thin scrollbar) ── */
+/* ── Scrollbar ── */
 ::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+  width: 5px;
+  height: 5px;
 }
 ::-webkit-scrollbar-track {
   background: transparent;
@@ -162,8 +178,17 @@ body {
   background: var(--color-border-strong);
 }
 
-/* ── Focus ring (brand glow) ── */
+/* ── Focus ring (accent glow) ── */
 *:focus-visible {
   outline: none;
   box-shadow: var(--shadow-glow);
+}
+
+/* ── Pulse animation ── */
+@keyframes pulse-dot {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+.animate-pulse-dot {
+  animation: pulse-dot 2s ease-in-out infinite;
 }

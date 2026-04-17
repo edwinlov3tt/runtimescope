@@ -127,7 +127,7 @@ describe('WorkersTransport', () => {
     });
     await transport.flush();
 
-    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:9091/api/events');
+    expect(mockFetch.mock.calls[0][0]).toBe('http://localhost:6768/api/events');
   });
 
   it('should include auth token header when configured', async () => {

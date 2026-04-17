@@ -76,11 +76,9 @@ export function SessionsPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="Sessions"
         tabs={[{ id: 'history', label: 'History' }, { id: 'compare', label: 'Compare' }]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        connected={connected}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">

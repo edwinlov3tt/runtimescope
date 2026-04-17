@@ -5,7 +5,7 @@ Quick start:
     from runtimescope import RuntimeScope
 
     RuntimeScope.connect(
-        dsn="runtimescope://proj_xxx@localhost:9091/my-app",
+        dsn="runtimescope://proj_xxx@localhost:6768/my-app",
     )
     # Or set RUNTIMESCOPE_DSN in your environment and call with no args.
 

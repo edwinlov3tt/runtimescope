@@ -1,12 +1,10 @@
 import { useState, useMemo, useCallback, memo } from 'react';
-import { Topbar } from '@/components/layout/topbar';
 import { Badge, JsonViewer } from '@/components/ui';
 import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { SearchInput } from '@/components/ui/input';
 import { ExportButton } from '@/components/ui/export-button';
 import { ListSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
-import { useConnected } from '@/hooks/use-connected';
 import { formatTimestamp } from '@/lib/format';
 import { cn } from '@/lib/cn';
 import {
@@ -215,7 +213,6 @@ export function BreadcrumbsPage() {
   const [search, setSearch] = useState('');
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [showAll, setShowAll] = useState(false);
-  const connected = useConnected();
   const initialLoadDone = useDataStore((s) => s.initialLoadDone);
 
   // Pull from multiple stores and merge into a unified breadcrumb trail
@@ -278,7 +275,6 @@ export function BreadcrumbsPage() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <Topbar title="Breadcrumbs" connected={connected} />
 
       {/* Category + level filters */}
       <div className="border-b border-border-default px-5 py-2.5 flex items-center gap-3">

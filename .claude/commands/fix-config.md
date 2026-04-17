@@ -60,7 +60,7 @@ Generate the projectId and DSN:
 ```bash
 PROJ_ID="proj_$(cat /dev/urandom | LC_ALL=C tr -dc 'a-z0-9' | head -c 12)"
 APP_NAME="<detected app name>"
-DSN="runtimescope://${PROJ_ID}@localhost:9091/${APP_NAME}"
+DSN="runtimescope://${PROJ_ID}@localhost:6768/${APP_NAME}"
 echo "ProjectId: $PROJ_ID"
 echo "DSN: $DSN"
 ```
@@ -69,7 +69,7 @@ echo "DSN: $DSN"
 {
   "projectId": "proj_<generated>",
   "appName": "<detected app name>",
-  "dsn": "runtimescope://proj_<generated>@localhost:9091/<app name>",
+  "dsn": "runtimescope://proj_<generated>@localhost:6768/<app name>",
   "sdks": [
     {
       "type": "<browser|server|workers>",
@@ -100,13 +100,13 @@ grep -rn "RuntimeScope\.\(init\|connect\)" --include="*.ts" --include="*.tsx" --
 // Replace this:
 RuntimeScope.init({
   appName: 'my-app',
-  endpoint: 'ws://localhost:9090',
+  endpoint: 'ws://localhost:6767',
   projectId: 'proj_xxx',
 });
 
 // With this:
 RuntimeScope.init({
-  dsn: 'runtimescope://proj_xxx@localhost:9091/my-app',
+  dsn: 'runtimescope://proj_xxx@localhost:6768/my-app',
 });
 ```
 
@@ -125,7 +125,7 @@ grep -q "\.runtimescope/\.env" .gitignore 2>/dev/null || echo ".runtimescope/.en
 If `.runtimescope/config.json` exists, check for:
 
 1. **Has `projectId`?** — If missing, generate one and add it
-2. **Has `dsn`?** — If missing, generate from projectId + appName: `runtimescope://proj_xxx@localhost:9091/app-name`
+2. **Has `dsn`?** — If missing, generate from projectId + appName: `runtimescope://proj_xxx@localhost:6768/app-name`
 3. **Has `appName`?** — If missing, detect from package.json
 4. **Has `sdks` array?** — If missing, detect from codebase
 4. **Has `capture` object?** — If missing, add defaults

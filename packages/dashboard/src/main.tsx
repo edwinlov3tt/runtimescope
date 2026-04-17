@@ -6,8 +6,7 @@ import { App } from './App';
 import { ErrorBoundary } from './components/error-boundary';
 
 RuntimeScope.connect({
-  serverUrl: 'ws://localhost:9090',
-  appName: 'runtimescope-dashboard',
+  dsn: 'runtimescope://proj_k34w06y5z8qp@localhost:6768/runtimescope-dashboard',
 });
 
 createRoot(document.getElementById('root')!).render(

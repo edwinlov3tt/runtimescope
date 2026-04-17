@@ -46,8 +46,8 @@ Caddy will automatically provision an HTTPS certificate via Let's Encrypt on fir
 
 ```bash
 docker run -d \
-  -p 9090:9090 \
-  -p 9091:9091 \
+  -p 6767:6767 \
+  -p 6768:6768 \
   -v rs-data:/home/runtimescope/.runtimescope \
   -e RUNTIMESCOPE_AUTH_TOKEN=$(openssl rand -hex 32) \
   --name runtimescope \
@@ -103,8 +103,8 @@ export default withRuntimeScope(handler, {
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `RUNTIMESCOPE_HOST` | `127.0.0.1` | Bind address. Set to `0.0.0.0` in Docker. |
-| `RUNTIMESCOPE_PORT` | `9090` | WebSocket port |
-| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port |
+| `RUNTIMESCOPE_PORT` | `6767` | WebSocket port |
+| `RUNTIMESCOPE_HTTP_PORT` | `6768` | HTTP API port |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max in-memory events |
 | `RUNTIMESCOPE_RETENTION_DAYS` | `30` | SQLite event retention |
 | `RUNTIMESCOPE_AUTH_TOKEN` | _(none)_ | Auth token required on SDK connections |

@@ -1,9 +1,7 @@
 import { useState, useMemo } from 'react';
-import { Topbar } from '@/components/layout/topbar';
 import { Gauge, Sparkline, Badge } from '@/components/ui';
 import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { useDataStore } from '@/stores/use-data-store';
-import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
 import type { PerformanceEvent } from '@/lib/runtime-types';
 
@@ -51,7 +49,6 @@ const METRIC_INFO: Record<string, { name: string; description: string; causes: s
 
 export function PerformancePage() {
   const [selectedMetric, setSelectedMetric] = useState<string>('LCP');
-  const connected = useConnected();
   const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const livePerformance = useDataStore((s) => s.performance);
 
@@ -79,7 +76,6 @@ export function PerformancePage() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <Topbar title="Performance" connected={connected} />
 
       <div className="flex-1 overflow-y-auto">
         {initialLoadDone && livePerformance.length === 0 ? (
@@ -103,7 +99,7 @@ export function PerformancePage() {
                   className={cn(
                     'bg-bg-elevated border rounded-lg p-4 flex flex-col items-center transition-all cursor-pointer',
                     selectedMetric === metric.metricName
-                      ? 'border-brand-border ring-1 ring-brand-border'
+                      ? 'border-accent-border ring-1 ring-brand-border'
                       : 'border-border-default hover:border-border-hover'
                   )}
                 >

@@ -28,8 +28,8 @@ import { migrateProjectIds } from './project-config.js';
 
 const HOST = process.env.RUNTIMESCOPE_HOST ?? '127.0.0.1';
 // Same default ports as MCP server — only one should run at a time
-const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '9090', 10);
-const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
+const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '6767', 10);
+const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
 const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
 

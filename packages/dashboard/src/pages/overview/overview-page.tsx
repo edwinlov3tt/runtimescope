@@ -1,12 +1,12 @@
 import { useMemo } from 'react';
-import { Topbar } from '@/components/layout/topbar';
-import { MetricCard, Sparkline, ActivityFeed } from '@/components/ui';
+import { KpiCard, ActivityFeed } from '@/components/ui';
+import { SessionBar } from '@/components/ui/session-bar';
 import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { computeOverviewStats } from '@/lib/overview-stats';
 import { eventsToActivity } from '@/lib/activity-mapper';
 import { detectIssues } from '@/lib/issue-detector';
-import { Globe, Clock, Zap, AlertTriangle } from 'lucide-react';
+import { Globe, Clock, Layers, AlertTriangle, Wifi, Package, HardDrive } from 'lucide-react';
 
 export function OverviewPage() {
   const connected = useConnected();
@@ -32,53 +32,76 @@ export function OverviewPage() {
     return eventsToActivity(allEvents, 20);
   }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
 
+  const totalEvents = network.length + consoleMsgs.length + stateEvents.length + renderEvents.length;
+
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <Topbar title="Overview" connected={connected} />
-
       <div className="flex-1 overflow-y-auto">
-        <div className="p-6 space-y-6 max-w-6xl mx-auto w-full">
-          {/* Metric Cards */}
-          <div className="grid grid-cols-4 gap-4">
-            <MetricCard
+        <div className="p-6 space-y-5">
+
+          {/* Session bar */}
+          <SessionBar
+            connected={connected}
+            items={[
+              { icon: Wifi, label: 'Session', value: connected ? 'active' : 'none' },
+              { icon: Package, label: 'SDK', value: 'v0.9.3' },
+              { icon: Clock, label: 'Uptime', value: connected ? 'live' : '—' },
+              { icon: HardDrive, label: 'Events', value: totalEvents.toLocaleString() },
+            ]}
+          />
+
+          {/* KPI Cards */}
+          <div className="grid grid-cols-4 gap-3">
+            <KpiCard
+              icon={Globe}
               label="Network Requests"
               value={s.requests.value.toLocaleString()}
-              change={{ value: s.requests.change, label: s.requests.label }}
-              icon={<Globe size={16} />}
-            >
-              <Sparkline data={s.requests.sparkline} width={100} height={28} color="var(--color-blue)" />
-            </MetricCard>
-            <MetricCard
+              sparkColor="var(--color-blue)"
+              sparkData={s.requests.sparkline}
+              footerLabel={s.requests.label || 'This session'}
+              changeValue={s.requests.change ? `${s.requests.change > 0 ? '+' : ''}${s.requests.change}%` : undefined}
+              changeDir={s.requests.change > 0 ? 'up' : s.requests.change < 0 ? 'down' : 'neutral'}
+            />
+            <KpiCard
+              icon={Clock}
               label="Avg Latency"
               value={String(s.latency.value)}
-              suffix="ms"
-              change={{ value: s.latency.change, label: s.latency.label }}
-              icon={<Clock size={16} />}
-            >
-              <Sparkline data={s.latency.sparkline} width={100} height={28} color="var(--color-green)" />
-            </MetricCard>
-            <MetricCard
+              unit="ms"
+              sparkColor="var(--color-green)"
+              sparkData={s.latency.sparkline}
+              footerLabel={s.latency.label || 'P95 latency'}
+              changeValue={s.latency.change ? `${s.latency.change > 0 ? '+' : ''}${s.latency.change}%` : undefined}
+              changeDir={s.latency.change > 0 ? 'down' : s.latency.change < 0 ? 'up' : 'neutral'}
+            />
+            <KpiCard
+              icon={Layers}
               label="Renders"
               value={s.renders.value.toLocaleString()}
-              change={{ value: s.renders.change, label: s.renders.label }}
-              icon={<Zap size={16} />}
-            >
-              <Sparkline data={s.renders.sparkline} width={100} height={28} color="var(--color-purple)" />
-            </MetricCard>
-            <MetricCard
-              label="Issues"
+              sparkColor="var(--color-purple)"
+              sparkData={s.renders.sparkline}
+              footerLabel={s.renders.label || 'Component renders'}
+              changeValue={s.renders.change ? `${s.renders.change > 0 ? '+' : ''}${s.renders.change}%` : undefined}
+              changeDir={s.renders.change > 0 ? 'down' : 'neutral'}
+            />
+            <KpiCard
+              icon={AlertTriangle}
+              label="Issues Detected"
               value={String(s.issues.value)}
-              change={{ value: s.issues.change }}
-              icon={<AlertTriangle size={16} />}
-            >
-              <Sparkline data={s.issues.sparkline} width={100} height={28} color="var(--color-amber)" />
-            </MetricCard>
+              sparkColor="var(--color-amber)"
+              sparkData={s.issues.sparkline}
+              footerLabel="Active issues"
+              changeValue={s.issues.change ? `${s.issues.change > 0 ? '+' : ''}${s.issues.change}` : undefined}
+              changeDir={s.issues.change > 0 ? 'down' : 'neutral'}
+            />
           </div>
 
           {/* Activity Feed */}
-          <div>
-            <h2 className="text-sm font-semibold text-text-primary mb-3">Recent Activity</h2>
-            <div className="border border-border-default rounded-lg overflow-hidden bg-bg-surface">
+          <div className="border border-border-strong rounded-lg overflow-hidden bg-bg-surface flex flex-col">
+            <div className="flex items-center justify-between px-4 h-10 border-b border-border-strong shrink-0">
+              <span className="text-[13px] font-semibold">Recent Activity</span>
+              <span className="text-[11px] text-text-muted">{activity.length} entries</span>
+            </div>
+            <div className="flex-1 overflow-y-auto">
               <ActivityFeed items={activity} />
             </div>
           </div>

@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { useDevServerStore } from '@/stores/use-dev-server-store';
-import { MetricCard, Badge, DataTable, EmptyState } from '@/components/ui';
+import { KpiCard, Badge, DataTable, EmptyState } from '@/components/ui';
 import { StatusDot } from '@/components/ui/status-dot';
 import {
   FolderKanban,
@@ -18,7 +18,7 @@ import {
   Download,
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
-import type { ProjectSummary, GlobalCapexSummary, GlobalCapexByProject } from '@/lib/pm-api';
+import type { ProjectSummary } from '@/lib/pm-api';
 import * as pmApi from '@/lib/pm-api';
 import { findRuntimeProjects, type ProjectInfo } from '@/lib/api';
 
@@ -70,6 +70,17 @@ function formatActiveTime(minutes: number): string {
 function formatDate(ts: number | null): string {
   if (!ts) return '-';
   return new Date(ts).toLocaleDateString();
+}
+
+// ---------------------------------------------------------------------------
+// Greeting
+// ---------------------------------------------------------------------------
+
+function getGreeting(): string {
+  const hour = new Date().getHours();
+  if (hour < 12) return 'Good morning';
+  if (hour < 17) return 'Good afternoon';
+  return 'Good evening';
 }
 
 // ---------------------------------------------------------------------------
@@ -270,11 +281,6 @@ export function HomePage() {
   const runtimeProjects = useAppStore((s) => s.projects);
 
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
-  const [globalCapex, setGlobalCapex] = useState<{
-    summary: GlobalCapexSummary;
-    byProject: GlobalCapexByProject[];
-  } | null>(null);
-
   // Active date preset
   const activeDatePreset = useMemo((): DatePreset | 'custom' => {
     const { start, end } = sessionDateRange;
@@ -306,9 +312,6 @@ export function HomePage() {
     usePmStore.getState().fetchSessionStats();
     usePmStore.getState().fetchProjectSummaries();
     usePmStore.getState().fetchCategories();
-    pmApi.fetchGlobalCapex().then((data) => {
-      if (data) setGlobalCapex({ summary: data.summary, byProject: data.byProject });
-    });
   }, []);
 
   // Category-filtered summaries
@@ -370,9 +373,9 @@ export function HomePage() {
           {/* Header + controls row */}
           <div className="flex items-center justify-between gap-4 flex-wrap">
             <div>
-              <h1 className="text-xl font-bold text-text-primary">Home</h1>
-              <p className="text-sm text-text-tertiary mt-0.5">
-                Global overview &middot; {projects.length} projects
+              <h1 className="text-xl font-bold text-text-primary">{getGreeting()}, Edwin</h1>
+              <p className="text-[13px] text-text-tertiary mt-0.5">
+                Here's what's happening across your {projects.length} projects
               </p>
             </div>
 
@@ -415,7 +418,7 @@ export function HomePage() {
                   className={cn(
                     'px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer',
                     activeDatePreset === p.id
-                      ? 'bg-brand text-white'
+                      ? 'bg-accent text-text-inverse'
                       : 'bg-bg-surface text-text-secondary hover:bg-bg-hover',
                   )}
                 >
@@ -442,27 +445,31 @@ export function HomePage() {
             </div>
           </div>
 
-          {/* Metric Cards */}
-          <div className="grid grid-cols-4 gap-4">
-            <MetricCard
+          {/* KPI Cards */}
+          <div className="grid grid-cols-4 gap-3">
+            <KpiCard
+              icon={MessageSquare}
               label="Total Sessions"
               value={filteredStats.totalSessions.toLocaleString()}
-              icon={<MessageSquare size={16} />}
+              footerLabel="Across all projects"
             />
-            <MetricCard
+            <KpiCard
+              icon={DollarSign}
               label="Total Cost"
               value={totalCost}
-              icon={<DollarSign size={16} />}
+              footerLabel="API usage cost"
             />
-            <MetricCard
-              label="Total Active Time"
+            <KpiCard
+              icon={Clock}
+              label="Active Time"
               value={totalActiveTime}
-              icon={<Clock size={16} />}
+              footerLabel="Total active time"
             />
-            <MetricCard
+            <KpiCard
+              icon={TrendingUp}
               label="Avg Cost/Session"
               value={avgCost}
-              icon={<TrendingUp size={16} />}
+              footerLabel="Per session average"
             />
           </div>
 
@@ -475,7 +482,7 @@ export function HomePage() {
                 className={cn(
                   'px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer',
                   categoryFilter === null
-                    ? 'bg-brand text-white'
+                    ? 'bg-accent text-text-inverse'
                     : 'bg-bg-surface text-text-secondary hover:bg-bg-hover',
                 )}
               >
@@ -491,7 +498,7 @@ export function HomePage() {
                     className={cn(
                       'px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer',
                       categoryFilter === cat
-                        ? 'bg-brand text-white'
+                        ? 'bg-accent text-text-inverse'
                         : 'bg-bg-surface text-text-secondary hover:bg-bg-hover',
                     )}
                   >
@@ -506,116 +513,13 @@ export function HomePage() {
                   className={cn(
                     'px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer',
                     categoryFilter === '__none'
-                      ? 'bg-brand text-white'
+                      ? 'bg-accent text-text-inverse'
                       : 'bg-bg-surface text-text-muted hover:bg-bg-hover',
                   )}
                 >
                   Uncategorized ({projectSummaries.filter((p) => !p.category).length})
                 </button>
               )}
-            </div>
-          )}
-
-          {/* Global CapEx Summary */}
-          {globalCapex && globalCapex.byProject.length > 0 && (
-            <div className="rounded-lg border border-border-default bg-bg-elevated overflow-hidden">
-              <div className="px-5 py-3 border-b border-border-default flex items-center justify-between">
-                <div>
-                  <h2 className="text-sm font-semibold text-text-primary">CapEx Overview</h2>
-                  <p className="text-[11px] text-text-tertiary mt-0.5">
-                    {globalCapex.summary.activeHours}h active &middot; {globalCapex.summary.projectCount} project{globalCapex.summary.projectCount !== 1 ? 's' : ''}
-                    &middot; {globalCapex.summary.confirmed} confirmed / {globalCapex.summary.confirmed + globalCapex.summary.unconfirmed} total
-                  </p>
-                </div>
-                <div className="flex items-center gap-3">
-                  <div className="flex items-center gap-4 text-xs">
-                    <span className="text-text-muted">Total: <span className="text-text-primary font-medium tabular-nums">{formatCost(globalCapex.summary.totalCost)}</span></span>
-                    <span className="text-text-muted">Cap: <span className="text-green font-medium tabular-nums">{formatCost(globalCapex.summary.capitalizable)}</span></span>
-                    <span className="text-text-muted">Exp: <span className="text-text-secondary font-medium tabular-nums">{formatCost(globalCapex.summary.expensed)}</span></span>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => window.open(pmApi.getCapexExportAllUrl(categoryFilter && categoryFilter !== '__none' ? { category: categoryFilter } : undefined), '_blank')}
-                    className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium bg-bg-surface text-text-secondary hover:bg-bg-hover transition-colors cursor-pointer"
-                  >
-                    <Download size={11} />
-                    XLSX
-                  </button>
-                </div>
-              </div>
-              <DataTable
-                columns={[
-                  {
-                    key: 'projectName',
-                    header: 'Project',
-                    sortable: true,
-                    render: (row: Record<string, unknown>) => (
-                      <span className="font-medium text-text-primary">{row.projectName as string}</span>
-                    ),
-                  },
-                  {
-                    key: 'category',
-                    header: 'Category',
-                    width: '100px',
-                    render: (row: Record<string, unknown>) => {
-                      const cat = row.category as string | undefined;
-                      return cat ? <Badge variant="purple" size="sm">{cat}</Badge> : <span className="text-text-muted text-xs">-</span>;
-                    },
-                  },
-                  {
-                    key: 'activeHours',
-                    header: 'Hours',
-                    width: '80px',
-                    sortable: true,
-                    render: (row: Record<string, unknown>) => (
-                      <span className="tabular-nums">{(row.activeHours as number).toFixed(1)}h</span>
-                    ),
-                  },
-                  {
-                    key: 'totalCost',
-                    header: 'Total',
-                    width: '90px',
-                    sortable: true,
-                    render: (row: Record<string, unknown>) => (
-                      <span className="tabular-nums font-medium">{formatCost(row.totalCost as number)}</span>
-                    ),
-                  },
-                  {
-                    key: 'capitalizable',
-                    header: 'Capitalizable',
-                    width: '100px',
-                    sortable: true,
-                    render: (row: Record<string, unknown>) => (
-                      <span className="tabular-nums text-green">{formatCost(row.capitalizable as number)}</span>
-                    ),
-                  },
-                  {
-                    key: 'expensed',
-                    header: 'Expensed',
-                    width: '90px',
-                    sortable: true,
-                    render: (row: Record<string, unknown>) => (
-                      <span className="tabular-nums text-text-secondary">{formatCost(row.expensed as number)}</span>
-                    ),
-                  },
-                  {
-                    key: 'confirmed',
-                    header: 'Confirmed',
-                    width: '100px',
-                    render: (row: Record<string, unknown>) => (
-                      <span className="tabular-nums text-text-secondary">
-                        {row.confirmed as number}/{row.total as number}
-                      </span>
-                    ),
-                  },
-                ]}
-                data={globalCapex.byProject as any}
-                onRowClick={(row) => {
-                  const r = row as unknown as GlobalCapexByProject;
-                  useAppStore.getState().selectPmProject(r.projectId);
-                }}
-                defaultSort={{ key: 'totalCost', direction: 'desc' }}
-              />
             </div>
           )}
 
@@ -631,7 +535,7 @@ export function HomePage() {
               }
             />
           ) : (
-            <div className="rounded-lg border border-border-default overflow-hidden">
+            <div className="rounded-lg border border-border-strong overflow-hidden bg-bg-surface">
               <DataTable
                 columns={columns}
                 data={filteredSummaries as any}

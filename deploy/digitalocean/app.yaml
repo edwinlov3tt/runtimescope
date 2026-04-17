@@ -18,10 +18,10 @@ services:
       deploy_on_push: true
     instance_count: 1
     instance_size_slug: basic-xxs
-    http_port: 9091
+    http_port: 6768
     # Internal WebSocket port — clients connect via HTTPS/WSS through the LB
     internal_ports:
-      - 9090
+      - 6767
     health_check:
       http_path: /api/health
       initial_delay_seconds: 10
@@ -33,9 +33,9 @@ services:
       - key: RUNTIMESCOPE_HOST
         value: "0.0.0.0"
       - key: RUNTIMESCOPE_PORT
-        value: "9090"
+        value: "6767"
       - key: RUNTIMESCOPE_HTTP_PORT
-        value: "9091"
+        value: "6768"
       - key: RUNTIMESCOPE_BUFFER_SIZE
         value: "10000"
       - key: RUNTIMESCOPE_RETENTION_DAYS

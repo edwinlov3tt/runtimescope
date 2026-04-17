@@ -364,7 +364,6 @@ export function DatabasePage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="Database"
         tabs={[
           { id: 'queries', label: 'Queries' },
           { id: 'performance', label: 'Performance' },
@@ -372,7 +371,6 @@ export function DatabasePage() {
         ]}
         activeTab={activeTab}
         onTabChange={handleTabChange}
-        connected={connected}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -391,7 +389,7 @@ export function DatabasePage() {
                     className={cn(
                       'px-2 py-0.5 rounded text-[11px] font-medium transition-colors',
                       opFilter === op
-                        ? 'bg-brand/15 text-brand'
+                        ? 'bg-accent/15 text-accent'
                         : 'text-text-muted hover:text-text-secondary',
                     )}
                   >

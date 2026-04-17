@@ -16,9 +16,9 @@ services:
       - key: RUNTIMESCOPE_HOST
         value: "0.0.0.0"
       - key: RUNTIMESCOPE_PORT
-        value: "9090"
+        value: "6767"
       - key: RUNTIMESCOPE_HTTP_PORT
-        value: "9091"
+        value: "6768"
       - key: RUNTIMESCOPE_BUFFER_SIZE
         value: "10000"
       - key: RUNTIMESCOPE_RETENTION_DAYS

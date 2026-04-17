@@ -63,7 +63,7 @@ get_session_info({ project_id: "<projectId from setup>" })
 
 If connected, setup is complete. If not:
 - Check the app is running
-- Check the endpoint matches (default: `ws://localhost:9090`)
+- Check the endpoint matches (default: `ws://localhost:6767`)
 - Check for console errors in the browser
 
 ## Step 4: Confirm

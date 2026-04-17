@@ -14,7 +14,7 @@ export function Sparkline({
   data,
   width = 120,
   height = 32,
-  color = 'var(--color-brand)',
+  color = 'var(--color-accent)',
   className,
 }: SparklineProps) {
   const gradientId = useId();
@@ -51,7 +51,7 @@ export function Sparkline({
     >
       <defs>
         <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={color} stopOpacity={0.2} />
+          <stop offset="0%" stopColor={color} stopOpacity={0.3} />
           <stop offset="100%" stopColor={color} stopOpacity={0} />
         </linearGradient>
       </defs>

@@ -47,7 +47,7 @@ export function FilterBar({
               <span>{f.label}: {f.value}</span>
               <button
                 onClick={() => onRemoveFilter?.(f.key)}
-                className="ml-1 hover:text-brand-light cursor-pointer"
+                className="ml-1 hover:text-accent-light cursor-pointer"
               >
                 <X size={10} />
               </button>

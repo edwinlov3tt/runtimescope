@@ -112,7 +112,7 @@ cat .runtimescope/config.json | grep '"dsn"' || echo "NO_DSN"
 # Read existing projectId and appName
 PROJ_ID=$(cat .runtimescope/config.json | grep -o '"projectId":"[^"]*"' | cut -d'"' -f4)
 APP_NAME=$(cat .runtimescope/config.json | grep -o '"appName":"[^"]*"' | cut -d'"' -f4)
-DSN="runtimescope://${PROJ_ID}@localhost:9091/${APP_NAME}"
+DSN="runtimescope://${PROJ_ID}@localhost:6768/${APP_NAME}"
 echo "DSN: $DSN"
 ```
 
@@ -130,13 +130,13 @@ Replace the old multi-field config:
 // OLD — replace this:
 RuntimeScope.init({
   appName: 'my-app',
-  endpoint: 'ws://localhost:9090',
+  endpoint: 'ws://localhost:6767',
   projectId: 'proj_xxx',
 });
 
 // NEW — with this:
 RuntimeScope.init({
-  dsn: 'runtimescope://proj_xxx@localhost:9091/my-app',
+  dsn: 'runtimescope://proj_xxx@localhost:6768/my-app',
 });
 ```
 
@@ -145,13 +145,13 @@ For server SDK:
 // OLD:
 RuntimeScope.connect({
   appName: 'my-api',
-  serverUrl: 'ws://localhost:9090',
+  serverUrl: 'ws://localhost:6767',
   projectId: 'proj_xxx',
 });
 
 // NEW:
 RuntimeScope.connect({
-  dsn: 'runtimescope://proj_xxx@localhost:9091/my-api',
+  dsn: 'runtimescope://proj_xxx@localhost:6768/my-api',
 });
 // Or set RUNTIMESCOPE_DSN env var and call RuntimeScope.connect() with no args
 ```
@@ -160,7 +160,7 @@ RuntimeScope.connect({
 
 5. Check hooks are registered:
 ```bash
-cat ~/.claude/settings.json 2>/dev/null | grep -c "9091" || echo "0"
+cat ~/.claude/settings.json 2>/dev/null | grep -c "6768" || echo "0"
 ```
 
 ---
@@ -197,7 +197,7 @@ Use `get_session_info` to verify the SDK is still connected after the update.
 ## New in This Version
 - **Project ID system** — `projectId` field groups all SDKs for a project. Auto-generated on connect.
 - **MCP tool scoping** — all tools accept `project_id` param to filter by project.
-- **Unified ports** — MCP and standalone both use 9090/9091.
+- **Unified ports** — MCP and standalone both use 6767/6768.
 - **Cross-platform** — process detection works on macOS, Linux, and Windows.
 
 ## Action Items

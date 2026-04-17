@@ -69,14 +69,14 @@ USER runtimescope
 
 # Bind to all interfaces for Docker networking
 ENV RUNTIMESCOPE_HOST=0.0.0.0 \
-    RUNTIMESCOPE_PORT=9090 \
-    RUNTIMESCOPE_HTTP_PORT=9091 \
+    RUNTIMESCOPE_PORT=6767 \
+    RUNTIMESCOPE_HTTP_PORT=6768 \
     HOME=/home/runtimescope \
     NODE_ENV=production
 
-EXPOSE 9090 9091
+EXPOSE 6767 6768
 
 HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:9091/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+  CMD node -e "fetch('http://127.0.0.1:6768/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
 
 ENTRYPOINT ["node", "packages/collector/dist/standalone.js"]

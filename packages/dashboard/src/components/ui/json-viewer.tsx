@@ -39,7 +39,7 @@ function JsonNode({ value, depth, defaultExpanded }: { value: unknown; depth: nu
     return <JsonExpandable label={`{${entries.length}}`} depth={depth} defaultExpanded={defaultExpanded && depth < 2} bracketOpen="{" bracketClose="}">
       {entries.map(([key, val]) => (
         <div key={key} className="flex" style={{ paddingLeft: (depth + 1) * 16 }}>
-          <span className="text-brand mr-1">{key}:</span>
+          <span className="text-accent mr-1">{key}:</span>
           <JsonNode value={val} depth={depth + 1} defaultExpanded={defaultExpanded} />
         </div>
       ))}

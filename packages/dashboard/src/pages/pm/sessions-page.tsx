@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, memo } from 'react';
 import { usePmStore } from '@/stores/use-pm-store';
-import { MetricCard, DataTable, DetailPanel, Badge, Button, Input } from '@/components/ui';
+import { KpiCard, DataTable, DetailPanel, Badge, Button, Input } from '@/components/ui';
 import { Clock, DollarSign, MessageSquare, Zap, Calendar } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import type { PmSession } from '@/lib/pm-types';
@@ -275,7 +275,7 @@ export const PmSessionsPage = memo(function PmSessionsPage({ projectId }: { proj
                     className={cn(
                       'px-3 py-1 rounded-full text-xs font-medium transition-colors cursor-pointer',
                       activePreset === p.id
-                        ? 'bg-brand text-white'
+                        ? 'bg-accent text-text-inverse'
                         : 'bg-bg-surface text-text-secondary hover:bg-bg-hover',
                     )}
                   >
@@ -303,32 +303,36 @@ export const PmSessionsPage = memo(function PmSessionsPage({ projectId }: { proj
               </div>
             </div>
 
-            {/* Metric cards */}
-            <div className="grid grid-cols-4 gap-4">
-              <MetricCard
+            {/* KPI cards */}
+            <div className="grid grid-cols-4 gap-3">
+              <KpiCard
+                icon={MessageSquare}
                 label="Total Sessions"
                 value={String(totalSessions)}
-                icon={<MessageSquare size={16} />}
+                footerLabel="In date range"
               />
-              <MetricCard
+              <KpiCard
+                icon={DollarSign}
                 label="Total Cost"
                 value={totalCost}
-                icon={<DollarSign size={16} />}
+                footerLabel="API usage cost"
               />
-              <MetricCard
-                label="Total Active Hours"
+              <KpiCard
+                icon={Clock}
+                label="Active Time"
                 value={totalActiveHours}
-                icon={<Clock size={16} />}
+                footerLabel="Total active time"
               />
-              <MetricCard
+              <KpiCard
+                icon={Zap}
                 label="Avg Cost/Session"
                 value={avgCostPerSession}
-                icon={<Zap size={16} />}
+                footerLabel="Per session average"
               />
             </div>
 
             {/* Sessions table */}
-            <div className="rounded-lg border border-border-default overflow-hidden">
+            <div className="rounded-lg border border-border-strong overflow-hidden bg-bg-surface">
               <DataTable
                 columns={columns}
                 data={sessions as any}
@@ -336,26 +340,26 @@ export const PmSessionsPage = memo(function PmSessionsPage({ projectId }: { proj
                 onRowClick={(_, i) => setSelectedIndex(i)}
                 emptyMessage={sessionsLoading ? 'Loading sessions...' : 'No sessions found'}
                 defaultSort={{ key: 'startedAt', direction: 'desc' }}
+                footer={
+                  <>
+                    <span>
+                      {isFiltered
+                        ? `Showing ${sessions.length} of ${sessionsTotal} sessions (filtered)`
+                        : `${sessionsTotal} sessions`}
+                    </span>
+                    {hasMore && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleLoadMore}
+                        disabled={sessionsLoading}
+                      >
+                        {sessionsLoading ? 'Loading...' : 'Load more'}
+                      </Button>
+                    )}
+                  </>
+                }
               />
-            </div>
-
-            {/* Footer: count + load more */}
-            <div className="flex items-center justify-between">
-              <span className="text-xs text-text-tertiary">
-                {isFiltered
-                  ? `Showing ${sessions.length} of ${sessionsTotal} sessions (filtered)`
-                  : `${sessionsTotal} sessions`}
-              </span>
-              {hasMore && (
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  onClick={handleLoadMore}
-                  disabled={sessionsLoading}
-                >
-                  {sessionsLoading ? 'Loading...' : `Load more`}
-                </Button>
-              )}
             </div>
           </div>
         </div>

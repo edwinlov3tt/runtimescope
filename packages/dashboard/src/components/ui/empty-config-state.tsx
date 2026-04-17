@@ -35,7 +35,7 @@ export function EmptyConfigState({ title, description, configHints }: EmptyConfi
                 <span key={hint.key}>
                   <span className="text-text-tertiary">{`  // ${hint.description}\n`}</span>
                   <span className="text-text-muted">{'  '}</span>
-                  <span className="text-brand">{hint.key}</span>
+                  <span className="text-accent">{hint.key}</span>
                   {hint.value && (
                     <>
                       <span className="text-text-muted">{': '}</span>

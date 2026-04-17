@@ -57,14 +57,12 @@ export function InfraPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="Infrastructure"
         tabs={[
           { id: 'overview', label: 'Overview' },
           { id: 'setup', label: 'Setup' },
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        connected={connected}
       />
 
       <div className="flex-1 overflow-auto">
@@ -84,11 +82,11 @@ export function InfraPage() {
             </div>
 
             {configuredCount === 0 && (
-              <div className="mt-6 p-4 rounded-lg border border-border-muted bg-bg-secondary">
+              <div className="mt-6 p-4 rounded-lg border border-border-muted bg-bg-surface">
                 <p className="text-sm text-text-muted">
                   No platforms connected yet. Switch to the{' '}
                   <button
-                    className="text-brand hover:underline"
+                    className="text-accent hover:underline"
                     onClick={() => setActiveTab('setup')}
                   >
                     Setup
@@ -109,7 +107,7 @@ export function InfraPage() {
               </p>
             </div>
 
-            <div className="p-4 rounded-lg border border-border-muted bg-bg-secondary space-y-3">
+            <div className="p-4 rounded-lg border border-border-strong bg-bg-surface space-y-3">
               <h3 className="text-sm font-medium text-text-primary">How it works</h3>
               <ol className="text-sm text-text-secondary space-y-2 list-decimal list-inside">
                 <li>Set the required environment variables for your platform</li>
@@ -118,7 +116,7 @@ export function InfraPage() {
               </ol>
             </div>
 
-            <div className="p-4 rounded-lg border border-border-muted bg-bg-secondary space-y-3">
+            <div className="p-4 rounded-lg border border-border-strong bg-bg-surface space-y-3">
               <h3 className="text-sm font-medium text-text-primary">Configuration</h3>
               <p className="text-sm text-text-muted">
                 Add platforms to <code className="px-1.5 py-0.5 rounded bg-bg-elevated text-text-secondary font-mono text-xs">~/.runtimescope/config.json</code>:
@@ -143,7 +141,7 @@ export function InfraPage() {
             <div className="space-y-3">
               <h3 className="text-sm font-medium text-text-primary">Supported Platforms</h3>
               {platforms.map((platform) => (
-                <div key={platform.id} className="p-4 rounded-lg border border-border-muted space-y-2">
+                <div key={platform.id} className="p-4 rounded-lg border border-border-strong space-y-2">
                   <div className="flex items-center justify-between">
                     <span className="text-sm font-medium text-text-primary">{platform.name}</span>
                     <Badge size="sm" variant={platform.configured ? 'green' : 'default'}>

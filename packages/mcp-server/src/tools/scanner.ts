@@ -4,8 +4,8 @@ import type { EventStore, ProjectManager } from '@runtimescope/collector';
 import { getOrCreateProjectId, scaffoldProjectConfig, readProjectConfig } from '@runtimescope/collector';
 import type { PlaywrightScanner } from '../scanner/index.js';
 
-const COLLECTOR_PORT = process.env.RUNTIMESCOPE_PORT ?? '9090';
-const HTTP_PORT = process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091';
+const COLLECTOR_PORT = process.env.RUNTIMESCOPE_PORT ?? '6767';
+const HTTP_PORT = process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768';
 
 export function registerScannerTools(
   server: McpServer,

@@ -1,11 +1,11 @@
 /**
  * DSN (Data Source Name) parser for RuntimeScope browser SDK.
  *
- * Format: runtimescope://proj_abc123@localhost:9091/my-app
+ * Format: runtimescope://proj_abc123@localhost:6768/my-app
  *   - runtimescope:// or runtimescopes:// (TLS)
  *   - projectId before @
- *   - host:port after @ (HTTP API port, default 9091)
- *   - WS port = HTTP port - 1 (so 9091 → ws on 9090)
+ *   - host:port after @ (HTTP API port, default 6768)
+ *   - WS port = HTTP port - 1 (so 6768 → ws on 6767)
  *   - Optional /appName path
  */
 
@@ -29,7 +29,7 @@ export function parseDsn(dsn: string): ParsedDsn {
     throw new Error(`Invalid RuntimeScope DSN: missing projectId (expected proj_xxx@host)`);
   }
   const host = url.hostname;
-  const httpPort = url.port ? parseInt(url.port) : 9091;
+  const httpPort = url.port ? parseInt(url.port) : 6768;
   const wsPort = httpPort - 1;
   const appName = url.pathname.replace(/^\//, '') || undefined;
   const wsProto = tls ? 'wss' : 'ws';
@@ -46,7 +46,7 @@ export function parseDsn(dsn: string): ParsedDsn {
 export function buildDsn(opts: { projectId: string; host?: string; port?: number; appName?: string; tls?: boolean }): string {
   const proto = opts.tls ? 'runtimescopes' : 'runtimescope';
   const host = opts.host ?? 'localhost';
-  const port = opts.port ?? 9091;
+  const port = opts.port ?? 6768;
   const path = opts.appName ? `/${opts.appName}` : '';
   return `${proto}://${opts.projectId}@${host}:${port}${path}`;
 }

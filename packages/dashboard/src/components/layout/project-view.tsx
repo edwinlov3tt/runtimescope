@@ -103,7 +103,7 @@ function HeaderCategoryBadge({ projectId, category }: { projectId: string; categ
                 onClick={() => handleSelect(cat)}
                 className={cn(
                   'w-full px-3 py-1.5 text-left text-xs hover:bg-bg-hover cursor-pointer',
-                  cat === category ? 'text-brand font-medium' : 'text-text-primary'
+                  cat === category ? 'text-accent font-medium' : 'text-text-primary'
                 )}
               >
                 {cat}
@@ -123,7 +123,7 @@ function HeaderCategoryBadge({ projectId, category }: { projectId: string; categ
               <button
                 type="button"
                 onClick={handleCreate}
-                className="text-xs text-brand font-medium cursor-pointer"
+                className="text-xs text-accent font-medium cursor-pointer"
               >
                 Add
               </button>
@@ -228,7 +228,7 @@ function DevServerControl({ project }: { project: PmProject }) {
             href={`http://localhost:${devPort}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="p-1 rounded hover:bg-bg-hover text-text-muted hover:text-brand transition-colors"
+            className="p-1 rounded hover:bg-bg-hover text-text-muted hover:text-accent transition-colors"
             title="Open in browser"
           >
             <ExternalLink size={12} />
@@ -423,7 +423,7 @@ function RuntimeAppsBadge({ project }: { project: PmProject }) {
               <button
                 type="button"
                 onClick={handleAdd}
-                className="text-xs text-brand font-medium cursor-pointer"
+                className="text-xs text-accent font-medium cursor-pointer"
               >
                 Add
               </button>
@@ -442,7 +442,7 @@ export function ProjectView() {
   const project = usePmStore((s) => s.projects.find((p) => p.id === selectedPmProject));
 
   if (!project) {
-    return <EmptyState title="No Project Selected" description="Select a project from the sidebar." />;
+    return <EmptyState title="No Project Selected" description="Select a project from the header dropdown to get started." />;
   }
 
   return (
@@ -460,15 +460,7 @@ export function ProjectView() {
         )}
       </div>
 
-      {/* Tabs */}
-      <Tabs
-        tabs={PROJECT_TABS}
-        activeTab={activeProjectTab}
-        onTabChange={(id) => setActiveProjectTab(id as ProjectTab)}
-        className="mt-2"
-      />
-
-      {/* Content */}
+      {/* Content — tab selected via rail */}
       <div className="flex-1 min-h-0 flex flex-col overflow-hidden">
         <Suspense fallback={<ListSkeleton rows={8} />}>
           {activeProjectTab === 'tasks' && <TasksPage projectId={project.id} />}

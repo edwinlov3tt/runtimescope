@@ -1,6 +1,6 @@
 import { useState, useMemo, useCallback, memo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
-import { Badge, StackTrace, JsonViewer } from '@/components/ui';
+import { StackTrace, JsonViewer } from '@/components/ui';
 import { SearchInput } from '@/components/ui/input';
 import { ExportButton } from '@/components/ui/export-button';
 import { ListSkeleton } from '@/components/ui/skeleton';
@@ -11,22 +11,20 @@ import { cn } from '@/lib/cn';
 import { AlertCircle, AlertTriangle, Info, Bug, Terminal, ChevronRight } from 'lucide-react';
 import type { ConsoleEvent } from '@/lib/runtime-types';
 
-const LEVEL_CONFIG: Record<string, { icon: typeof AlertCircle; color: string; badge: string }> = {
-  error: { icon: AlertCircle, color: 'text-red', badge: 'red' },
-  warn: { icon: AlertTriangle, color: 'text-amber', badge: 'amber' },
-  info: { icon: Info, color: 'text-blue', badge: 'blue' },
-  log: { icon: Terminal, color: 'text-text-secondary', badge: 'default' },
-  debug: { icon: Bug, color: 'text-purple', badge: 'purple' },
-  trace: { icon: Terminal, color: 'text-cyan', badge: 'cyan' },
+const LEVEL_CONFIG: Record<string, { icon: typeof AlertCircle; color: string; badge: string; dotColor: string; rowTint: string }> = {
+  error: { icon: AlertCircle, color: 'text-red', badge: 'red', dotColor: 'bg-red', rowTint: 'bg-red-muted/30' },
+  warn:  { icon: AlertTriangle, color: 'text-amber', badge: 'amber', dotColor: 'bg-amber', rowTint: 'bg-amber-muted/20' },
+  info:  { icon: Info, color: 'text-blue', badge: 'blue', dotColor: 'bg-blue', rowTint: '' },
+  log:   { icon: Terminal, color: 'text-text-secondary', badge: 'default', dotColor: 'bg-text-tertiary', rowTint: '' },
+  debug: { icon: Bug, color: 'text-purple', badge: 'purple', dotColor: 'bg-purple', rowTint: '' },
+  trace: { icon: Terminal, color: 'text-cyan', badge: 'cyan', dotColor: 'bg-cyan', rowTint: '' },
 };
 
 const LEVELS = ['all', 'error', 'warn', 'info', 'log', 'debug'] as const;
-
-/** Max rows rendered at once to prevent DOM bloat and slow renders. */
 const RENDER_CAP = 200;
 
 // ---------------------------------------------------------------------------
-// Memoized row component — prevents re-rendering every row on parent update
+// Console Row
 // ---------------------------------------------------------------------------
 
 const ConsoleRow = memo(function ConsoleRow({
@@ -43,52 +41,80 @@ const ConsoleRow = memo(function ConsoleRow({
   const hasDetails = (entry.args && entry.args.length > 0) || entry.stackTrace;
 
   return (
-    <div className="border-b border-border-muted">
+    <div className={cn('border-b border-border-muted', config.rowTint)}>
       <div
         onClick={() => hasDetails && onToggle(entry.eventId)}
         className={cn(
-          'flex items-start gap-3 px-5 py-2 transition-colors',
+          'flex items-start gap-0 transition-colors',
           hasDetails && 'cursor-pointer hover:bg-bg-hover',
-          isExpanded && 'bg-bg-hover'
+          isExpanded && 'bg-bg-hover',
         )}
       >
-        {hasDetails && (
-          <ChevronRight
-            size={12}
-            className={cn('mt-1 shrink-0 text-text-muted transition-transform', isExpanded && 'rotate-90')}
-          />
-        )}
-        {!hasDetails && <div className="w-3 shrink-0" />}
-        <Icon size={14} strokeWidth={1.75} className={cn('mt-0.5 shrink-0', config.color)} />
-        <span className="text-[11px] font-mono text-text-muted tabular-nums shrink-0 mt-0.5">
+        {/* Timestamp */}
+        <span className="w-[90px] shrink-0 px-3 py-2 text-[11px] font-mono text-text-disabled whitespace-nowrap">
           {formatTimestamp(entry.timestamp)}
         </span>
-        <span className={cn('text-[13px] flex-1 min-w-0', entry.level === 'error' ? 'text-red' : 'text-text-primary')}>
+
+        {/* Level badge */}
+        <span className="w-[64px] shrink-0 py-2 px-2 flex items-center gap-1.5">
+          <span className={cn(
+            'text-[10px] font-bold uppercase px-1.5 py-px rounded',
+            entry.level === 'error' ? 'bg-red-muted text-red' :
+            entry.level === 'warn'  ? 'bg-amber-muted text-amber' :
+            entry.level === 'info'  ? 'bg-blue-muted text-blue' :
+            entry.level === 'debug' ? 'bg-purple-muted text-purple' :
+            'bg-bg-overlay text-text-tertiary',
+          )}>
+            {entry.level.toUpperCase()}
+          </span>
+        </span>
+
+        {/* Message */}
+        <span className={cn(
+          'flex-1 py-2 pr-3 font-mono text-[12px] leading-relaxed whitespace-pre-wrap break-words min-w-0',
+          entry.level === 'error' ? 'text-red' :
+          entry.level === 'warn' ? 'text-amber' :
+          'text-text-secondary',
+        )}>
           {entry.message}
         </span>
+
+        {/* Source file */}
         {entry.sourceFile && (
-          <span className="text-[11px] text-text-muted shrink-0 font-mono">{entry.sourceFile}</span>
+          <span className="w-[160px] shrink-0 py-2 pr-3 text-[11px] text-right text-accent font-mono truncate">
+            {entry.sourceFile}
+          </span>
+        )}
+
+        {/* Expand chevron */}
+        {hasDetails && (
+          <span className="shrink-0 py-2 pr-3 flex items-center text-text-disabled">
+            <ChevronRight size={12} className={cn('transition-transform', isExpanded && 'rotate-90')} />
+          </span>
         )}
       </div>
 
+      {/* Expanded detail */}
       {isExpanded && (
-        <div className="px-5 pb-3 pl-16 space-y-3">
-          {entry.args && entry.args.length > 0 && (
-            <div>
-              <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">Arguments</p>
-              <div className="bg-bg-elevated rounded-md p-3 border border-border-muted">
-                <JsonViewer data={entry.args.length === 1 ? entry.args[0] : entry.args} defaultExpanded={true} />
+        <div className="bg-bg-elevated border-b border-border-muted">
+          <div className="py-3 px-4 ml-[154px] space-y-3">
+            {entry.args && entry.args.length > 0 && (
+              <div>
+                <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">Arguments</p>
+                <div className="bg-bg-base rounded-md p-3 border border-border-muted">
+                  <JsonViewer data={entry.args.length === 1 ? entry.args[0] : entry.args} defaultExpanded={true} />
+                </div>
               </div>
-            </div>
-          )}
-          {entry.stackTrace && (
-            <div>
-              <p className="text-[11px] font-medium text-text-muted uppercase tracking-wider mb-1">Stack Trace</p>
-              <div className="bg-bg-elevated rounded-md py-2 border border-border-muted">
-                <StackTrace trace={entry.stackTrace} />
+            )}
+            {entry.stackTrace && (
+              <div>
+                <p className="text-[10px] font-semibold text-text-muted uppercase tracking-wider mb-1.5">Stack Trace</p>
+                <div className="bg-bg-base rounded-md py-2 border border-border-muted">
+                  <StackTrace trace={entry.stackTrace} />
+                </div>
               </div>
-            </div>
-          )}
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -96,7 +122,7 @@ const ConsoleRow = memo(function ConsoleRow({
 });
 
 // ---------------------------------------------------------------------------
-// Main page
+// Console Page
 // ---------------------------------------------------------------------------
 
 export function ConsolePage() {
@@ -127,7 +153,6 @@ export function ConsolePage() {
     return data;
   }, [activeLevel, search, allData]);
 
-  // Cap the rendered list unless user explicitly asks for all
   const rendered = useMemo(
     () => (showAll || filtered.length <= RENDER_CAP ? filtered : filtered.slice(0, RENDER_CAP)),
     [filtered, showAll],
@@ -140,11 +165,10 @@ export function ConsolePage() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <Topbar title="Console" connected={connected} />
-
-      {/* Level filters + search */}
-      <div className="border-b border-border-default px-5 py-2.5 flex items-center gap-3">
-        <div className="flex items-center gap-1">
+      {/* Toolbar */}
+      <div className="border-b border-border-default px-5 py-2.5 flex items-center gap-3 shrink-0">
+        {/* Level pill group */}
+        <div className="flex items-center gap-0.5 bg-bg-surface border border-border-default rounded-md p-0.5">
           {LEVELS.map((level) => {
             const config = level === 'all' ? null : LEVEL_CONFIG[level];
             const isActive = activeLevel === level;
@@ -153,27 +177,29 @@ export function ConsolePage() {
                 key={level}
                 onClick={() => setActiveLevel(level)}
                 className={cn(
-                  'h-7 px-2.5 rounded-md text-[12px] font-medium transition-colors cursor-pointer flex items-center gap-1.5',
+                  'h-[26px] px-2.5 rounded text-[12px] font-medium transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap',
                   isActive
-                    ? 'bg-bg-elevated text-text-primary'
-                    : 'text-text-tertiary hover:text-text-secondary hover:bg-bg-hover'
+                    ? 'bg-bg-overlay text-text-primary'
+                    : 'text-text-muted hover:text-text-secondary hover:bg-bg-hover',
                 )}
               >
-                {config && <config.icon size={12} className={isActive ? config.color : ''} />}
+                {config && <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', config.dotColor)} />}
                 <span className="capitalize">{level}</span>
-                <span className={cn('text-[10px] tabular-nums', isActive ? 'text-text-secondary' : 'text-text-muted')}>
+                <span className={cn('text-[10px] font-mono tabular-nums', isActive ? 'text-text-secondary' : 'text-text-disabled')}>
                   {levelCounts[level] || 0}
                 </span>
               </button>
             );
           })}
         </div>
+
+        {/* Search + export */}
         <div className="flex items-center gap-2 ml-auto">
           <div className="w-56">
             <SearchInput
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Filter logs..."
+              placeholder="Filter by message or source..."
             />
           </div>
           <ExportButton data={filtered as unknown as Record<string, unknown>[]} filename="console-events" />
@@ -181,31 +207,45 @@ export function ConsolePage() {
       </div>
 
       {/* Log stream */}
-      <div className="flex-1 overflow-y-auto">
-        {!initialLoadDone && allData.length === 0 ? (
-          <ListSkeleton rows={12} />
-        ) : (
-        <>
-        {rendered.map((entry, i) => (
-          <ConsoleRow
-            key={`${entry.eventId}-${i}`}
-            entry={entry}
-            isExpanded={expandedId === entry.eventId}
-            onToggle={handleToggle}
-          />
-        ))}
-        {isCapped && (
-          <div className="px-5 py-3 text-center">
-            <button
-              onClick={() => setShowAll(true)}
-              className="text-xs text-text-tertiary hover:text-text-secondary transition-colors"
-            >
-              Showing {RENDER_CAP} of {filtered.length} entries — click to show all
-            </button>
+      <div className="flex-1 flex flex-col min-h-0">
+        <div className="flex-1 overflow-y-auto border border-border-strong rounded-lg mx-5 mt-4 mb-0 overflow-hidden">
+          {!initialLoadDone && allData.length === 0 ? (
+            <ListSkeleton rows={12} />
+          ) : (
+            <>
+              {rendered.map((entry, i) => (
+                <ConsoleRow
+                  key={`${entry.eventId}-${i}`}
+                  entry={entry}
+                  isExpanded={expandedId === entry.eventId}
+                  onToggle={handleToggle}
+                />
+              ))}
+              {isCapped && (
+                <div className="px-5 py-3 text-center">
+                  <button
+                    onClick={() => setShowAll(true)}
+                    className="text-xs text-text-tertiary hover:text-text-secondary transition-colors cursor-pointer"
+                  >
+                    Showing {RENDER_CAP} of {filtered.length} entries — click to show all
+                  </button>
+                </div>
+              )}
+            </>
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-between px-5 py-2 text-[11px] text-text-muted shrink-0 mx-5">
+          <span>Showing {rendered.length} entries</span>
+          <div className="flex items-center gap-3">
+            {(levelCounts.error ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-red" /> {levelCounts.error} Error</span>}
+            {(levelCounts.warn ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-amber" /> {levelCounts.warn} Warning</span>}
+            {(levelCounts.info ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-blue" /> {levelCounts.info} Info</span>}
+            {(levelCounts.log ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-text-tertiary" /> {levelCounts.log} Log</span>}
+            {(levelCounts.debug ?? 0) > 0 && <span className="flex items-center gap-1"><span className="w-1 h-1 rounded-full bg-purple" /> {levelCounts.debug} Debug</span>}
           </div>
-        )}
-        </>
-        )}
+        </div>
       </div>
     </div>
   );

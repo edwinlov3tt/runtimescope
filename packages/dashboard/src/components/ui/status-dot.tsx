@@ -12,7 +12,8 @@ const dotVariants = cva('inline-block rounded-full shrink-0', {
       orange: 'bg-orange',
       cyan: 'bg-cyan',
       gray: 'bg-text-tertiary',
-      brand: 'bg-brand',
+      brand: 'bg-accent',
+      accent: 'bg-accent',
     },
     size: {
       sm: 'w-1.5 h-1.5',
@@ -20,7 +21,7 @@ const dotVariants = cva('inline-block rounded-full shrink-0', {
       lg: 'w-2.5 h-2.5',
     },
     pulse: {
-      true: 'animate-pulse',
+      true: 'animate-pulse-dot',
       false: '',
     },
   },

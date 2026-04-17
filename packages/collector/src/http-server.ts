@@ -47,7 +47,7 @@ export class HttpServer {
   private routes: Map<string, RouteHandler> = new Map();
   private pmRouter: ReturnType<typeof createPmRouter> | null = null;
   private sdkBundlePath: string | null = null;
-  private activePort = 9091;
+  private activePort = 6768;
   private startedAt = Date.now();
   private connectedSessionsGetter: (() => { sessionId: string; projectName: string }[]) | null = null;
   private pmStore: PmStore | null = null;
@@ -429,7 +429,7 @@ export class HttpServer {
   }
 
   async start(options: HttpServerOptions = {}): Promise<void> {
-    const basePort = options.port ?? parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091', 10);
+    const basePort = options.port ?? parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768', 10);
     const host = options.host ?? '127.0.0.1';
     const tls = options.tls;
     const maxRetries = 5;

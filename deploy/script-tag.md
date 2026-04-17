@@ -49,10 +49,10 @@ runtimescopes://proj_xxx@your-collector.example.com
 For local testing against a locally-running collector:
 
 ```html
-<script src="http://localhost:9091/runtimescope.js"></script>
+<script src="http://localhost:6768/runtimescope.js"></script>
 <script>
   RuntimeScope.init({
-    dsn: 'runtimescope://proj_xxx@localhost:9091/my-app',
+    dsn: 'runtimescope://proj_xxx@localhost:6768/my-app',
   });
 </script>
 ```

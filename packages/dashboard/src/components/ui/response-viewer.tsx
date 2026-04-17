@@ -328,7 +328,7 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
         </div>
         <button
           onClick={() => downloadBinary(content, `${filename}.${binary.ext ?? 'bin'}`)}
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-brand text-white text-sm font-medium hover:bg-brand/90 transition-colors cursor-pointer"
+          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-md bg-accent text-white text-sm font-medium hover:bg-accent/90 transition-colors cursor-pointer"
         >
           <Download size={14} />
           Download {binary.ext?.toUpperCase() ?? 'file'}
@@ -356,7 +356,7 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
               className={cn(
                 'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
                 format === key
-                  ? 'bg-brand/10 text-brand'
+                  ? 'bg-accent/10 text-accent'
                   : 'text-text-muted hover:text-text-secondary',
               )}
             >
@@ -369,7 +369,7 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
               onClick={() => setFormat('pretty')}
               className={cn(
                 'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
-                format === 'pretty' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                format === 'pretty' ? 'bg-accent/10 text-accent' : 'text-text-muted hover:text-text-secondary',
               )}
             >
               Parsed
@@ -378,7 +378,7 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
               onClick={() => setFormat('raw')}
               className={cn(
                 'px-2 py-0.5 rounded text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
-                format === 'raw' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                format === 'raw' ? 'bg-accent/10 text-accent' : 'text-text-muted hover:text-text-secondary',
               )}
             >
               Raw
@@ -450,7 +450,7 @@ export function ResponseViewer({ content, label = 'Response', filename = 'respon
         <div className="rounded-md border border-border-default bg-bg-input p-4 text-center">
           <button
             onClick={() => setFullscreen(false)}
-            className="text-sm text-brand hover:underline cursor-pointer"
+            className="text-sm text-accent hover:underline cursor-pointer"
           >
             Viewing fullscreen — click to close
           </button>

@@ -45,7 +45,7 @@ Seven-package npm workspace monorepo. Single data flow: SDK → Collector → MC
 
 ```
 @runtimescope/sdk (browser, zero deps)
-    │  WebSocket (ws://localhost:9090)
+    │  WebSocket (ws://localhost:6767)
     ▼
 @runtimescope/workers-sdk (Cloudflare Workers, zero deps)
     │  HTTP POST (to collector /api/events)
@@ -130,8 +130,8 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
-| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port (for dashboard) |
+| `RUNTIMESCOPE_PORT` | `6767` | WebSocket collector port |
+| `RUNTIMESCOPE_HTTP_PORT` | `6768` | HTTP API port (for dashboard) |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
 
-Both the MCP server and standalone collector use the same default ports (9090/9091). Only one should run at a time. The SDK defaults to `ws://localhost:9090`. The dashboard Vite proxy defaults to `http://127.0.0.1:9091`.
+Both the MCP server and standalone collector use the same default ports (6767/6768). Only one should run at a time. The SDK defaults to `ws://localhost:6767`. The dashboard Vite proxy defaults to `http://127.0.0.1:6768`.

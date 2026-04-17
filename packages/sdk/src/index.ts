@@ -132,7 +132,7 @@ export class RuntimeScope {
     }
 
     const resolved = {
-      serverUrl: config.serverUrl ?? config.endpoint ?? 'ws://localhost:9090',
+      serverUrl: config.serverUrl ?? config.endpoint ?? 'ws://localhost:6767',
       appName: config.appName ?? 'unknown',
       captureNetwork: config.captureNetwork ?? true,
       captureConsole: config.captureConsole ?? true,

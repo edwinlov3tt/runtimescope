@@ -28,7 +28,7 @@ export default defineConfig({
 
 ```bash
 # .env.local
-VITE_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
+VITE_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
 ```
 
 That's it. The plugin injects a `<script type="module">` that initializes the SDK on page load — before any other scripts run, so network/console events are captured from the first tick.

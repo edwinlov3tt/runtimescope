@@ -63,11 +63,9 @@ export function ApiMapPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="API Map"
         tabs={[{ id: 'endpoints', label: 'Endpoints' }, { id: 'services', label: 'Services' }]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        connected={connected}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -84,7 +82,7 @@ export function ApiMapPage() {
           {activeTab === 'services' && (
             <div className="p-5 grid grid-cols-2 gap-4">
               {services.map((svc) => (
-                <div key={svc.name} className="bg-bg-elevated border border-border-default rounded-lg p-4">
+                <div key={svc.name} className="bg-bg-surface border border-border-strong rounded-lg p-4">
                   <div className="flex items-center justify-between mb-2">
                     <span className="text-[15px] font-semibold text-text-primary">{svc.name}</span>
                     <StatusDot color={svc.errorRate > 0.05 ? 'red' : svc.errorRate > 0 ? 'amber' : 'green'} size="md" />

@@ -49,11 +49,11 @@ The MCP server gives Claude the tools. The SDK connects your running app so thos
 The MCP server serves the SDK bundle automatically. Add this before `</body>` in any HTML file:
 
 ```html
-<script src="http://localhost:9091/runtimescope.js"></script>
+<script src="http://localhost:6768/runtimescope.js"></script>
 <script>
   RuntimeScope.init({
     appName: 'my-app',
-    endpoint: 'ws://localhost:9090',
+    endpoint: 'ws://localhost:6767',
   });
 </script>
 ```
@@ -71,7 +71,7 @@ import { RuntimeScope } from '@runtimescope/sdk';
 
 RuntimeScope.init({
   appName: 'my-app',
-  endpoint: 'ws://localhost:9090',
+  endpoint: 'ws://localhost:6767',
 });
 ```
 
@@ -212,7 +212,7 @@ When a user wants to install RuntimeScope:
 1. The MCP server should already be registered. If not: claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
 2. Use get_sdk_snippet to generate the correct installation code for their framework. It supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and more.
 3. For npm-based projects (React, Vue, etc.): npm install @runtimescope/sdk
-4. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML): use the <script> tag — no npm or build system required. The SDK bundle is served by the MCP server at http://localhost:9091/runtimescope.js.
+4. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML): use the <script> tag — no npm or build system required. The SDK bundle is served by the MCP server at http://localhost:6768/runtimescope.js.
 5. get_sdk_snippet returns framework-specific placement hints (e.g., "paste in templates/base.html before </body>" for Flask).
 6. Never tell users RuntimeScope is incompatible with their tech stack. If it serves HTML, RuntimeScope works with it.
 7. For Node.js backends: npm install @runtimescope/server-sdk
@@ -337,7 +337,7 @@ import { RuntimeScope } from '@runtimescope/sdk';
 
 RuntimeScope.init({
   // Connection
-  endpoint: 'ws://localhost:9090',   // Collector WebSocket URL (default)
+  endpoint: 'ws://localhost:6767',   // Collector WebSocket URL (default)
   appName: 'my-app',                // Identifies this app in session info
   enabled: true,                     // Set to false to disable entirely
   authToken: undefined,              // API key for authenticated collectors
@@ -377,7 +377,7 @@ import { RuntimeScope } from '@runtimescope/server-sdk';
 
 RuntimeScope.connect({
   // Connection
-  serverUrl: 'ws://localhost:9090',  // Collector WebSocket URL (default)
+  serverUrl: 'ws://localhost:6767',  // Collector WebSocket URL (default)
   appName: 'my-api',                // Identifies this app in session info
   authToken: undefined,              // API key for authenticated collectors
 
@@ -535,11 +535,11 @@ No npm required. Add the script tag to your base template:
 <!-- Rails: app/views/layouts/application.html.erb -->
 <!-- PHP/WordPress: footer.php -->
 
-<script src="http://localhost:9091/runtimescope.js"></script>
+<script src="http://localhost:6768/runtimescope.js"></script>
 <script>
   RuntimeScope.init({
     appName: 'my-app',
-    endpoint: 'ws://localhost:9090',
+    endpoint: 'ws://localhost:6767',
   });
 </script>
 ```
@@ -713,8 +713,8 @@ packages/
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `RUNTIMESCOPE_PORT` | `9090` | WebSocket collector port |
-| `RUNTIMESCOPE_HTTP_PORT` | `9091` | HTTP API port |
+| `RUNTIMESCOPE_PORT` | `6767` | WebSocket collector port |
+| `RUNTIMESCOPE_HTTP_PORT` | `6768` | HTTP API port |
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
 | `RUNTIMESCOPE_RETENTION_DAYS` | `30` | Days to keep historical events in SQLite |
 

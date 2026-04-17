@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo, memo } from 'react';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useAppStore } from '@/stores/use-app-store';
-import { MetricCard, DataTable, Badge, Button } from '@/components/ui';
+import { KpiCard, DataTable, Badge, Button } from '@/components/ui';
 import {
   AreaChart,
   Area,
@@ -374,47 +374,39 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
             </div>
           )}
 
-          {/* Summary Metric Cards */}
-          <div className="grid grid-cols-5 gap-4">
-            <MetricCard
+          {/* KPI Cards */}
+          <div className="grid grid-cols-4 gap-3">
+            <KpiCard
+              icon={Clock}
               label="Active Hours"
-              value={capexSummary ? `${formatHours(capexSummary.totalActiveMinutes)}h` : '0h'}
-              icon={<Clock size={16} />}
+              value={capexSummary ? `${formatHours(capexSummary.totalActiveMinutes)}` : '0'}
+              unit="h"
+              footerLabel="Total tracked time"
             />
-            <MetricCard
+            <KpiCard
+              icon={DollarSign}
               label="Total Cost"
               value={capexSummary ? formatCost(capexSummary.totalCostMicrodollars) : '$0.00'}
-              icon={<DollarSign size={16} />}
+              footerLabel="API usage cost"
             />
-            <MetricCard
+            <KpiCard
+              icon={TrendingUp}
               label="Capitalizable"
-              value={
-                capexSummary
-                  ? formatCost(capexSummary.capitalizableCostMicrodollars)
-                  : '$0.00'
-              }
-              icon={<TrendingUp size={16} />}
-              className="border-green-border"
+              value={capexSummary ? formatCost(capexSummary.capitalizableCostMicrodollars) : '$0.00'}
+              sparkColor="var(--color-green)"
+              footerLabel="Eligible for capitalization"
             />
-            <MetricCard
-              label="Expensed"
-              value={
-                capexSummary
-                  ? formatCost(capexSummary.expensedCostMicrodollars)
-                  : '$0.00'
-              }
-              icon={<DollarSign size={16} />}
-            />
-            <MetricCard
-              label="Confirmation Progress"
-              value={`${confirmedCount}/${totalSessions} confirmed`}
-              icon={<CheckCircle size={16} />}
+            <KpiCard
+              icon={CheckCircle}
+              label="Confirmed"
+              value={`${confirmedCount}/${totalSessions}`}
+              footerLabel={capexSummary ? `Expensed: ${formatCost(capexSummary.expensedCostMicrodollars)}` : 'Expensed: $0.00'}
             />
           </div>
 
           {/* Weekly Spend Chart */}
           {chartData.length > 0 && (
-            <div className="rounded-lg border border-border-default bg-bg-elevated p-5">
+            <div className="rounded-lg border border-border-strong bg-bg-surface p-5">
               <div className="flex items-center justify-between mb-5">
                 <div>
                   <h2 className="text-sm font-semibold text-text-primary">
@@ -440,7 +432,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
                       onClick={() => setChartGranularity('day')}
                       className={cn(
                         'px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer',
-                        chartGranularity === 'day' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                        chartGranularity === 'day' ? 'bg-accent/10 text-accent' : 'text-text-muted hover:text-text-secondary',
                       )}
                     >
                       Day
@@ -449,7 +441,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
                       onClick={() => setChartGranularity('week')}
                       className={cn(
                         'px-2.5 py-1 text-[10px] font-medium uppercase tracking-wider transition-colors cursor-pointer border-l border-border-default',
-                        chartGranularity === 'week' ? 'bg-brand/10 text-brand' : 'text-text-muted hover:text-text-secondary',
+                        chartGranularity === 'week' ? 'bg-accent/10 text-accent' : 'text-text-muted hover:text-text-secondary',
                       )}
                     >
                       Week
@@ -486,7 +478,7 @@ export const CapexPage = memo(function CapexPage({ projectId }: { projectId: str
                   <Tooltip
                     contentStyle={CHART_TOOLTIP_STYLE}
                     labelStyle={CHART_TOOLTIP_LABEL_STYLE}
-                    formatter={(value: number) => `$${value.toFixed(2)}`}
+                    formatter={(value) => `$${Number(value ?? 0).toFixed(2)}`}
                     separator=""
                   />
                   <Area

@@ -52,7 +52,7 @@ export function ProjectSelector() {
             className={cn(
               'w-full flex items-center gap-2.5 h-7 px-2.5 text-[12px] font-medium transition-colors cursor-pointer',
               'hover:bg-bg-hover',
-              !selectedProject ? 'text-brand' : 'text-text-secondary',
+              !selectedProject ? 'text-accent' : 'text-text-secondary',
             )}
           >
             <Layers size={12} className="text-text-tertiary" />
@@ -66,7 +66,7 @@ export function ProjectSelector() {
               className={cn(
                 'w-full flex items-center gap-2.5 h-7 px-2.5 text-[12px] font-medium transition-colors cursor-pointer',
                 'hover:bg-bg-hover',
-                selectedProject === p.appName ? 'text-brand' : 'text-text-secondary',
+                selectedProject === p.appName ? 'text-accent' : 'text-text-secondary',
               )}
             >
               <StatusDot color={p.isConnected ? 'green' : 'gray'} size="sm" />

@@ -67,9 +67,9 @@ export interface InfrastructureConfig {
 }
 
 const DEFAULT_GLOBAL_CONFIG: GlobalConfig = {
-  defaultPort: 9090,
+  defaultPort: 6767,
   bufferSize: 10_000,
-  httpPort: 9091,
+  httpPort: 6768,
 };
 
 /** Minimal interface for PmStore used by rebuildAppIndex (avoids circular deps). */

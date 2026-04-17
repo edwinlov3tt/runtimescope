@@ -30,12 +30,12 @@ const STATUS_TEXT: Record<string, string> = {
   red: 'text-red',
 };
 
-const METHOD_VARIANT: Record<string, 'green' | 'purple' | 'amber' | 'red' | 'orange'> = {
-  GET: 'green',
-  POST: 'purple',
+const METHOD_VARIANT: Record<string, 'blue' | 'green' | 'amber' | 'purple' | 'red'> = {
+  GET: 'blue',
+  POST: 'green',
   PUT: 'amber',
+  PATCH: 'purple',
   DELETE: 'red',
-  PATCH: 'orange',
 };
 
 function getRequestName(req: NetworkEvent): string {
@@ -163,7 +163,6 @@ export function NetworkPage() {
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
       <Topbar
-        title="Network"
         tabs={[
           { id: 'all', label: 'All' },
           { id: 'fetch', label: 'Fetch' },
@@ -172,7 +171,6 @@ export function NetworkPage() {
         ]}
         activeTab={activeTab}
         onTabChange={setActiveTab}
-        connected={connected}
       />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
@@ -237,7 +235,7 @@ export function NetworkPage() {
                               key={k}
                               className="flex gap-2 text-[13px] font-mono"
                             >
-                              <span className="text-brand shrink-0">
+                              <span className="text-accent shrink-0">
                                 {k}:
                               </span>
                               <span className="text-text-secondary truncate">
@@ -259,7 +257,7 @@ export function NetworkPage() {
                               key={k}
                               className="flex gap-2 text-[13px] font-mono"
                             >
-                              <span className="text-brand shrink-0">
+                              <span className="text-accent shrink-0">
                                 {k}:
                               </span>
                               <span className="text-text-secondary truncate">

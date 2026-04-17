@@ -142,7 +142,7 @@ export function scaffoldProjectConfig(
   }
 
   const projectId = generateProjectId();
-  const httpPort = process.env.RUNTIMESCOPE_HTTP_PORT ?? '9091';
+  const httpPort = process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768';
   const dsn = `runtimescope://${projectId}@localhost:${httpPort}/${opts.appName}`;
 
   const config: RuntimeScopeProjectConfig = {

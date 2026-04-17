@@ -65,11 +65,11 @@ export function register(): void {
   const dsn = process.env.RUNTIMESCOPE_DSN;
   if (!dsn) return; // nothing to warn about
 
-  let httpPort = 9091;
+  let httpPort = 6768;
   try {
     httpPort = parseDsn(dsn).httpEndpoint.split(':').pop()
       ? parseInt(parseDsn(dsn).httpEndpoint.split(':').pop() as string, 10)
-      : 9091;
+      : 6768;
   } catch {
     /* malformed DSN already logged by SDK */
   }

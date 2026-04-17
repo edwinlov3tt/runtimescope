@@ -3,15 +3,15 @@
 # Caddy automatically provisions Let's Encrypt certificates for HTTPS/WSS.
 
 runtimescope.example.com {
-    # WebSocket upgrade for SDK connections → collector:9090
+    # WebSocket upgrade for SDK connections → collector:6767
     @websocket {
         header Connection *Upgrade*
         header Upgrade    websocket
     }
-    reverse_proxy @websocket collector:9090
+    reverse_proxy @websocket collector:6767
 
-    # HTTP API (REST + event ingestion + SDK bundle) → collector:9091
-    reverse_proxy collector:9091
+    # HTTP API (REST + event ingestion + SDK bundle) → collector:6768
+    reverse_proxy collector:6768
 
     # Security headers
     header {

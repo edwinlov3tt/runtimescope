@@ -1,10 +1,8 @@
 import { useState, useMemo } from 'react';
-import { Topbar } from '@/components/layout/topbar';
 import { DataTable, DetailPanel, Badge, StatusDot, Sparkline, Tabs } from '@/components/ui';
 import { EmptyConfigState } from '@/components/ui/empty-config-state';
 import { SearchInput } from '@/components/ui/input';
 import { useDataStore } from '@/stores/use-data-store';
-import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
 import type { RenderComponentProfile } from '@/lib/runtime-types';
 
@@ -46,7 +44,6 @@ const RENDER_COLUMNS = [
 export function RendersPage() {
   const [search, setSearch] = useState('');
   const [detailIndex, setDetailIndex] = useState<number | null>(null);
-  const connected = useConnected();
   const initialLoadDone = useDataStore((s) => s.initialLoadDone);
   const liveRenders = useDataStore((s) => s.renders);
 
@@ -79,7 +76,6 @@ export function RendersPage() {
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
-      <Topbar title="Renders" connected={connected} />
 
       <div className="flex-1 flex min-h-0 overflow-hidden">
         {initialLoadDone && liveRenders.length === 0 ? (
@@ -109,15 +105,14 @@ export function RendersPage() {
           </div>
 
           {/* Table */}
-          <div className="flex-1 overflow-auto">
-            <DataTable
-              columns={RENDER_COLUMNS}
-              data={filtered as any}
-              selectedIndex={detailIndex ?? undefined}
-              onRowClick={(_, i) => setDetailIndex(i)}
-              defaultSort={{ key: 'renderCount', direction: 'desc' }}
-            />
-          </div>
+          <DataTable
+            className="flex-1"
+            columns={RENDER_COLUMNS}
+            data={filtered as any}
+            selectedIndex={detailIndex ?? undefined}
+            onRowClick={(_, i) => setDetailIndex(i)}
+            defaultSort={{ key: 'renderCount', direction: 'desc' }}
+          />
         </div>
         )}
 

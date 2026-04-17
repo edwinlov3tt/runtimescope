@@ -4,7 +4,7 @@
 // RuntimeScope Dashboard Launcher
 //
 // Smart single command that:
-// 1. Detects if MCP server is already running (port 9090/9091)
+// 1. Detects if MCP server is already running (port 6767/6768)
 // 2. Starts standalone collector on free ports if needed
 // 3. Launches the dashboard Vite dev server
 //
@@ -23,8 +23,8 @@ const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // dist/ is at packages/collector/dist/, so repo root is 3 levels up
 const REPO_ROOT = resolve(__dirname, '..', '..', '..');
 
-const MCP_WS_PORT = 9090;
-const MCP_HTTP_PORT = 9091;
+const MCP_WS_PORT = 6767;
+const MCP_HTTP_PORT = 6768;
 const FALLBACK_WS_PORT = 9092;
 const FALLBACK_HTTP_PORT = 9093;
 const DASHBOARD_PORT = 3200;
@@ -74,13 +74,13 @@ async function main(): Promise<void> {
         throw new Error('Not RuntimeScope');
       }
     } catch {
-      // Port 9091 is in use but not by RuntimeScope — use fallback
+      // Port 6768 is in use but not by RuntimeScope — use fallback
       console.error(`[RuntimeScope] Port ${MCP_HTTP_PORT} in use (not RuntimeScope) — using fallback ports`);
       collectorHttpPort = FALLBACK_HTTP_PORT;
       collectorWsPort = FALLBACK_WS_PORT;
     }
   } else {
-    // Nothing on 9090/9091 — start collector on default ports
+    // Nothing on 6767/6768 — start collector on default ports
     collectorHttpPort = MCP_HTTP_PORT;
     collectorWsPort = MCP_WS_PORT;
   }

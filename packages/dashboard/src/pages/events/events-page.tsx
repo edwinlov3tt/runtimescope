@@ -98,7 +98,7 @@ function FunnelBar({ step, maxCount, index }: { step: FunnelStep; maxCount: numb
         </div>
         <div className="h-2 bg-bg-surface rounded-full overflow-hidden">
           <div
-            className={cn('h-full rounded-full transition-all duration-500', isDropoff ? 'bg-red' : 'bg-brand')}
+            className={cn('h-full rounded-full transition-all duration-500', isDropoff ? 'bg-red' : 'bg-accent')}
             style={{ width: `${width}%` }}
           />
         </div>
@@ -150,7 +150,7 @@ function FlowBuilder({
                   <button
                     type="button"
                     onClick={() => removeStep(i)}
-                    className="px-2 py-0.5 rounded text-xs font-medium bg-brand/15 text-brand hover:bg-red/15 hover:text-red transition-colors cursor-pointer"
+                    className="px-2 py-0.5 rounded text-xs font-medium bg-accent/15 text-accent hover:bg-red/15 hover:text-red transition-colors cursor-pointer"
                     title="Remove step"
                   >
                     {s}
@@ -248,7 +248,7 @@ export function EventsPage() {
       key: 'name',
       header: 'Event',
       render: (row: Record<string, unknown>) => (
-        <span className="font-medium text-brand">{row.name as string}</span>
+        <span className="font-medium text-accent">{row.name as string}</span>
       ),
     },
     {
@@ -302,7 +302,7 @@ export function EventsPage() {
             onClick={() => setNameFilter(null)}
             className={cn(
               'px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer',
-              !nameFilter ? 'bg-brand/15 text-brand' : 'bg-bg-surface text-text-muted hover:bg-bg-hover'
+              !nameFilter ? 'bg-accent/15 text-accent' : 'bg-bg-surface text-text-muted hover:bg-bg-hover'
             )}
           >
             All ({events.length})
@@ -314,7 +314,7 @@ export function EventsPage() {
               onClick={() => setNameFilter(nameFilter === c.name ? null : c.name)}
               className={cn(
                 'px-2 py-0.5 rounded text-xs font-medium transition-colors cursor-pointer',
-                nameFilter === c.name ? 'bg-brand/15 text-brand' : 'bg-bg-surface text-text-muted hover:bg-bg-hover'
+                nameFilter === c.name ? 'bg-accent/15 text-accent' : 'bg-bg-surface text-text-muted hover:bg-bg-hover'
               )}
             >
               {c.name} ({c.count})

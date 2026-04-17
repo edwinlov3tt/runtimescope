@@ -175,8 +175,8 @@ function deriveAppName(cwd: string): string {
 // ── Collector management ─────────────────────────────────────
 
 function isCollectorRunning(): boolean {
-  const result = run('curl -sf http://127.0.0.1:9090 2>&1') ??
-                 run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
+  const result = run('curl -sf http://127.0.0.1:6767 2>&1') ??
+                 run('curl -sf http://127.0.0.1:6768/api/health 2>&1');
   return result !== null;
 }
 
@@ -317,8 +317,8 @@ async function init() {
   } else {
     const started = startCollector();
     if (started) {
-      success('Collector started on ws://localhost:9090');
-      info('Dashboard at http://localhost:9091');
+      success('Collector started on ws://localhost:6767');
+      info('Dashboard at http://localhost:6768');
     } else {
       warn('Could not start collector automatically');
       info('Run manually: npx runtimescope start');
@@ -410,8 +410,8 @@ async function init() {
   log('');
   log(`  ${GREEN}${BOLD}Done!${RESET} RuntimeScope is ready.`);
   log('');
-  info('Collector:  ws://localhost:9090');
-  info('Dashboard:  http://localhost:9091');
+  info('Collector:  ws://localhost:6767');
+  info('Dashboard:  http://localhost:6768');
   info('MCP tools:  46 tools available in Claude Code');
   log('');
 }
@@ -423,7 +423,7 @@ async function start() {
 
   if (isCollectorRunning()) {
     success('Collector is already running');
-    info('Dashboard: http://localhost:9091');
+    info('Dashboard: http://localhost:6768');
     return;
   }
 
@@ -452,7 +452,7 @@ async function status() {
   log(`  ${BOLD}RuntimeScope Status${RESET}`);
   log('');
 
-  const healthJson = run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
+  const healthJson = run('curl -sf http://127.0.0.1:6768/api/health 2>&1');
   if (!healthJson) {
     err('Collector is NOT running');
     info('Start with: npx runtimescope start');
@@ -467,9 +467,9 @@ async function status() {
   info(`Uptime: ${health.uptime ?? 0}s`);
   info(`Live sessions: ${health.sessions ?? 0}`);
   info(`Auth: ${health.authEnabled ? 'enabled' : 'disabled'}`);
-  info(`Ports: ws://localhost:9090  •  http://localhost:9091`);
+  info(`Ports: ws://localhost:6767  •  http://localhost:6768`);
 
-  const projJson = run('curl -sf http://127.0.0.1:9091/api/projects 2>&1');
+  const projJson = run('curl -sf http://127.0.0.1:6768/api/projects 2>&1');
   if (projJson) {
     try {
       const data = JSON.parse(projJson) as { data: Array<{ appName: string; sessions: string[]; isConnected: boolean; eventCount: number; projectId?: string }> };
@@ -501,7 +501,7 @@ async function stop() {
   }
 
   let killed = 0;
-  for (const port of [9090, 9091]) {
+  for (const port of [6767, 6768]) {
     try {
       // execFileSync with explicit args — no shell, no injection
       const pidList = execFileSync('lsof', ['-ti', `:${port}`], { encoding: 'utf-8' }).trim();
@@ -542,25 +542,25 @@ async function doctor() {
     detail: nodeMajor < 18 ? 'Requires Node 18+' : undefined,
   });
 
-  const healthJson = run('curl -sf http://127.0.0.1:9091/api/health 2>&1');
+  const healthJson = run('curl -sf http://127.0.0.1:6768/api/health 2>&1');
   checks.push({
-    label: 'Collector on :9091',
+    label: 'Collector on :6768',
     ok: healthJson !== null,
     detail: healthJson === null ? 'Not running — start with `npx runtimescope start`' : undefined,
   });
 
-  const wsListen = run('lsof -ti :9090 2>/dev/null');
+  const wsListen = run('lsof -ti :6767 2>/dev/null');
   checks.push({
-    label: 'WebSocket on :9090',
+    label: 'WebSocket on :6767',
     ok: wsListen !== null && wsListen !== '',
     detail: wsListen === null || wsListen === '' ? 'Not listening — collector may be stopped' : undefined,
   });
 
-  const collectorPids = run('lsof -ti :9091 2>/dev/null')?.split('\n').filter(Boolean) ?? [];
+  const collectorPids = run('lsof -ti :6768 2>/dev/null')?.split('\n').filter(Boolean) ?? [];
   checks.push({
-    label: `Port :9091 owned by ${collectorPids.length} process${collectorPids.length === 1 ? '' : 'es'}`,
+    label: `Port :6768 owned by ${collectorPids.length} process${collectorPids.length === 1 ? '' : 'es'}`,
     ok: collectorPids.length <= 1,
-    detail: collectorPids.length > 1 ? 'Multiple processes fighting for :9091 — `npx runtimescope stop` and restart' : undefined,
+    detail: collectorPids.length > 1 ? 'Multiple processes fighting for :6768 — `npx runtimescope stop` and restart' : undefined,
   });
 
   const mcpRegistered = isMcpRegistered();
@@ -608,7 +608,7 @@ function printHelp() {
   log(`  ${BOLD}Commands:${RESET}`);
   log(`    ${BOLD}init${RESET}      Set up RuntimeScope in your project (interactive)`);
   log(`    ${BOLD}start${RESET}     Start the collector server in the foreground`);
-  log(`    ${BOLD}stop${RESET}      Stop any running collector on :9090/:9091`);
+  log(`    ${BOLD}stop${RESET}      Stop any running collector on :6767/:6768`);
   log(`    ${BOLD}status${RESET}    Show collector health and connected projects`);
   log(`    ${BOLD}doctor${RESET}    Diagnose common problems and suggest fixes`);
   log(`    ${DIM}(no args)${RESET} Start the collector (same as ${BOLD}start${RESET})`);

@@ -12,8 +12,8 @@ npm install @runtimescope/sveltekit
 
 ```bash
 # .env
-RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
-PUBLIC_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
+RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
+PUBLIC_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
 ```
 
 SvelteKit exposes `PUBLIC_*` env vars to the browser automatically.

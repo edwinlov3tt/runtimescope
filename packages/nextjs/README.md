@@ -12,8 +12,8 @@ npm install @runtimescope/nextjs
 
 ```bash
 # .env.local
-RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
-NEXT_PUBLIC_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
+RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
+NEXT_PUBLIC_RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
 ```
 
 ### 2. Wire up the server runtime

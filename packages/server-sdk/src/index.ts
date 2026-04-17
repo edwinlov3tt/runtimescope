@@ -104,7 +104,7 @@ class RuntimeScopeServer {
     this.config = config;
     this.sessionId = config.sessionId ?? generateSessionId();
 
-    const serverUrl = config.serverUrl ?? config.endpoint ?? 'ws://127.0.0.1:9090';
+    const serverUrl = config.serverUrl ?? config.endpoint ?? 'ws://127.0.0.1:6767';
 
     if (config.transport === 'http') {
       // HTTP transport for serverless environments (Lambda, Vercel, Cloudflare Workers)
@@ -112,7 +112,7 @@ class RuntimeScopeServer {
       if (!httpUrl) {
         const wsUrl = new URL(serverUrl);
         wsUrl.protocol = wsUrl.protocol === 'wss:' ? 'https:' : 'http:';
-        wsUrl.port = '9091';
+        wsUrl.port = '6768';
         wsUrl.pathname = '/api/events';
         httpUrl = wsUrl.toString();
       }

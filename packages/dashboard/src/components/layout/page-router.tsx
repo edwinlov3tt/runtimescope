@@ -1,6 +1,8 @@
 import { lazy, Suspense } from 'react';
 import { useAppStore } from '@/stores/use-app-store';
+import { useDataStore } from '@/stores/use-data-store';
 import { EmptyState } from '@/components/ui/empty-state';
+import { CollectorOffline } from '@/components/ui/collector-offline';
 import { TableSkeleton } from '@/components/ui/skeleton';
 
 // Lazy-loaded pages — each becomes its own chunk
@@ -22,6 +24,7 @@ const ProcessesPage = lazy(() => import('@/pages/processes/processes-page').then
 const InfraPage = lazy(() => import('@/pages/infra/infra-page').then((m) => ({ default: m.InfraPage })));
 const SessionsPage = lazy(() => import('@/pages/sessions/sessions-page').then((m) => ({ default: m.SessionsPage })));
 const BreadcrumbsPage = lazy(() => import('@/pages/breadcrumbs/breadcrumbs-page').then((m) => ({ default: m.BreadcrumbsPage })));
+const EventsPage = lazy(() => import('@/pages/events/events-page').then((m) => ({ default: m.EventsPage })));
 
 const RUNTIME_PAGES: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   overview: OverviewPage,
@@ -32,11 +35,13 @@ const RUNTIME_PAGES: Record<string, React.LazyExoticComponent<React.ComponentTyp
   performance: PerformancePage,
   issues: IssuesPage,
   api: ApiMapPage,
+  'api-map': ApiMapPage,
   database: DatabasePage,
   processes: ProcessesPage,
   infra: InfraPage,
   sessions: SessionsPage,
   breadcrumbs: BreadcrumbsPage,
+  events: EventsPage,
 };
 
 function PageFallback() {
@@ -50,6 +55,12 @@ function PageFallback() {
 export function PageRouter() {
   const activeTab = useAppStore((s) => s.activeTab);
   const activeView = useAppStore((s) => s.activeView);
+  const source = useDataStore((s) => s.source);
+
+  // Show collector offline state for runtime pages when collector isn't connected
+  if (activeView === 'runtime' && source === 'mock') {
+    return <CollectorOffline />;
+  }
 
   // Showcase/kitchen-sink for dev use
   if (activeTab === 'showcase') {

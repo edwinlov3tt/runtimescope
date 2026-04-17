@@ -16,7 +16,7 @@ export function registerSessionTools(server: McpServer, store: EventStore): void
         summary:
           sessions.length > 0
             ? `${sessions.length} session(s) connected. Total events captured: ${store.eventCount}.`
-            : 'No active sessions. Make sure the RuntimeScope SDK is injected in your app and connected to ws://localhost:9090.',
+            : 'No active sessions. Make sure the RuntimeScope SDK is injected in your app and connected to ws://localhost:6767.',
         data: sessions.map((s) => ({
           sessionId: s.sessionId,
           projectId: s.projectId ?? null,

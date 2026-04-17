@@ -33,7 +33,7 @@ Run `get_port_usage` to check for port conflicts and see what's listening where.
 |------|---------|-----|--------|
 | 3000 | next dev | 12345 | Listening |
 | 5432 | postgres | 12346 | Listening |
-| 9090 | RuntimeScope | 12347 | Listening |
+| 6767 | RuntimeScope | 12347 | Listening |
 ```
 
 Flag any port conflicts or unexpected listeners.
@@ -75,7 +75,7 @@ Run `get_infra_overview` to see all connected platforms and services.
 |-----------|--------|---------|
 | Dev Server | Running | next dev on :3000 (245MB) |
 | Database | Running | postgres on :5432 |
-| RuntimeScope | Connected | ws://localhost:9090 |
+| RuntimeScope | Connected | ws://localhost:6767 |
 
 ## Port Summary
 [X] ports in use, [Y] conflicts detected

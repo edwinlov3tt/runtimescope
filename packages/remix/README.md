@@ -12,7 +12,7 @@ npm install @runtimescope/remix
 
 ```bash
 # .env
-RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:9091/my-app
+RUNTIMESCOPE_DSN=runtimescope://proj_xxx@localhost:6768/my-app
 ```
 
 ### 2. Client entry

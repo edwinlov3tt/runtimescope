@@ -157,7 +157,7 @@ export function SdkPage({ project }: { project: PmProject }) {
                 key={rp.appName}
                 type="button"
                 onClick={() => handleAdd(rp.appName)}
-                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-dashed border-border-muted hover:border-brand/40 hover:bg-brand-muted/30 transition-colors cursor-pointer"
+                className="w-full flex items-center gap-3 px-3 py-2 rounded-lg border border-dashed border-border-muted hover:border-accent/40 hover:bg-accent-muted/30 transition-colors cursor-pointer"
               >
                 <Plus size={14} className="text-text-tertiary" />
                 <span className="font-mono text-xs text-text-secondary">{rp.appName}</span>
@@ -181,7 +181,7 @@ export function SdkPage({ project }: { project: PmProject }) {
           onChange={(e) => setNewApp(e.target.value)}
           onKeyDown={(e) => e.key === 'Enter' && handleAdd(newApp)}
           placeholder="Add SDK app name manually..."
-          className="flex-1 h-8 px-3 rounded-md border border-border-muted bg-bg-surface text-sm text-text-primary placeholder:text-text-muted outline-none focus:border-brand/40 font-mono"
+          className="flex-1 h-8 px-3 rounded-md border border-border-muted bg-bg-surface text-sm text-text-primary placeholder:text-text-muted outline-none focus:border-accent/40 font-mono"
         />
         {newApp.trim() && (
           <Button size="sm" onClick={() => handleAdd(newApp)}>

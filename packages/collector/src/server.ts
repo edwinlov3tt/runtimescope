@@ -119,7 +119,7 @@ export class CollectorServer {
   }
 
   start(options: CollectorServerOptions = {}): Promise<void> {
-    const port = options.port ?? 9090;
+    const port = options.port ?? 6767;
     const host = options.host ?? '127.0.0.1';
     const maxRetries = options.maxRetries ?? 5;
     const retryDelayMs = options.retryDelayMs ?? 1000;

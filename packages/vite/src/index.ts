@@ -63,9 +63,9 @@ export interface RuntimeScopePluginOptions {
    */
   autostart?: boolean;
   /**
-   * Port for the HTTP health check. Defaults to 9091, matching the collector's
+   * Port for the HTTP health check. Defaults to 6768, matching the collector's
    * default. Set this if you run the collector on a non-standard port.
-   * @default 9091
+   * @default 6768
    */
   httpPort?: number;
 }
@@ -137,7 +137,7 @@ function spawnCollectorDetached(): boolean {
 
 export function runtimescope(options: RuntimeScopePluginOptions = {}): VitePlugin {
   const envVar = options.dsnEnvVar ?? 'VITE_RUNTIMESCOPE_DSN';
-  const httpPort = options.httpPort ?? 9091;
+  const httpPort = options.httpPort ?? 6768;
   let resolvedDsn: string | undefined;
   let activeMode = 'development';
 

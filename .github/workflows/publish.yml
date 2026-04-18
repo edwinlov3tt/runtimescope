@@ -57,3 +57,9 @@ jobs:
       - run: npm publish -w packages/mcp-server --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      # Unscoped `runtimescope` CLI — depends on the above scoped packages
+      - run: npm run build -w packages/cli
+      - run: npm publish -w packages/cli --access public || true
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

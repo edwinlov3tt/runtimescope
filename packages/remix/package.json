@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/remix",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "RuntimeScope for Remix — one install, works in entry.client.tsx and entry.server.tsx",
   "type": "module",
   "main": "./dist/index.js",
@@ -22,8 +22,18 @@
       "require": "./dist/server/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
-  "keywords": ["remix", "runtime", "profiler", "telemetry", "observability", "sdk"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "remix",
+    "runtime",
+    "profiler",
+    "telemetry",
+    "observability",
+    "sdk"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "tsup",
@@ -31,16 +41,20 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.9.3",
-    "@runtimescope/server-sdk": "0.9.3"
+    "@runtimescope/sdk": "0.10.0",
+    "@runtimescope/server-sdk": "0.10.0"
   },
   "peerDependencies": {
     "@remix-run/node": ">=2.0.0",
     "react": ">=18.0.0"
   },
   "peerDependenciesMeta": {
-    "@remix-run/node": { "optional": true },
-    "react": { "optional": true }
+    "@remix-run/node": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "tsup": "^8.0.0",

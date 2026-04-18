@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/vite",
-  "version": "0.9.3",
+  "version": "0.10.0",
   "description": "Vite plugin for RuntimeScope — auto-inject the SDK, read DSN from env, skip in production builds without a DSN",
   "type": "module",
   "main": "./dist/index.js",
@@ -12,8 +12,18 @@
       "require": "./dist/index.cjs"
     }
   },
-  "files": ["dist", "README.md"],
-  "keywords": ["vite", "vite-plugin", "runtime", "profiler", "telemetry", "observability"],
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "keywords": [
+    "vite",
+    "vite-plugin",
+    "runtime",
+    "profiler",
+    "telemetry",
+    "observability"
+  ],
   "license": "MIT",
   "scripts": {
     "build": "tsup",
@@ -21,7 +31,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.9.3"
+    "@runtimescope/sdk": "0.10.0"
   },
   "peerDependencies": {
     "vite": ">=4.0.0"

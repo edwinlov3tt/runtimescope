@@ -28,8 +28,9 @@ export function App() {
 
   // On mount: check if collector is running → set source + connect WS + discover projects
   useEffect(() => {
-    // Fetch PM projects (always — works even without live connection)
+    // Fetch PM projects + workspaces (always — works even without live connection)
     usePmStore.getState().fetchProjects();
+    import('@/stores/use-workspace-store').then((m) => m.useWorkspaceStore.getState().fetchWorkspaces());
 
     checkHealth().then((ok) => {
       if (ok) {

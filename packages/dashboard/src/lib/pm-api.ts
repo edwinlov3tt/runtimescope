@@ -18,6 +18,8 @@ import type {
   ProjectStatus,
   CapexClassification,
   WorkType,
+  PmWorkspace,
+  PmApiKey,
 } from './pm-types';
 
 const BASE = '';
@@ -389,4 +391,69 @@ export async function stopDevServer(projectId: string) {
   } catch {
     return null;
   }
+}
+
+// ============================================================
+// Workspaces (multi-tenant)
+// ============================================================
+
+export async function fetchWorkspaces(): Promise<PmWorkspace[]> {
+  const res = await getList<PmWorkspace>('/api/pm/workspaces');
+  return res ?? [];
+}
+
+export async function createWorkspace(input: {
+  name: string;
+  slug?: string;
+  description?: string;
+}): Promise<PmWorkspace | null> {
+  return post<PmWorkspace>('/api/pm/workspaces', input);
+}
+
+export async function updateWorkspace(
+  id: string,
+  input: { name?: string; slug?: string; description?: string },
+): Promise<PmWorkspace | null> {
+  return put<PmWorkspace>(`/api/pm/workspaces/${id}`, input);
+}
+
+export async function deleteWorkspace(id: string): Promise<boolean> {
+  return del(`/api/pm/workspaces/${id}`);
+}
+
+export async function moveProjectToWorkspace(
+  projectId: string,
+  workspaceId: string,
+): Promise<boolean> {
+  const res = await put(`/api/pm/projects/${projectId}/workspace`, { workspace_id: workspaceId });
+  return res !== null;
+}
+
+// ============================================================
+// API Keys (workspace-scoped)
+// ============================================================
+
+export async function fetchApiKeys(workspaceId: string): Promise<PmApiKey[]> {
+  const res = await getList<PmApiKey>(`/api/pm/workspaces/${workspaceId}/api-keys`);
+  return res ?? [];
+}
+
+/**
+ * Creates a new API key. The returned `key` field is shown exactly once —
+ * store it in the UI immediately, because the server will not reveal it again
+ * on subsequent list calls.
+ */
+export async function createApiKey(
+  workspaceId: string,
+  label: string,
+  expiresAt?: number,
+): Promise<PmApiKey | null> {
+  return post<PmApiKey>(`/api/pm/workspaces/${workspaceId}/api-keys`, {
+    label,
+    expires_at: expiresAt,
+  });
+}
+
+export async function revokeApiKey(key: string): Promise<boolean> {
+  return del(`/api/pm/api-keys/${encodeURIComponent(key)}`);
 }

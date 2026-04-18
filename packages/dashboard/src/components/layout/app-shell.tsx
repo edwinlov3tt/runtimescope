@@ -64,7 +64,7 @@ export function AppShell() {
   const handleRailSelect = useCallback((id: string) => {
     if (isRuntime) {
       if (id === 'settings') {
-        setActiveView('home');
+        setActiveView('settings');
         return;
       }
       setActiveTab(id);
@@ -75,7 +75,7 @@ export function AppShell() {
         setActiveView('runtime');
         setActiveTab('overview');
       } else if (id === 'settings') {
-        // Stay on home for now
+        setActiveView('settings');
       } else if (id === 'processes') {
         // Processes is global, not per-project
         setActiveView('home');

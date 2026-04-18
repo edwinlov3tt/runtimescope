@@ -5,8 +5,31 @@
 export type ProjectPhase = 'preliminary' | 'application_development' | 'post_implementation';
 export type ProjectStatus = 'active' | 'suspended' | 'abandoned';
 
+// --- Workspaces (multi-tenant) ---
+
+export interface PmWorkspace {
+  id: string;
+  name: string;
+  slug: string;
+  description?: string;
+  isDefault?: boolean;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface PmApiKey {
+  key: string;
+  workspaceId: string;
+  label: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  expiresAt?: number;
+  revokedAt?: number;
+}
+
 export interface PmProject {
   id: string;
+  workspaceId?: string;
   name: string;
   path?: string;
   claudeProjectKey?: string;

@@ -9,6 +9,7 @@ import { TableSkeleton } from '@/components/ui/skeleton';
 const KitchenSink = lazy(() => import('@/components/showcase/kitchen-sink').then((m) => ({ default: m.KitchenSink })));
 const ProjectView = lazy(() => import('./project-view').then((m) => ({ default: m.ProjectView })));
 const HomePage = lazy(() => import('@/pages/pm/home-page').then((m) => ({ default: m.HomePage })));
+const SettingsPage = lazy(() => import('@/pages/settings/settings-page').then((m) => ({ default: m.SettingsPage })));
 
 // Legacy runtime pages (used when activeView is not home/project)
 const OverviewPage = lazy(() => import('@/pages/overview/overview-page').then((m) => ({ default: m.OverviewPage })));
@@ -84,6 +85,14 @@ export function PageRouter() {
     return (
       <Suspense fallback={<PageFallback />}>
         <ProjectView />
+      </Suspense>
+    );
+  }
+
+  if (activeView === 'settings') {
+    return (
+      <Suspense fallback={<PageFallback />}>
+        <SettingsPage />
       </Suspense>
     );
   }

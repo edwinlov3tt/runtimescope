@@ -8,7 +8,7 @@ interface DetailPanelState {
   rowIndex: number | null;
 }
 
-type ActiveView = 'home' | 'project' | 'runtime';
+type ActiveView = 'home' | 'project' | 'runtime' | 'settings';
 
 interface AppState {
   // --- Navigation ---

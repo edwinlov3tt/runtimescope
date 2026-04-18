@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, memo } from 'react';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { useDevServerStore } from '@/stores/use-dev-server-store';
+import { useWorkspaceStore } from '@/stores/use-workspace-store';
 import { KpiCard, Badge, DataTable, EmptyState } from '@/components/ui';
 import { StatusDot } from '@/components/ui/status-dot';
 import {
@@ -270,15 +271,33 @@ function makeColumns(runtimeProjects: ProjectInfo[]) {
 // ---------------------------------------------------------------------------
 
 export function HomePage() {
-  const projects = usePmStore((s) => s.projects);
+  const allProjects = usePmStore((s) => s.projects);
   const sessionStats = usePmStore((s) => s.sessionStats);
-  const projectSummaries = usePmStore((s) => s.projectSummaries);
+  const allProjectSummaries = usePmStore((s) => s.projectSummaries);
   const projectSummariesLoading = usePmStore((s) => s.projectSummariesLoading);
   const hideEmpty = usePmStore((s) => s.hideEmptySessions);
   const sessionDateRange = usePmStore((s) => s.sessionDateRange);
   const setSessionDateRange = usePmStore((s) => s.setSessionDateRange);
   const setHideEmptySessions = usePmStore((s) => s.setHideEmptySessions);
   const runtimeProjects = useAppStore((s) => s.projects);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+
+  // Scope to the active workspace when one is selected.
+  // Null activeWorkspaceId = "All workspaces" — show everything.
+  const workspaceProjectIds = useMemo(() => {
+    if (!activeWorkspaceId) return null;
+    return new Set(allProjects.filter((p) => p.workspaceId === activeWorkspaceId).map((p) => p.id));
+  }, [allProjects, activeWorkspaceId]);
+
+  const projects = useMemo(() => {
+    if (!workspaceProjectIds) return allProjects;
+    return allProjects.filter((p) => workspaceProjectIds.has(p.id));
+  }, [allProjects, workspaceProjectIds]);
+
+  const projectSummaries = useMemo(() => {
+    if (!workspaceProjectIds) return allProjectSummaries;
+    return allProjectSummaries.filter((p) => workspaceProjectIds.has(p.id));
+  }, [allProjectSummaries, workspaceProjectIds]);
 
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   // Active date preset

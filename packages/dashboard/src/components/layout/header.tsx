@@ -2,8 +2,10 @@ import { memo, useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
+import { useWorkspaceStore } from '@/stores/use-workspace-store';
 import { findRuntimeProjects } from '@/lib/api';
 import { NotificationDropdown } from '@/components/layout/notification-dropdown';
+import { WorkspacePicker } from '@/components/layout/workspace-picker';
 import {
   PanelLeft,
   Search,
@@ -22,6 +24,7 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
   const runtimeProjects = useAppStore((s) => s.projects);
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
   const selectPmProject = useAppStore((s) => s.selectPmProject);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const [search, setSearch] = useState('');
   const ref = useRef<HTMLDivElement>(null);
 
@@ -36,9 +39,13 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
 
   if (!open) return null;
 
-  const filtered = search.trim()
-    ? projects.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()))
+  // Scope to the active workspace when one is selected. Null = "All workspaces".
+  const scoped = activeWorkspaceId
+    ? projects.filter((p) => p.workspaceId === activeWorkspaceId)
     : projects;
+  const filtered = search.trim()
+    ? scoped.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()))
+    : scoped;
 
   return (
     <div
@@ -139,6 +146,9 @@ export const Header = memo(function Header({
       >
         <PanelLeft size={16} />
       </button>
+
+      {/* Workspace picker — only appears when there's > 1 workspace */}
+      <WorkspacePicker />
 
       {/* Project dropdown */}
       <div className="relative">

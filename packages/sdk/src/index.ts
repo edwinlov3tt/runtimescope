@@ -105,6 +105,9 @@ export class RuntimeScope {
           ...config,
           serverUrl: parsed.wsEndpoint,
           projectId: parsed.projectId,
+          // DSN-embedded token takes precedence over an explicit authToken,
+          // so pasting a new DSN is the single action users need to do
+          ...(parsed.authToken ? { authToken: parsed.authToken } : {}),
           ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),
         };
         hasDsn = true;

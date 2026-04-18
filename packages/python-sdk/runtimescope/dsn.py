@@ -16,6 +16,7 @@ class ParsedDsn:
     http_endpoint: str  # http(s)://host:httpport
     app_name: Optional[str]
     tls: bool
+    auth_token: Optional[str] = None  # workspace-scoped bearer, from DSN password
 
 
 def parse_dsn(dsn: str) -> ParsedDsn:
@@ -47,6 +48,8 @@ def parse_dsn(dsn: str) -> ParsedDsn:
             "Invalid RuntimeScope DSN: missing projectId (expected proj_xxx@host)"
         )
 
+    auth_token = url.password or None
+
     host = url.hostname
     if not host:
         raise ValueError("Invalid RuntimeScope DSN: missing host")
@@ -62,6 +65,7 @@ def parse_dsn(dsn: str) -> ParsedDsn:
 
     return ParsedDsn(
         project_id=project_id,
+        auth_token=auth_token,
         ws_endpoint=f"{ws_proto}://{host}:{ws_port}",
         http_endpoint=f"{http_proto}://{host}:{http_port}",
         app_name=app_name_opt,

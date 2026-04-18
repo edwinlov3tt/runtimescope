@@ -103,6 +103,7 @@ function _withRuntimeScope(
         ...config,
         httpEndpoint: parsed.httpEndpoint + '/api/events',
         projectId: parsed.projectId,
+        ...(parsed.authToken ? { authToken: parsed.authToken } : {}),
         ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),
       };
     } catch {

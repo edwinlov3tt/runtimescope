@@ -380,6 +380,25 @@ export class HttpServer {
         if (this.pmStore) {
           try { this.pmStore.autoLinkApp(payload.appName, projectId); } catch { /* non-fatal */ }
         }
+
+        // If the request came with a workspace-scoped bearer token, assign
+        // this project to that workspace (unless it's already in one).
+        if (this.pmStore) {
+          try {
+            const token = AuthManager.extractBearer(req.headers.authorization);
+            if (token) {
+              const ws = this.pmStore.getWorkspaceByApiKey(token);
+              if (ws && projectId) {
+                const existing = this.pmStore
+                  .listProjects()
+                  .find((p) => p.runtimeProjectId === projectId);
+                if (existing && !existing.workspaceId) {
+                  this.pmStore.setProjectWorkspace(existing.id, ws.id);
+                }
+              }
+            }
+          } catch { /* non-fatal */ }
+        }
       }
 
       const VALID_EVENT_TYPES = new Set([
@@ -604,7 +623,12 @@ export class HttpServer {
 
     if (!isPublic && this.authManager?.isEnabled()) {
       const token = AuthManager.extractBearer(req.headers.authorization);
-      if (!this.authManager.isAuthorized(token)) {
+      // Accept either a global API key OR a workspace-scoped key from pmStore.
+      // This lets SDKs with workspace tokens post events without the user
+      // needing to configure a global token on the collector too.
+      const isGlobal = this.authManager.isAuthorized(token);
+      const isWorkspaceToken = !!(token && this.pmStore?.getWorkspaceByApiKey(token));
+      if (!isGlobal && !isWorkspaceToken) {
         this.json(res, { error: 'Unauthorized', code: 'AUTH_FAILED' }, 401);
         return;
       }

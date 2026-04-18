@@ -55,6 +55,7 @@ class RuntimeScopeServer {
           serverUrl: parsed.wsEndpoint,
           projectId: parsed.projectId,
           httpEndpoint: parsed.httpEndpoint + '/api/events',
+          ...(parsed.authToken ? { authToken: parsed.authToken } : {}),
           ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),
         };
       } catch {

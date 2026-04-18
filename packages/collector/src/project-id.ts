@@ -4,6 +4,10 @@ import type { ProjectManager } from './project-manager.js';
 /** Minimal interface for PmStore to avoid circular dependencies. */
 export interface PmStoreLike {
   findProjectIdByApp(appName: string): string | null;
+  getWorkspaceByApiKey?(key: string): { id: string; slug: string; name: string } | null;
+  listProjects?(): Array<{ id: string; runtimeProjectId?: string; workspaceId?: string }>;
+  setProjectWorkspace?(projectId: string, workspaceId: string): void;
+  autoLinkApp?(appName: string, projectId?: string): string | null;
 }
 
 // ============================================================

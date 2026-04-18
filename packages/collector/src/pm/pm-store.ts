@@ -1,4 +1,5 @@
 import Database from 'better-sqlite3';
+import { randomBytes } from 'node:crypto';
 import type {
   PmProject,
   PmTask,
@@ -10,6 +11,8 @@ import type {
   TaskStatus,
   ProjectPhase,
   ProjectStatus,
+  PmWorkspace,
+  PmApiKey,
 } from './pm-types.js';
 
 // ============================================================
@@ -159,6 +162,30 @@ export class PmStore {
         deleted_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_deleted_path ON pm_deleted_projects(path);
+
+      -- Multi-tenant workspaces (Phase 1) --
+      CREATE TABLE IF NOT EXISTS pm_workspaces (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT UNIQUE NOT NULL,
+        description TEXT,
+        is_default INTEGER NOT NULL DEFAULT 0,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_workspaces_slug ON pm_workspaces(slug);
+
+      CREATE TABLE IF NOT EXISTS pm_api_keys (
+        key TEXT PRIMARY KEY,
+        workspace_id TEXT NOT NULL,
+        label TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        last_used_at INTEGER,
+        expires_at INTEGER,
+        revoked_at INTEGER,
+        FOREIGN KEY (workspace_id) REFERENCES pm_workspaces(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_api_keys_workspace ON pm_api_keys(workspace_id);
     `);
   }
 
@@ -170,6 +197,37 @@ export class PmStore {
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN runtime_apps TEXT DEFAULT NULL'); } catch { /* already exists */ }
     // Add runtime_project_id column (added in v4) — stable project ID for multi-SDK grouping
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN runtime_project_id TEXT DEFAULT NULL'); } catch { /* already exists */ }
+    // Multi-tenancy (Phase 1): projects belong to workspaces
+    try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN workspace_id TEXT DEFAULT NULL'); } catch { /* already exists */ }
+
+    this.ensureDefaultWorkspace();
+  }
+
+  /**
+   * Ensure a default "personal" workspace exists and every project has a
+   * workspace_id. Runs on every startup — idempotent.
+   */
+  private ensureDefaultWorkspace(): void {
+    const existing = this.db.prepare('SELECT id FROM pm_workspaces WHERE is_default = 1').get() as
+      | { id: string }
+      | undefined;
+
+    let defaultId: string;
+    if (existing) {
+      defaultId = existing.id;
+    } else {
+      defaultId = generateWorkspaceId();
+      const now = Date.now();
+      this.db
+        .prepare(
+          `INSERT INTO pm_workspaces (id, name, slug, description, is_default, created_at, updated_at)
+           VALUES (?, ?, ?, ?, 1, ?, ?)`,
+        )
+        .run(defaultId, 'Personal', 'personal', 'Your personal workspace', now, now);
+    }
+
+    // Assign any projects without a workspace_id to the default
+    this.db.prepare('UPDATE pm_projects SET workspace_id = ? WHERE workspace_id IS NULL').run(defaultId);
   }
 
   // ============================================================
@@ -177,13 +235,23 @@ export class PmStore {
   // ============================================================
 
   upsertProject(project: PmProject): void {
+    // New projects without an explicit workspace go to the default workspace.
+    // Existing projects keep whatever workspace they already had (COALESCE below).
+    const workspaceId =
+      project.workspaceId ?? this.db
+        .prepare('SELECT id FROM pm_workspaces WHERE is_default = 1 LIMIT 1')
+        .get() as { id: string } | undefined;
+    const resolvedWorkspaceId =
+      typeof workspaceId === 'string' ? workspaceId : workspaceId?.id ?? null;
+
     this.db.prepare(`
-      INSERT INTO pm_projects (id, name, path, claude_project_key, runtimescope_project,
+      INSERT INTO pm_projects (id, workspace_id, name, path, claude_project_key, runtimescope_project,
         phase, management_authorized, probable_to_complete, project_status,
         category, sdk_installed, runtime_apps,
         created_at, updated_at, metadata)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(id) DO UPDATE SET
+        workspace_id = COALESCE(pm_projects.workspace_id, excluded.workspace_id),
         name = excluded.name,
         path = COALESCE(excluded.path, pm_projects.path),
         claude_project_key = COALESCE(excluded.claude_project_key, pm_projects.claude_project_key),
@@ -194,6 +262,7 @@ export class PmStore {
         metadata = COALESCE(excluded.metadata, pm_projects.metadata)
     `).run(
       project.id,
+      resolvedWorkspaceId,
       project.name,
       project.path ?? null,
       project.claudeProjectKey ?? null,
@@ -329,9 +398,151 @@ export class PmStore {
     return rows.map(r => r.category);
   }
 
+  // ============================================================
+  // Workspaces (multi-tenant)
+  // ============================================================
+
+  listWorkspaces(): PmWorkspace[] {
+    const rows = this.db
+      .prepare('SELECT * FROM pm_workspaces ORDER BY is_default DESC, name ASC')
+      .all() as PmWorkspaceRow[];
+    return rows.map(mapWorkspaceRow);
+  }
+
+  getWorkspace(id: string): PmWorkspace | null {
+    const row = this.db
+      .prepare('SELECT * FROM pm_workspaces WHERE id = ?')
+      .get(id) as PmWorkspaceRow | undefined;
+    return row ? mapWorkspaceRow(row) : null;
+  }
+
+  getWorkspaceBySlug(slug: string): PmWorkspace | null {
+    const row = this.db
+      .prepare('SELECT * FROM pm_workspaces WHERE slug = ?')
+      .get(slug) as PmWorkspaceRow | undefined;
+    return row ? mapWorkspaceRow(row) : null;
+  }
+
+  getDefaultWorkspace(): PmWorkspace {
+    const row = this.db
+      .prepare('SELECT * FROM pm_workspaces WHERE is_default = 1 LIMIT 1')
+      .get() as PmWorkspaceRow | undefined;
+    if (!row) {
+      throw new Error('Default workspace missing — ensureDefaultWorkspace() must run first');
+    }
+    return mapWorkspaceRow(row);
+  }
+
+  createWorkspace(input: { name: string; slug?: string; description?: string }): PmWorkspace {
+    const id = generateWorkspaceId();
+    const slug = (input.slug ?? input.name)
+      .toLowerCase()
+      .replace(/[^a-z0-9-]+/g, '-')
+      .replace(/-+/g, '-')
+      .replace(/^-|-$/g, '');
+    if (!slug) {
+      throw new Error('Workspace slug cannot be empty');
+    }
+    if (this.getWorkspaceBySlug(slug)) {
+      throw new Error(`Workspace with slug "${slug}" already exists`);
+    }
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO pm_workspaces (id, name, slug, description, is_default, created_at, updated_at)
+         VALUES (?, ?, ?, ?, 0, ?, ?)`,
+      )
+      .run(id, input.name, slug, input.description ?? null, now, now);
+    return { id, name: input.name, slug, description: input.description, createdAt: now, updatedAt: now, isDefault: false };
+  }
+
+  updateWorkspace(id: string, updates: Partial<Pick<PmWorkspace, 'name' | 'slug' | 'description'>>): void {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    if (updates.name !== undefined) { sets.push('name = ?'); params.push(updates.name); }
+    if (updates.slug !== undefined) { sets.push('slug = ?'); params.push(updates.slug); }
+    if (updates.description !== undefined) { sets.push('description = ?'); params.push(updates.description); }
+    if (!sets.length) return;
+    sets.push('updated_at = ?');
+    params.push(Date.now());
+    params.push(id);
+    this.db.prepare(`UPDATE pm_workspaces SET ${sets.join(', ')} WHERE id = ?`).run(...params);
+  }
+
+  deleteWorkspace(id: string): void {
+    const ws = this.getWorkspace(id);
+    if (!ws) return;
+    if (ws.isDefault) {
+      throw new Error('Cannot delete the default workspace');
+    }
+    // Reassign projects back to the default workspace
+    const def = this.getDefaultWorkspace();
+    this.db.prepare('UPDATE pm_projects SET workspace_id = ? WHERE workspace_id = ?').run(def.id, id);
+    this.db.prepare('DELETE FROM pm_api_keys WHERE workspace_id = ?').run(id);
+    this.db.prepare('DELETE FROM pm_workspaces WHERE id = ?').run(id);
+  }
+
+  /** Move a project between workspaces. */
+  setProjectWorkspace(projectId: string, workspaceId: string): void {
+    const ws = this.getWorkspace(workspaceId);
+    if (!ws) throw new Error(`Workspace ${workspaceId} does not exist`);
+    this.db
+      .prepare('UPDATE pm_projects SET workspace_id = ?, updated_at = ? WHERE id = ?')
+      .run(workspaceId, Date.now(), projectId);
+  }
+
+  // ============================================================
+  // API Keys (workspace-scoped)
+  // ============================================================
+
+  createApiKey(workspaceId: string, label: string, expiresAt?: number): PmApiKey {
+    const ws = this.getWorkspace(workspaceId);
+    if (!ws) throw new Error(`Workspace ${workspaceId} does not exist`);
+    const key = `tk_${randomBytes(24).toString('hex')}`;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `INSERT INTO pm_api_keys (key, workspace_id, label, created_at, expires_at)
+         VALUES (?, ?, ?, ?, ?)`,
+      )
+      .run(key, workspaceId, label, now, expiresAt ?? null);
+    return { key, workspaceId, label, createdAt: now, expiresAt };
+  }
+
+  listApiKeys(workspaceId: string): PmApiKey[] {
+    const rows = this.db
+      .prepare(
+        `SELECT * FROM pm_api_keys WHERE workspace_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
+      )
+      .all(workspaceId) as PmApiKeyRow[];
+    return rows.map(mapApiKeyRow);
+  }
+
+  revokeApiKey(key: string): void {
+    this.db.prepare('UPDATE pm_api_keys SET revoked_at = ? WHERE key = ?').run(Date.now(), key);
+  }
+
+  getWorkspaceByApiKey(key: string): PmWorkspace | null {
+    const row = this.db
+      .prepare(
+        `SELECT w.* FROM pm_api_keys k
+         JOIN pm_workspaces w ON w.id = k.workspace_id
+         WHERE k.key = ? AND k.revoked_at IS NULL
+         AND (k.expires_at IS NULL OR k.expires_at > ?)`,
+      )
+      .get(key, Date.now()) as PmWorkspaceRow | undefined;
+    if (!row) return null;
+    // Update last_used_at — best-effort, non-fatal
+    try {
+      this.db.prepare('UPDATE pm_api_keys SET last_used_at = ? WHERE key = ?').run(Date.now(), key);
+    } catch { /* ignore */ }
+    return mapWorkspaceRow(row);
+  }
+
   private mapProjectRow(row: PmProjectRow): PmProject {
     return {
       id: row.id,
+      workspaceId: row.workspace_id ?? undefined,
       name: row.name,
       path: row.path ?? undefined,
       claudeProjectKey: row.claude_project_key ?? undefined,
@@ -1194,6 +1405,7 @@ interface PmProjectRow {
   claude_project_key: string | null;
   runtimescope_project: string | null;
   runtime_project_id: string | null;
+  workspace_id: string | null;
   phase: string;
   management_authorized: number;
   probable_to_complete: number;
@@ -1204,6 +1416,56 @@ interface PmProjectRow {
   created_at: number;
   updated_at: number;
   metadata: string | null;
+}
+
+// --- Workspace helpers ---
+
+interface PmWorkspaceRow {
+  id: string;
+  name: string;
+  slug: string;
+  description: string | null;
+  is_default: number;
+  created_at: number;
+  updated_at: number;
+}
+
+interface PmApiKeyRow {
+  key: string;
+  workspace_id: string;
+  label: string;
+  created_at: number;
+  last_used_at: number | null;
+  expires_at: number | null;
+  revoked_at: number | null;
+}
+
+function generateWorkspaceId(): string {
+  return `ws_${randomBytes(8).toString('hex')}`;
+}
+
+function mapWorkspaceRow(row: PmWorkspaceRow): PmWorkspace {
+  return {
+    id: row.id,
+    name: row.name,
+    slug: row.slug,
+    description: row.description ?? undefined,
+    isDefault: row.is_default === 1,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+}
+
+function mapApiKeyRow(row: PmApiKeyRow): PmApiKey {
+  return {
+    key: row.key,
+    workspaceId: row.workspace_id,
+    label: row.label,
+    createdAt: row.created_at,
+    lastUsedAt: row.last_used_at ?? undefined,
+    expiresAt: row.expires_at ?? undefined,
+    revokedAt: row.revoked_at ?? undefined,
+  };
 }
 
 interface PmTaskRow {

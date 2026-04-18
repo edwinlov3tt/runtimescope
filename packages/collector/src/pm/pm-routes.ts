@@ -104,7 +104,12 @@ export function createPmRouter(
       helpers.json(res, { ...project, stats });
       return;
     }
-    const projects = pmStore.listProjects();
+    let projects = pmStore.listProjects();
+    // Optional workspace filter — ?workspace_id=ws_xxx
+    const workspaceId = params.get('workspace_id');
+    if (workspaceId) {
+      projects = projects.filter((p) => p.workspaceId === workspaceId);
+    }
     helpers.json(res, { data: projects, count: projects.length });
   });
 
@@ -226,6 +231,109 @@ export function createPmRouter(
     }
     pmStore.deleteProject(id);
     helpers.json(res, { ok: true, deleted: project.name });
+  });
+
+  // Move a project to a different workspace
+  route('PUT', '/api/pm/projects/:id/workspace', async (req, res, params) => {
+    const id = params.get('id')!;
+    const body = await helpers.readBody(req, 4096);
+    if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
+    let parsed: { workspace_id?: string };
+    try { parsed = JSON.parse(body); } catch { helpers.json(res, { error: 'Invalid JSON' }, 400); return; }
+    if (!parsed.workspace_id) { helpers.json(res, { error: 'Missing workspace_id' }, 400); return; }
+    try {
+      pmStore.setProjectWorkspace(id, parsed.workspace_id);
+      helpers.json(res, { ok: true });
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 400);
+    }
+  });
+
+  // ============================================================
+  // Workspaces (multi-tenant)
+  // ============================================================
+
+  route('GET', '/api/pm/workspaces', (_req, res) => {
+    helpers.json(res, { data: pmStore.listWorkspaces() });
+  });
+
+  route('POST', '/api/pm/workspaces', async (req, res) => {
+    const body = await helpers.readBody(req, 4096);
+    if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
+    let parsed: { name?: string; slug?: string; description?: string };
+    try { parsed = JSON.parse(body); } catch { helpers.json(res, { error: 'Invalid JSON' }, 400); return; }
+    if (!parsed.name || typeof parsed.name !== 'string') {
+      helpers.json(res, { error: 'Missing name' }, 400);
+      return;
+    }
+    try {
+      const ws = pmStore.createWorkspace({ name: parsed.name, slug: parsed.slug, description: parsed.description });
+      helpers.json(res, ws, 201);
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 400);
+    }
+  });
+
+  route('GET', '/api/pm/workspaces/:id', (_req, res, params) => {
+    const id = params.get('id')!;
+    const ws = pmStore.getWorkspace(id);
+    if (!ws) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
+    helpers.json(res, ws);
+  });
+
+  route('PUT', '/api/pm/workspaces/:id', async (req, res, params) => {
+    const id = params.get('id')!;
+    if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
+    const body = await helpers.readBody(req, 4096);
+    if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
+    let parsed: { name?: string; slug?: string; description?: string };
+    try { parsed = JSON.parse(body); } catch { helpers.json(res, { error: 'Invalid JSON' }, 400); return; }
+    try {
+      pmStore.updateWorkspace(id, parsed);
+      helpers.json(res, pmStore.getWorkspace(id));
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 400);
+    }
+  });
+
+  route('DELETE', '/api/pm/workspaces/:id', (_req, res, params) => {
+    const id = params.get('id')!;
+    try {
+      pmStore.deleteWorkspace(id);
+      helpers.json(res, { ok: true });
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 400);
+    }
+  });
+
+  route('GET', '/api/pm/workspaces/:id/api-keys', (_req, res, params) => {
+    const id = params.get('id')!;
+    if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
+    // Return keys WITH the secret — callers can re-read their keys.
+    // If we ever serve this endpoint to non-owners, mask all but the creator's most recent key.
+    helpers.json(res, { data: pmStore.listApiKeys(id) });
+  });
+
+  route('POST', '/api/pm/workspaces/:id/api-keys', async (req, res, params) => {
+    const id = params.get('id')!;
+    if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
+    const body = await helpers.readBody(req, 4096);
+    if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
+    let parsed: { label?: string; expires_at?: number };
+    try { parsed = JSON.parse(body); } catch { helpers.json(res, { error: 'Invalid JSON' }, 400); return; }
+    if (!parsed.label) { helpers.json(res, { error: 'Missing label' }, 400); return; }
+    try {
+      const key = pmStore.createApiKey(id, parsed.label, parsed.expires_at);
+      // Returned ONCE — callers should store the `key` field; we don't expose it again
+      helpers.json(res, key, 201);
+    } catch (err) {
+      helpers.json(res, { error: (err as Error).message }, 400);
+    }
+  });
+
+  route('DELETE', '/api/pm/api-keys/:key', (_req, res, params) => {
+    pmStore.revokeApiKey(params.get('key')!);
+    helpers.json(res, { ok: true });
   });
 
   // ============================================================

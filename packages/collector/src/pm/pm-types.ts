@@ -3,6 +3,39 @@
 // Shared between collector backend and dashboard frontend
 // ============================================================
 
+// --- Workspaces (multi-tenant containers) ---
+
+/**
+ * A workspace is the top-level tenancy boundary. Every project belongs to
+ * exactly one workspace, and every API key is scoped to one workspace.
+ * On single-user installs a "personal" workspace is auto-created and is
+ * invisible to users until they create a second one.
+ */
+export interface PmWorkspace {
+  id: string;             // ws_abc123
+  name: string;           // "Personal", "Acme Team"
+  slug: string;           // url-safe, unique — "personal", "acme"
+  description?: string;
+  createdAt: number;
+  updatedAt: number;
+  isDefault?: boolean;    // true for the auto-created "personal" workspace
+}
+
+/**
+ * Workspace-scoped API key. SDKs authenticate with a key, the collector
+ * looks up its workspace, and only projects in that workspace can accept
+ * events from that key.
+ */
+export interface PmApiKey {
+  key: string;            // the actual secret (tk_xxx)
+  workspaceId: string;
+  label: string;
+  createdAt: number;
+  lastUsedAt?: number;
+  expiresAt?: number;
+  revokedAt?: number;
+}
+
 // --- Projects ---
 
 export type ProjectPhase = 'preliminary' | 'application_development' | 'post_implementation';
@@ -10,6 +43,7 @@ export type ProjectStatus = 'active' | 'suspended' | 'abandoned';
 
 export interface PmProject {
   id: string;
+  workspaceId?: string;    // references PmWorkspace.id; auto-populated on migration
   name: string;
   path?: string;
   claudeProjectKey?: string;

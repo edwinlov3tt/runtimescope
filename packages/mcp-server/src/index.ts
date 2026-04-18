@@ -73,6 +73,9 @@ import { registerHistoryTools } from './tools/history.js';
 // --- Collector lifecycle (start/stop the background service) ---
 import { registerCollectorControlTools } from './tools/collector-control.js';
 
+// --- Multi-tenant workspaces ---
+import { registerWorkspaceTools } from './tools/workspaces.js';
+
 const COLLECTOR_PORT = parseInt(process.env.RUNTIMESCOPE_PORT ?? '6767', 10);
 const HTTP_PORT = parseInt(process.env.RUNTIMESCOPE_HTTP_PORT ?? '6768', 10);
 const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10);
@@ -429,12 +432,15 @@ async function main() {
   // --- Collector lifecycle (2 new) ---
   registerCollectorControlTools(mcp);
 
+  // --- Workspaces (4 new) ---
+  registerWorkspaceTools(mcp, pmStore);
+
   // 9. Connect MCP to stdio transport
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
   const mode = inAttachMode ? 'attach' : 'embedded';
-  console.error(`[RuntimeScope] MCP server running on stdio (mode=${mode}, 51 tools)`);
+  console.error(`[RuntimeScope] MCP server running on stdio (mode=${mode}, 55 tools)`);
   console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${HTTP_PORT}/snippet`);
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
   console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);

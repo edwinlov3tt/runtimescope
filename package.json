@@ -2,7 +2,8 @@
   "name": "runtimescope",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "playground"
   ],
   "scripts": {
     "build": "npm run build --workspaces",
@@ -10,7 +11,8 @@
     "clean": "npm run clean --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dashboard": "node packages/collector/dist/dashboard.js"
+    "dashboard": "node packages/collector/dist/dashboard.js",
+    "playground": "npm run dev -w playground"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

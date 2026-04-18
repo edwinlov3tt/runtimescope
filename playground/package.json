@@ -1,0 +1,29 @@
+{
+  "name": "runtimescope-playground",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "End-to-end test harness for RuntimeScope. Exercises browser + server SDKs with buttons for every event type.",
+  "scripts": {
+    "dev": "concurrently -k -n SERVER,CLIENT -c yellow,cyan \"npm:dev:server\" \"npm:dev:client\"",
+    "dev:server": "tsx watch server/index.ts",
+    "dev:client": "vite",
+    "start": "npm run dev"
+  },
+  "dependencies": {
+    "@runtimescope/sdk": "*",
+    "@runtimescope/server-sdk": "*",
+    "@runtimescope/vite": "*",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.0",
+    "concurrently": "^9.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.4.0",
+    "vite": "^5.4.0"
+  }
+}

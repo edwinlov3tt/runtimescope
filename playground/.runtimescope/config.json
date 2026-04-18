@@ -1,0 +1,30 @@
+{
+  "projectId": "proj_playground_demo",
+  "appName": "playground",
+  "dsn": "runtimescope://proj_playground_demo@localhost:6768/playground",
+  "sdks": [
+    {
+      "type": "browser",
+      "entryFile": "src/main.tsx",
+      "framework": "react",
+      "appName": "playground-web"
+    },
+    {
+      "type": "server",
+      "entryFile": "server/index.ts",
+      "framework": "node",
+      "appName": "playground-api"
+    }
+  ],
+  "capture": {
+    "network": true,
+    "console": true,
+    "xhr": true,
+    "performance": true,
+    "renders": true,
+    "navigation": true,
+    "clicks": true,
+    "errors": true,
+    "http": true
+  }
+}

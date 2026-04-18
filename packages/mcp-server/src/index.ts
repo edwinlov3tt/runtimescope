@@ -434,7 +434,7 @@ async function main() {
   await mcp.connect(transport);
 
   const mode = inAttachMode ? 'attach' : 'embedded';
-  console.error(`[RuntimeScope] MCP server running on stdio (mode=${mode}, 50 tools)`);
+  console.error(`[RuntimeScope] MCP server running on stdio (mode=${mode}, 51 tools)`);
   console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${HTTP_PORT}/snippet`);
   console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
   console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);

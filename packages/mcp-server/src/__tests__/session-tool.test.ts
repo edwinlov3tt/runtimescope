@@ -39,15 +39,19 @@ describe('session tools', () => {
       expect(result.data[0].isConnected).toBe(true);
     });
 
-    it('issues contains "No SDK connections detected" when empty', async () => {
+    it('issues explains no-sessions state when empty', async () => {
       const result = await callTool('get_session_info', {});
-      expect(result.issues).toContain('No SDK connections detected');
+      // New diagnostic message — looks for the detection-phrase substring
+      expect(
+        result.issues.some((i: string) => /no sdk connections/i.test(i)),
+      ).toBe(true);
     });
 
     it('summary includes connection info', async () => {
       store.addEvent(makeSessionEvent());
       const result = await callTool('get_session_info', {});
-      expect(result.summary).toContain('1 session(s) connected');
+      expect(result.summary).toMatch(/1 session\(s\)/);
+      expect(result.summary).toMatch(/currently connected/);
     });
   });
 

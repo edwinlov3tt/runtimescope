@@ -166,12 +166,21 @@ export function runtimescope(options: RuntimeScopePluginOptions = {}): VitePlugi
       if (options.autostart) {
         const spawned = spawnCollectorDetached();
         if (spawned) {
-          // Give it a moment to bind
-          await new Promise((r) => setTimeout(r, 1500));
-          const nowUp = await isCollectorReachable(httpPort);
+          // Poll for up to 10s — more reliable than a fixed sleep because
+          // `npx` cold-start varies from ~0.5s to ~5s depending on cache state.
+          let nowUp = false;
+          const deadline = Date.now() + 10_000;
+          while (Date.now() < deadline) {
+            await new Promise((r) => setTimeout(r, 300));
+            nowUp = await isCollectorReachable(httpPort);
+            if (nowUp) break;
+          }
           if (nowUp) {
             // eslint-disable-next-line no-console
             console.log(`${GREEN}✓${RESET} RuntimeScope collector started automatically`);
+          } else {
+            // eslint-disable-next-line no-console
+            console.warn(`${YELLOW}⚠${RESET} Spawned collector didn't come up within 10s — check \`runtimescope service logs\``);
           }
         }
       }

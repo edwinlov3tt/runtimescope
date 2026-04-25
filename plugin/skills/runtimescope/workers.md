@@ -39,6 +39,8 @@ export default withRuntimeScope(
 - `projectId` — **always inline**. Workers have no filesystem and can't read `.runtimescope/config.json`. Either hardcode (local dev only) or source from a `wrangler.toml` var.
 - `endpoint` — HTTP URL to the collector's `/api/events` route. Default port `6768`.
 
+> **Note**: in v0.10.x the option was named `httpEndpoint`; both work for backwards compatibility, but `endpoint` is the canonical name (matches the browser and server SDKs). If both are passed, `endpoint` wins.
+
 Use secrets or `vars` in `wrangler.toml`:
 
 ```toml

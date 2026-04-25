@@ -1,8 +1,29 @@
 import type { RuntimeEvent } from './types.js';
 
-// Save original console.debug BEFORE any interceptors patch it.
-// debug-level messages are hidden by default in Chrome DevTools.
-const _log = console.debug.bind(console);
+// Save original console methods BEFORE any interceptors patch them. The SDK
+// uses these for its own diagnostics so its logs don't loop back through the
+// console interceptor. `_log` is opt-in (off unless RUNTIMESCOPE_DEBUG flag /
+// localStorage / config.verbose is set) — keeps DevTools clean by default.
+const _origDebug = console.debug.bind(console);
+const _origWarn = console.warn.bind(console);
+
+let _debugEnabled = false;
+function _readDebugFlag(): void {
+  if (_debugEnabled) return;
+  if (typeof localStorage !== 'undefined') {
+    try {
+      if (localStorage.getItem('RUNTIMESCOPE_DEBUG') === '1') _debugEnabled = true;
+    } catch { /* sandboxed iframe — ignore */ }
+  }
+}
+_readDebugFlag();
+function _log(...args: unknown[]): void {
+  if (_debugEnabled) _origDebug(...args);
+}
+/** Public hook so index.ts can flip debug on when `init({ verbose: true })` is set. */
+export function setTransportDebug(enabled: boolean): void {
+  _debugEnabled = enabled;
+}
 
 interface TransportConfig {
   serverUrl: string;

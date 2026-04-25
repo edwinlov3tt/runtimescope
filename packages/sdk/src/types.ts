@@ -228,4 +228,29 @@ export interface RuntimeScopeConfig {
   maxEventsPerSecond?: number;
   /** Initial user context attached to all events */
   user?: UserContext;
+  /**
+   * When true, the SDK prints lifecycle messages (connect, disconnect, reconnect)
+   * to `console.debug`. Off by default — most users never need to see this and
+   * it stacks up in DevTools quickly. Equivalent to setting
+   * `localStorage.RUNTIMESCOPE_DEBUG = '1'` in a browser.
+   */
+  verbose?: boolean;
+  /**
+   * Suppress duplicate `console.*` output to the browser DevTools. The collector
+   * still receives every event so the dashboard stays accurate — only the
+   * visible console output is collapsed.
+   *
+   * - `true` → enable with sensible defaults: 5s window, first 3 occurrences
+   *   print, the rest are suppressed; a single summary line ("[RuntimeScope]
+   *   suppressed N…") prints every 5s if anything was hidden.
+   * - `false` (default) → no suppression; the original console.* call passes
+   *   through unchanged.
+   * - object → fine-grained control over `windowMs`, `maxBurst`,
+   *   `summaryIntervalMs`.
+   */
+  dedupeConsole?: boolean | {
+    windowMs?: number;
+    maxBurst?: number;
+    summaryIntervalMs?: number;
+  };
 }

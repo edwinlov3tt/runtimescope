@@ -6,6 +6,22 @@ import { getOrCreateProjectId, resolveProjectId } from './project-id.js';
 import type { PmStoreLike } from './project-id.js';
 import { SqliteStore } from './sqlite-store.js';
 import { isSqliteAvailable } from './sqlite-check.js';
+import { Wal } from './wal.js';
+import { dirname, join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { MetricsRegistry, Counter } from './metrics.js';
+import { OtelExporter, otelOptionsFromEnv, type OtelExporterOptions } from './otel-exporter.js';
+
+export interface SnapshotResult {
+  /** Absolute path to the snapshot directory. */
+  path: string;
+  /** ISO-like timestamp embedded in the directory name. */
+  timestamp: string;
+  /** Per-project sizes + event counts. */
+  projects: { name: string; sqliteBytes: number; walBytes: number; eventCount: number }[];
+  /** Total bytes written across all projects. */
+  totalBytes: number;
+}
 import { AuthManager } from './auth.js';
 import { SessionRateLimiter, type RateLimitConfig } from './rate-limiter.js';
 import { loadTlsOptions, type TlsConfig } from './tls.js';
@@ -28,6 +44,13 @@ export interface CollectorServerOptions {
   authManager?: AuthManager;
   rateLimits?: RateLimitConfig;
   tls?: TlsConfig;
+  /**
+   * Optional OpenTelemetry exporter config. When set (or when
+   * `RUNTIMESCOPE_OTEL_ENDPOINT` is in the environment), every event the
+   * store accepts is converted into an OTLP signal and shipped to the
+   * configured endpoint. Failures are logged but never break ingestion.
+   */
+  otel?: OtelExporterOptions;
 }
 
 interface ClientInfo {
@@ -53,6 +76,16 @@ export class CollectorServer {
   private pendingHandshakes: Set<WebSocket> = new Set();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
+  private wals: Map<string, Wal> = new Map();
+  private ready = false;
+  private metrics: MetricsRegistry = new MetricsRegistry();
+  private startedAt: number = Date.now();
+  private counters: {
+    eventsTotal: Counter;
+    eventsDropped: Counter;
+    wsDisconnects: Counter;
+  };
+  private otelExporter: OtelExporter | null = null;
   private connectCallbacks: ((sessionId: string, projectName: string, projectId?: string) => void)[] = [];
   private disconnectCallbacks: ((sessionId: string, projectName: string, projectId?: string) => void)[] = [];
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
@@ -75,6 +108,90 @@ export class CollectorServer {
     if (this.rateLimiter.isEnabled()) {
       this.pruneTimer = setInterval(() => this.rateLimiter.prune(), 60_000);
     }
+
+    // --- Metrics registry ---
+    // Counters increment as work happens; gauges read live state at scrape
+    // time so we don't risk drift between the counter and the underlying map.
+    this.counters = {
+      eventsTotal: this.metrics.counter(
+        'runtimescope_events_total',
+        'Total events accepted by the collector since start.',
+        ['type'],
+      ),
+      eventsDropped: this.metrics.counter(
+        'runtimescope_events_dropped_total',
+        'Total events dropped before reaching the in-memory store.',
+        ['reason'],
+      ),
+      wsDisconnects: this.metrics.counter(
+        'runtimescope_ws_disconnects_total',
+        'WebSocket disconnects (clean + abnormal) since start.',
+        ['cause'],
+      ),
+    };
+
+    // Hot path: every event the store accepts increments the per-type counter.
+    // Listener errors are swallowed by EventStore.addEvent, so a bad metric
+    // can't break ingestion.
+    this.store.onEvent((event) => {
+      this.counters.eventsTotal.inc(1, { type: event.eventType });
+    });
+
+    const uptime = this.metrics.gauge(
+      'runtimescope_collector_uptime_seconds',
+      'Seconds since the collector process started.',
+    );
+    uptime.setCollect(() => Math.floor((Date.now() - this.startedAt) / 1000));
+
+    const sessionsConnected = this.metrics.gauge(
+      'runtimescope_sessions_connected',
+      'SDK sessions currently connected via WebSocket.',
+    );
+    sessionsConnected.setCollect(
+      () => this.store.getSessionInfo().filter((s) => s.isConnected).length,
+    );
+
+    const bufferSize = this.metrics.gauge(
+      'runtimescope_buffer_size',
+      'Events currently held in the in-memory ring buffer.',
+    );
+    bufferSize.setCollect(() => this.store.eventCount);
+
+    const projectsGauge = this.metrics.gauge(
+      'runtimescope_projects',
+      'Distinct projects (apps) the collector has seen.',
+    );
+    projectsGauge.setCollect(() => this.projectManager?.listProjects().length ?? 0);
+
+    const workspacesGauge = this.metrics.gauge(
+      'runtimescope_workspaces',
+      'Workspaces (multi-tenant containers) registered in PmStore.',
+    );
+    workspacesGauge.setCollect(() => {
+      const pm = this.pmStore as { listWorkspaces?: () => unknown[] } | null;
+      return pm?.listWorkspaces ? pm.listWorkspaces().length : 0;
+    });
+
+    // --- OpenTelemetry exporter (opt-in) ---
+    // Explicit constructor option wins; otherwise fall back to env-vars so
+    // operators can configure it at deploy time without code changes.
+    const otelOptions = options.otel ?? otelOptionsFromEnv();
+    if (otelOptions) {
+      this.otelExporter = new OtelExporter(otelOptions);
+      this.store.onEvent((event) => {
+        // ingest is fire-and-forget — the exporter buffers + flushes on its
+        // own timer. Errors are logged inside the exporter, never thrown out.
+        this.otelExporter?.ingest(event);
+      });
+      console.error(
+        `[RuntimeScope] OpenTelemetry export enabled → ${otelOptions.endpoint}`,
+      );
+    }
+  }
+
+  /** Public access to the metrics registry — HttpServer renders this at /metrics. */
+  getMetricsRegistry(): MetricsRegistry {
+    return this.metrics;
   }
 
   getStore(): EventStore {
@@ -119,14 +236,163 @@ export class CollectorServer {
     this.disconnectCallbacks.push(cb);
   }
 
-  start(options: CollectorServerOptions = {}): Promise<void> {
+  /** True after start() finishes recovery. False during startup or after stop(). */
+  isReady(): boolean {
+    return this.ready;
+  }
+
+  /**
+   * Snapshot every project's SQLite DB and WAL into a fresh directory under
+   * `<runtimescope-root>/snapshots/<ISO>/`. Atomic via SQLite's `VACUUM INTO`;
+   * non-blocking for ongoing event ingestion (the live DB keeps accepting
+   * writes during the copy).
+   *
+   * Returns metadata for the admin endpoint to serialize.
+   */
+  createSnapshot(): SnapshotResult {
+    if (!this.projectManager) {
+      throw new Error('Cannot snapshot — no projectManager configured');
+    }
+    const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+    const root = join(this.projectManager.rootDir, 'snapshots', timestamp);
+    mkdirSync(root, { recursive: true });
+
+    const projects: SnapshotResult['projects'] = [];
+    let totalBytes = 0;
+
+    for (const projectName of this.projectManager.listProjects()) {
+      const projectDir = join(root, projectName);
+      mkdirSync(projectDir, { recursive: true });
+
+      // SQLite: drain any pending writes first, then VACUUM INTO. Skip if
+      // SQLite isn't available for this build.
+      let sqliteBytes = 0;
+      let eventCount = 0;
+      const sqliteStore = this.sqliteStores.get(projectName);
+      if (sqliteStore) {
+        const sqlitePath = join(projectDir, 'events.db');
+        try {
+          sqliteBytes = sqliteStore.snapshotTo(sqlitePath);
+          eventCount = sqliteStore.getEventCount({ project: projectName });
+        } catch (err) {
+          console.error(
+            `[RuntimeScope] Snapshot of "${projectName}" SQLite failed:`,
+            (err as Error).message,
+          );
+        }
+      }
+
+      // WAL: copy active + sealed files alongside the SQLite copy. Even after
+      // a clean drain there can be in-flight events that would otherwise be
+      // missing from a snapshot taken between WAL appends and SQLite flushes.
+      let walBytes = 0;
+      const wal = this.wals.get(projectName);
+      if (wal) {
+        try {
+          walBytes = wal.snapshotTo(join(projectDir, 'wal'));
+        } catch (err) {
+          console.error(
+            `[RuntimeScope] Snapshot of "${projectName}" WAL failed:`,
+            (err as Error).message,
+          );
+        }
+      }
+
+      projects.push({ name: projectName, sqliteBytes, walBytes, eventCount });
+      totalBytes += sqliteBytes + walBytes;
+    }
+
+    const manifest = {
+      timestamp,
+      createdAt: Date.now(),
+      collectorVersion: process.env.npm_package_version ?? '0.0.0',
+      projects,
+      totalBytes,
+    };
+    writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest, null, 2));
+
+    return { path: root, timestamp, projects, totalBytes };
+  }
+
+  async start(options: CollectorServerOptions = {}): Promise<void> {
     const port = options.port ?? 6767;
     const host = options.host ?? '127.0.0.1';
     const maxRetries = options.maxRetries ?? 5;
     const retryDelayMs = options.retryDelayMs ?? 1000;
     const tls = options.tls ?? this.tlsConfig;
 
+    // Recovery before binding the port: any leftover WAL files from a prior
+    // crash are replayed into SqliteStore, and the in-memory ring buffer is
+    // warmed with the most recent events per project. New WS connections only
+    // start arriving after this completes, so there's no race with incoming
+    // events overlapping the warm-up.
+    try {
+      this.runStartupRecovery();
+    } catch (err) {
+      console.error('[RuntimeScope] Startup recovery failed (non-fatal):', (err as Error).message);
+    }
+    this.ready = true;
+
     return this.tryStart(port, host, maxRetries, retryDelayMs, tls);
+  }
+
+  /**
+   * On collector startup, for each known project:
+   *   1. Replay any sealed/active WAL files into SqliteStore (mirror of the
+   *      lazy recovery in `ensureWal`, but proactive — handles the case where
+   *      a crashed project never reconnects).
+   *   2. Warm the in-memory ring buffer with recent events from SqliteStore so
+   *      MCP tools see history immediately, not just events from the next
+   *      session that connects.
+   *
+   * Runs synchronously — better-sqlite3 is sync — so callers can `await
+   * collector.start()` and trust the buffer is hot when it returns.
+   */
+  private runStartupRecovery(): void {
+    if (!this.projectManager) return;
+    const projects = this.projectManager.listProjects();
+    if (projects.length === 0) return;
+
+    let walReplayed = 0;
+    let warmed = 0;
+
+    for (const project of projects) {
+      // 1. WAL replay (idempotent — duplicates dropped by event_id PK).
+      const dir = this.walDirFor(project);
+      if (dir) {
+        const files = Wal.listRecoveryFiles(dir);
+        if (files.length > 0) {
+          const sqliteStore = this.ensureSqliteStore(project);
+          if (sqliteStore) {
+            for (const file of files) {
+              const events = Wal.readFile(file);
+              for (const ev of events) {
+                try { sqliteStore.addEvent(ev, project); } catch { /* ignore */ }
+              }
+              walReplayed += events.length;
+            }
+            sqliteStore.flush();
+            for (const file of files) Wal.deleteSealed(file);
+          }
+        }
+      }
+
+      // 2. Ring-buffer warm. Cap per-project so a project with millions of
+      //    historical events doesn't monopolize the (shared) ring; let the
+      //    buffer's natural eviction handle distribution across projects.
+      const sqliteStore = this.ensureSqliteStore(project);
+      if (sqliteStore) {
+        const before = this.store.eventCount;
+        this.store.warmFromSqlite(sqliteStore, project, 1000);
+        warmed += this.store.eventCount - before;
+      }
+    }
+
+    if (walReplayed > 0 || warmed > 0) {
+      console.error(
+        `[RuntimeScope] Recovery: ${walReplayed} WAL events replayed, ${warmed} events warmed into ring buffer.`,
+      );
+    }
   }
 
   private tryStart(
@@ -191,14 +457,13 @@ export class CollectorServer {
     reject: (err: Error) => void
   ): void {
     if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
+      const nextPort = port + 1;
       console.error(
-        `[RuntimeScope] Port ${port} in use, retrying in ${retryDelayMs}ms (${retriesLeft} attempts left)...`
+        `[RuntimeScope] Port ${port} in use, trying ${nextPort}...`
       );
-      setTimeout(() => {
-        this.tryStart(port, host, retriesLeft - 1, retryDelayMs, tls)
-          .then(resolve)
-          .catch(reject);
-      }, retryDelayMs);
+      this.tryStart(nextPort, host, retriesLeft - 1, retryDelayMs, tls)
+        .then(resolve)
+        .catch(reject);
     } else {
       console.error('[RuntimeScope] WebSocket server error:', err.message);
       reject(err);
@@ -227,6 +492,102 @@ export class CollectorServer {
       }
     }
     return sqliteStore;
+  }
+
+  private walDirFor(projectName: string): string | null {
+    if (!this.projectManager) return null;
+    try {
+      this.projectManager.ensureProjectDir(projectName);
+      const dbPath = this.projectManager.getProjectDbPath(projectName);
+      // Co-locate with the SQLite DB so backups that copy the project dir
+      // capture both files. `getProjectDbPath` returns the db file path; the
+      // WAL lives in a sibling directory.
+      return join(dirname(dbPath), 'wal');
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Open (or return) the WAL for a project. Every event ingested for this
+   * project is first appended + fsync'd here before being pushed to the ring
+   * buffer and SqliteStore, so a crash between receipt and SqliteStore flush
+   * doesn't lose acknowledged events.
+   */
+  private ensureWal(projectName: string): Wal | null {
+    if (!this.projectManager) return null;
+    let wal = this.wals.get(projectName);
+    if (wal) return wal;
+
+    const dir = this.walDirFor(projectName);
+    if (!dir) return null;
+    try {
+      // Recover any files left behind by a prior crash before we open a fresh
+      // active WAL — otherwise those events would be stuck forever.
+      this.recoverWalForProject(projectName, dir);
+      wal = new Wal({ dir });
+      this.wals.set(projectName, wal);
+      return wal;
+    } catch (err) {
+      console.error(
+        `[RuntimeScope] Failed to open WAL for "${projectName}":`,
+        (err as Error).message,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * Replay any sealed or non-empty active WAL files into SqliteStore, then
+   * delete them. Called lazily the first time a project's WAL is opened — if
+   * the prior collector crashed mid-batch, those events survive in the WAL
+   * and we'd otherwise leave them stranded on disk forever.
+   */
+  private recoverWalForProject(projectName: string, dir: string): void {
+    const files = Wal.listRecoveryFiles(dir);
+    if (files.length === 0) return;
+
+    const sqliteStore = this.ensureSqliteStore(projectName);
+    let replayed = 0;
+    for (const file of files) {
+      const events = Wal.readFile(file);
+      if (events.length === 0) {
+        // Empty file — safe to drop.
+        Wal.deleteSealed(file);
+        continue;
+      }
+      if (sqliteStore) {
+        for (const ev of events) {
+          try { sqliteStore.addEvent(ev, projectName); } catch { /* non-fatal */ }
+        }
+        replayed += events.length;
+      }
+      // Don't delete the file until SqliteStore has actually committed.
+    }
+    if (sqliteStore && replayed > 0) {
+      sqliteStore.flush();
+      // SqliteStore.flush is synchronous — after this returns events are in
+      // SQLite. Now safe to drop the WAL files.
+      for (const file of files) Wal.deleteSealed(file);
+      console.error(
+        `[RuntimeScope] WAL recovery: replayed ${replayed} events for "${projectName}"`,
+      );
+    }
+  }
+
+  /**
+   * Rotate the project's WAL, flush SqliteStore so the rotated file's events
+   * are persisted, then delete the sealed file. Called when the active file
+   * has grown past its rotate threshold.
+   */
+  private checkpointWal(projectName: string, wal: Wal): void {
+    const sealed = wal.rotate();
+    if (!sealed) return;
+    const sqliteStore = this.sqliteStores.get(projectName);
+    sqliteStore?.flush();
+    // Grace period keeps the file around briefly in case a concurrent reader
+    // is still parsing it (nobody does today, but defensive).
+    setTimeout(() => Wal.deleteSealed(sealed), 5000).unref();
   }
 
   /** Catch runtime errors on the WSS so an unhandled error doesn't crash the process */
@@ -293,7 +654,12 @@ export class CollectorServer {
         }
       });
 
-      ws.on('close', () => {
+      ws.on('close', (code) => {
+        // 1000 / 1001 are clean closes; anything else is abnormal. The label
+        // lets dashboards alert on spikes in abnormal disconnects.
+        const cause = code === 1000 || code === 1001 ? 'clean' : 'abnormal';
+        this.counters.wsDisconnects.inc(1, { cause });
+
         const clientInfo = this.clients.get(ws);
         if (clientInfo) {
           this.store.markDisconnected(clientInfo.sessionId);
@@ -390,7 +756,9 @@ export class CollectorServer {
         // Initialize SQLite for this project
         const sqliteStore = this.ensureSqliteStore(projectName);
 
-        // Save session info to SQLite
+        // Save session info to SQLite. Including projectId is required so
+        // post-crash recovery can rehydrate the session→projectId map and
+        // serve `/api/events/*?project_id=...` queries against warmed data.
         if (sqliteStore) {
           const sessionInfo: SessionInfoExtended = {
             sessionId: payload.sessionId,
@@ -400,6 +768,7 @@ export class CollectorServer {
             sdkVersion: payload.sdkVersion,
             eventCount: 0,
             isConnected: true,
+            projectId,
           };
           sqliteStore.saveSession(sessionInfo);
         }
@@ -432,13 +801,51 @@ export class CollectorServer {
 
         const clientInfo = this.clients.get(ws);
         const payload = msg.payload as EventBatchPayload;
-        if (Array.isArray(payload.events)) {
-          for (const event of payload.events) {
-            // Rate limit per session
-            if (clientInfo && !this.rateLimiter.allow(clientInfo.sessionId)) {
-              break; // drop remaining events in this batch
-            }
-            this.store.addEvent(event);
+        if (!Array.isArray(payload.events)) break;
+
+        // Rate-limit first so dropped events don't hit the WAL.
+        const accepted: RuntimeEvent[] = [];
+        let rateLimited = 0;
+        for (const event of payload.events) {
+          if (clientInfo && !this.rateLimiter.allow(clientInfo.sessionId)) {
+            // Rate limiter rejected — count remaining events in the batch as
+            // dropped (we break, so the rest are dropped too).
+            rateLimited = payload.events.length - accepted.length;
+            break;
+          }
+          accepted.push(event);
+        }
+        if (rateLimited > 0) {
+          this.counters.eventsDropped.inc(rateLimited, { reason: 'rate_limit' });
+        }
+        if (accepted.length === 0) break;
+
+        // Durability: write to WAL and fsync once per batch BEFORE we hand the
+        // events off to the in-memory store. If the process crashes after this
+        // point, recovery will replay the batch into SqliteStore.
+        const wal = clientInfo?.projectName ? this.ensureWal(clientInfo.projectName) : null;
+        if (wal) {
+          try {
+            wal.append(accepted);
+            wal.commit();
+          } catch (err) {
+            console.error('[RuntimeScope] WAL append/commit failed:', (err as Error).message);
+            this.counters.eventsDropped.inc(accepted.length, { reason: 'wal_backpressure' });
+            // Continue — dropping an event is worse than proceeding without the
+            // durability guarantee on this one batch.
+          }
+        }
+
+        for (const event of accepted) {
+          this.store.addEvent(event);
+        }
+
+        // Rotate if the active file is getting big; checkpoint asynchronously.
+        if (wal?.shouldRotate() && clientInfo?.projectName) {
+          try {
+            this.checkpointWal(clientInfo.projectName, wal);
+          } catch (err) {
+            console.error('[RuntimeScope] WAL checkpoint failed:', (err as Error).message);
           }
         }
         break;
@@ -553,6 +960,30 @@ export class CollectorServer {
       }
     }
 
+    // Drain the OTel exporter before closing storage so any in-flight signals
+    // get one last flush attempt. Failures are non-fatal — we're stopping.
+    if (this.otelExporter) {
+      try {
+        // Synchronous-ish fire-and-forget — the close() promise may still
+        // resolve after stop() returns, but the timer is already cleared.
+        void this.otelExporter.close();
+      } catch { /* ignore */ }
+      this.otelExporter = null;
+    }
+
+    // Close WALs before SqliteStores — one final fsync of any in-flight bytes
+    // and a clean rename of the active handle so recovery on next start is a
+    // no-op rather than a forced replay of the same events.
+    for (const [name, wal] of this.wals) {
+      try {
+        wal.close();
+      } catch {
+        // Non-fatal during shutdown — the next start will recover.
+        console.error(`[RuntimeScope] WAL close error for "${name}" (non-fatal)`);
+      }
+    }
+    this.wals.clear();
+
     // Close all SQLite stores
     for (const [name, sqliteStore] of this.sqliteStores) {
       try {
@@ -569,5 +1000,7 @@ export class CollectorServer {
       this.wss = null;
       console.error('[RuntimeScope] Collector stopped');
     }
+
+    this.ready = false;
   }
 }

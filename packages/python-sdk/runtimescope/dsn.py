@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 
 @dataclass
@@ -48,7 +48,9 @@ def parse_dsn(dsn: str) -> ParsedDsn:
             "Invalid RuntimeScope DSN: missing projectId (expected proj_xxx@host)"
         )
 
-    auth_token = url.password or None
+    # Match the JS SDKs: percent-decode the password component so tokens that
+    # were URL-encoded at config time authenticate identically across languages.
+    auth_token = unquote(url.password) if url.password else None
 
     host = url.hostname
     if not host:

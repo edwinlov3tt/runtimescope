@@ -40,7 +40,13 @@ RuntimeScope.init({
 
 - Omitting `projectId`: events arrive but don't unify with server/worker events.
 - Copy-pasting a project's `projectId` into a second project: collides in the dashboard.
-- Initialising twice (e.g. under HMR): harmless — the SDK stores originals in `Symbol.for('__runtimescope_originals__')` and survives module reloads. No action needed.
+- Initialising twice (e.g. under HMR): the SDK is idempotent — a second `init()` with the **same** DSN/appName silently no-ops. A second `init()` with a **different** DSN logs a `console.warn` explaining the mismatch (common footgun: `@runtimescope/vite` injects an init AND your `main.tsx` calls `RuntimeScope.init()` separately — drop the manual call).
+
+### Useful options
+
+- `verbose: true` — print SDK lifecycle messages (connect, disconnect, reconnect) to `console.debug`. Off by default to keep DevTools clean. Same as setting `localStorage.RUNTIMESCOPE_DEBUG = '1'`.
+- `dedupeConsole: true` — collapse identical `console.*` output to DevTools. First 3 occurrences print, rest are suppressed for a 5s window, then a single summary line shows. The collector still receives every event for the dashboard — only the visible browser output is collapsed. Useful for noisy production apps.
+- `dedupeConsole: { windowMs, maxBurst, summaryIntervalMs }` — fine-grained control.
 
 ## Placement
 

@@ -101,7 +101,10 @@ function _withRuntimeScope(
       const parsed = parseDsn(config.dsn);
       config = {
         ...config,
-        httpEndpoint: parsed.httpEndpoint + '/api/events',
+        // Use the canonical `endpoint` field, matching the browser and
+        // server SDK config surface. The transport falls back to
+        // `httpEndpoint` for v0.10.x callers.
+        endpoint: parsed.httpEndpoint + '/api/events',
         projectId: parsed.projectId,
         ...(parsed.authToken ? { authToken: parsed.authToken } : {}),
         ...(parsed.appName && !config.appName ? { appName: parsed.appName } : {}),

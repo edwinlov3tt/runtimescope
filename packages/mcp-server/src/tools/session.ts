@@ -128,11 +128,11 @@ export function registerSessionTools(server: McpServer, store: EventStore): void
       while (Date.now() < deadline) {
         const { sessions } = resolveSessionContext(store, project_id);
         const connected = sessions.filter((s) => s.isConnected);
+        // O(sessions) count — avoids allocating+filtering the 10K-event ring
+        // buffer on every poll when project_id is set.
         const eventsFromProject =
           project_id != null
-            ? store
-                .getAllEvents(undefined, undefined, project_id)
-                .length
+            ? store.eventCountForProject(project_id)
             : store.eventCount;
 
         lastSnapshot = {

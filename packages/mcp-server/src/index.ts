@@ -106,23 +106,23 @@ function killStaleProcess(port: number): void {
 }
 
 /**
- * Check if a RuntimeScope collector is already running on our HTTP port.
- * If it is, we'll skip starting our own (attach mode — we still serve MCP
- * tools, but queries read from the existing collector's HTTP API).
- *
- * Returns true iff port HTTP_PORT responds with a RuntimeScope health payload.
+ * Check whether a RuntimeScope collector that has finished startup recovery
+ * is already on our HTTP port. We probe `/readyz` rather than `/api/health`
+ * so a peer that's listening-but-still-warming doesn't trigger us to back
+ * off — we'd rather log "another collector is starting up" once it's actually
+ * serving traffic. `/readyz` returns 503 during recovery, 200 when ready.
  */
 async function detectExistingCollector(httpPort: number): Promise<boolean> {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 500);
-    const res = await fetch(`http://127.0.0.1:${httpPort}/api/health`, {
+    const res = await fetch(`http://127.0.0.1:${httpPort}/readyz`, {
       signal: controller.signal,
     });
     clearTimeout(timeout);
     if (!res.ok) return false;
     const data = (await res.json()) as { status?: string };
-    return data.status === 'ok';
+    return data.status === 'ready';
   } catch {
     return false;
   }
@@ -177,38 +177,29 @@ async function main() {
     console.error('[RuntimeScope] Payload redaction enabled');
   }
 
-  // 2. Detect whether a healthy RuntimeScope collector is already on our port
-  //    When another RuntimeScope process already owns :HTTP_PORT, we do NOT
-  //    kill it. Before today the MCP would blindly SIGTERM whatever was on the
-  //    port — that killed the user's standalone collector (started via
-  //    `npm run dashboard`), caused the port to flip, and broke the "no
-  //    sessions visible" disconnect.
-  //
-  //    If a healthy collector is found and it's ours (same process family),
-  //    we exit cleanly so Claude Code just uses the existing MCP instance.
-  //    Otherwise we stop here with a clear error telling the user what to do.
+  // 2. Detect whether another RuntimeScope collector is already on our ports.
+  //    If so, we do NOT kill it (previously this would SIGTERM the user's
+  //    `npm run dashboard` standalone). We also do NOT exit — exiting here
+  //    leaves Claude Code with zero MCP tools. Instead we start our own
+  //    collector on alternate ports (port-increment retry handles this) and
+  //    log clearly so the user knows to point their SDK at the MCP instance
+  //    or the standalone, depending on which they want to query.
   const existingHealthy = await detectExistingCollector(HTTP_PORT);
   if (existingHealthy) {
-    // Check if it's our own older MCP — look for the /api/projects route
-    // shape. If so, just exit so the existing one keeps serving. If it's a
-    // standalone collector (no MCP), we also exit because the user clearly
-    // wants the standalone to keep running.
     console.error(
-      `[RuntimeScope] An existing collector is running on :${HTTP_PORT}.`,
+      `[RuntimeScope] Another collector is already listening on :${HTTP_PORT}.`,
     );
     console.error(
-      '[RuntimeScope] Not starting a second one — use the existing instance.',
+      '[RuntimeScope] Starting our own on alternate ports so MCP tools stay available.',
     );
     console.error(
-      '[RuntimeScope] If this is stuck, kill it manually: lsof -ti :6767 :6768 | xargs kill',
+      '[RuntimeScope] Point SDK at the port logged below for MCP tools to see events.',
     );
-    // Exit without an error code so Claude Code doesn't log a fatal.
-    process.exit(0);
+  } else {
+    // Only kill stale processes if no healthy collector is holding the port.
+    killStaleProcess(COLLECTOR_PORT);
+    killStaleProcess(HTTP_PORT);
   }
-
-  // No healthy collector — clear any zombies and start our own
-  killStaleProcess(COLLECTOR_PORT);
-  killStaleProcess(HTTP_PORT);
 
   // 3. Start the collector WebSocket server with project scoping
   const collector = new CollectorServer({
@@ -218,8 +209,8 @@ async function main() {
     rateLimits: globalConfig.rateLimits,
     tls: tlsConfig,
   });
-  const inAttachMode = false; // kept for code below; always false now
   await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 1000 });
+  const actualWsPort = collector.getPort() ?? COLLECTOR_PORT;
 
   const store = collector.getStore();
 
@@ -327,8 +318,8 @@ async function main() {
     });
   }
 
-  // 6. Start HTTP API for dashboard — skip entirely in attach mode
-  //    (the existing collector's HTTP server already owns the port)
+  // 6. Start HTTP API for dashboard. If the requested port is held by another
+  //    collector, HttpServer's own port-increment retry logic will find a free one.
   const httpServer = new HttpServer(store, processMonitor, {
     authManager,
     allowedOrigins: corsOrigins,
@@ -337,29 +328,28 @@ async function main() {
     discovery,
     projectManager,
     getConnectedSessions: () => collector.getConnectedSessions(),
+    isReady: () => collector.isReady(),
+    createSnapshot: () => collector.createSnapshot(),
+    renderMetrics: () => collector.getMetricsRegistry().render(),
   });
-  if (!inAttachMode) {
-    try {
-      await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
-    } catch (err) {
-      console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
-      // Non-fatal: MCP tools still work without HTTP API
-    }
+  let actualHttpPort = HTTP_PORT;
+  try {
+    await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
+    actualHttpPort = httpServer.getPort() ?? HTTP_PORT;
+  } catch (err) {
+    console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
+    // Non-fatal: MCP tools still work without HTTP API
   }
 
-  // Push session connect/disconnect to dashboard in real-time (owned-collector only)
-  if (!inAttachMode) {
-    collector.onConnect((sessionId, projectName, projectId) => {
-      try { httpServer.broadcastSessionChange('session_connected', sessionId, projectName); } catch { /* non-fatal */ }
-      // Auto-link SDK appName to PM project
-      if (pmStore) {
-        try { pmStore.autoLinkApp(projectName, projectId); } catch { /* non-fatal */ }
-      }
-    });
-    collector.onDisconnect((sessionId, projectName) => {
-      try { httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName); } catch { /* non-fatal */ }
-    });
-  }
+  collector.onConnect((sessionId, projectName, projectId) => {
+    try { httpServer.broadcastSessionChange('session_connected', sessionId, projectName); } catch { /* non-fatal */ }
+    if (pmStore) {
+      try { pmStore.autoLinkApp(projectName, projectId); } catch { /* non-fatal */ }
+    }
+  });
+  collector.onDisconnect((sessionId, projectName) => {
+    try { httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName); } catch { /* non-fatal */ }
+  });
 
   // 6. Create Playwright scanner (lazy — browser launches on first scan)
   const scanner = new PlaywrightScanner();
@@ -404,7 +394,7 @@ async function main() {
   registerQaCheckTools(mcp, store, sessionManager, collector, apiDiscovery);
 
   // --- Project Setup (1 — deterministic setup_project tool) ---
-  registerSetupTools(mcp, store, collector, projectManager);
+  registerSetupTools(mcp, store, collector, projectManager, pmStore);
 
   // --- Recon / UI Analysis (9 new — extension-powered) ---
   registerReconMetadataTools(mcp, store, collector);
@@ -439,11 +429,18 @@ async function main() {
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  const mode = inAttachMode ? 'attach' : 'embedded';
-  console.error(`[RuntimeScope] MCP server running on stdio (mode=${mode}, 55 tools)`);
-  console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${HTTP_PORT}/snippet`);
-  console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${COLLECTOR_PORT}`);
-  console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${HTTP_PORT}`);
+  console.error(`[RuntimeScope] MCP server running on stdio (55 tools)`);
+  console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${actualHttpPort}/snippet`);
+  console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${actualWsPort}`);
+  console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${actualHttpPort}`);
+  if (actualWsPort !== COLLECTOR_PORT || actualHttpPort !== HTTP_PORT) {
+    console.error(
+      `[RuntimeScope] NOTE: bound to ${actualWsPort}/${actualHttpPort} because ${COLLECTOR_PORT}/${HTTP_PORT} were in use.`,
+    );
+    console.error(
+      `[RuntimeScope] SDK must target ws://127.0.0.1:${actualWsPort} for events to be visible to MCP tools.`,
+    );
+  }
 
   // 10. Robust shutdown — each step is wrapped so one failure can't block
   //     the others, and we never try to stop servers we don't own (attach mode).
@@ -462,10 +459,8 @@ async function main() {
     await safe('processMonitor', () => processMonitor.stop());
     await safe('scanner', () => scanner.shutdown());
     await safe('connectionManager', () => connectionManager.closeAll());
-    if (!inAttachMode) {
-      await safe('httpServer', () => httpServer.stop());
-      await safe('collector', () => collector.stop());
-    }
+    await safe('httpServer', () => httpServer.stop());
+    await safe('collector', () => collector.stop());
     await safe('pmStore', () => pmStore?.close());
 
     process.exit(0);

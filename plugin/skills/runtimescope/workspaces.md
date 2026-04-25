@@ -47,7 +47,7 @@ All SDKs (`@runtimescope/sdk`, `@runtimescope/server-sdk`, `@runtimescope/worker
 1. `list_workspaces` — does a suitable one already exist?
 2. If not: `create_workspace({ name: "Production" })` — save the returned `id`.
 3. `move_project_to_workspace({ project_id, workspace_id })` — park the project in the new workspace.
-4. `create_workspace_api_key({ workspace_id, label: "production-backend" })` — **capture the `key` field immediately**. It will not be shown again.
+4. `create_workspace_api_key({ workspace_id, label: "production-backend" })` — **capture the `key` field immediately**. The collector stores only a SHA-256 hash; subsequent list calls return `keyPrefix` (first 11 chars) + `keyLast4` for display, never the raw secret. There's no way to recover a lost key — the user must mint a new one.
 5. Set `RUNTIMESCOPE_DSN` on the target machine / service:
    ```
    https://<projectId>:<apiKey>@<collector-host>/<appName>

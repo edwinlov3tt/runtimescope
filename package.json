@@ -12,7 +12,10 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dashboard": "node packages/collector/dist/dashboard.js",
-    "playground": "npm run dev -w playground"
+    "playground": "npm run dev -w playground",
+    "stress": "tsx stress/cli.ts",
+    "stress:quick": "tsx stress/cli.ts -- --quick",
+    "prepush": "npm run build && npm test && npm run stress -- --quick"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

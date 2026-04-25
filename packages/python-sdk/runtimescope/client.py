@@ -93,7 +93,7 @@ class _RuntimeScopeImpl:
             session_id=self._session_id,
             app_name=self._app_name,
             sdk_version=SDK_VERSION,
-            auth_token=auth_token or os.environ.get("RUNTIMESCOPE_AUTH_TOKEN"),
+            auth_token=auth_token or parsed.auth_token or os.environ.get("RUNTIMESCOPE_AUTH_TOKEN"),
             project_id=self._project_id,
             batch_size=batch_size,
             flush_interval_ms=flush_interval_ms,

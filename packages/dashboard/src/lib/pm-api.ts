@@ -454,6 +454,7 @@ export async function createApiKey(
   });
 }
 
-export async function revokeApiKey(key: string): Promise<boolean> {
-  return del(`/api/pm/api-keys/${encodeURIComponent(key)}`);
+/** Revoke an API key by its public prefix (e.g. "tk_9f2a1c3b"), not the raw secret. */
+export async function revokeApiKey(keyPrefix: string): Promise<boolean> {
+  return del(`/api/pm/api-keys/${encodeURIComponent(keyPrefix)}`);
 }

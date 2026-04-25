@@ -502,17 +502,39 @@ async function stop() {
   }
 
   let killed = 0;
+  let skipped = 0;
   for (const port of [6767, 6768]) {
     try {
       // execFileSync with explicit args — no shell, no injection
       const pidList = execFileSync('lsof', ['-ti', `:${port}`], { encoding: 'utf-8' }).trim();
       for (const pid of pidList.split('\n').filter(Boolean)) {
+        const pidNum = parseInt(pid, 10);
+        if (!Number.isFinite(pidNum)) continue;
+
+        // Verify the PID is actually a RuntimeScope process before killing.
+        // Without this check, `runtimescope stop` will SIGTERM any dev server
+        // that happens to be on :6767/:6768 — which is common once the user
+        // has shifted to our default ports.
+        let cmdline = '';
         try {
-          const pidNum = parseInt(pid, 10);
-          if (Number.isFinite(pidNum)) {
-            process.kill(pidNum);
-            killed++;
-          }
+          cmdline = execFileSync('ps', ['-p', pid, '-o', 'command='], { encoding: 'utf-8' }).trim();
+        } catch {
+          skipped++;
+          continue;
+        }
+        const looksLikeCollector =
+          /runtimescope/i.test(cmdline) ||
+          /standalone\.js/i.test(cmdline) ||
+          /@runtimescope\/(collector|mcp-server)/i.test(cmdline);
+        if (!looksLikeCollector) {
+          warn(`PID ${pid} on port ${port} is not a RuntimeScope process — skipping`);
+          skipped++;
+          continue;
+        }
+
+        try {
+          process.kill(pidNum);
+          killed++;
         } catch { /* already gone */ }
       }
     } catch {
@@ -522,6 +544,8 @@ async function stop() {
 
   if (killed > 0) {
     success(`Stopped ${killed} collector process${killed === 1 ? '' : 'es'}`);
+  } else if (skipped > 0) {
+    warn('No RuntimeScope collector found — ports are held by unrelated processes');
   } else {
     warn('Could not find a running collector process to stop');
   }

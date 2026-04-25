@@ -52,6 +52,42 @@ type RouteHandler = (
 interface RouteHelpers {
   json: (res: ServerResponse, data: unknown, status?: number) => void;
   readBody: (req: IncomingMessage, maxBytes: number) => Promise<string | null>;
+  /**
+   * Resolve the caller's identity for per-workspace authorization checks.
+   * - isAdmin=true    → global AuthManager token (or auth disabled in local dev).
+   * - workspaceId set → the caller authenticated with a workspace-scoped tk_* token.
+   * Populated by the auth gate in http-server.ts before handlers run.
+   */
+  resolveCaller: (req: IncomingMessage) => { isAdmin: boolean; workspaceId: string | null };
+}
+
+/**
+ * Authorization helper: enforce that the caller is admin OR that their
+ * workspace matches the route's target workspace. Returns true if allowed.
+ * If denied, writes a 403 response and returns false so the handler can bail.
+ */
+function requireWorkspaceAccess(
+  helpers: RouteHelpers,
+  req: IncomingMessage,
+  res: ServerResponse,
+  targetWorkspaceId: string,
+): boolean {
+  const caller = helpers.resolveCaller(req);
+  if (caller.isAdmin) return true;
+  if (caller.workspaceId && caller.workspaceId === targetWorkspaceId) return true;
+  helpers.json(res, { error: 'Forbidden: caller not authorized for this workspace' }, 403);
+  return false;
+}
+
+function requireAdmin(
+  helpers: RouteHelpers,
+  req: IncomingMessage,
+  res: ServerResponse,
+): boolean {
+  const caller = helpers.resolveCaller(req);
+  if (caller.isAdmin) return true;
+  helpers.json(res, { error: 'Forbidden: admin required' }, 403);
+  return false;
 }
 
 interface PatternRoute {
@@ -233,7 +269,9 @@ export function createPmRouter(
     helpers.json(res, { ok: true, deleted: project.name });
   });
 
-  // Move a project to a different workspace
+  // Move a project to a different workspace. Caller must own BOTH the source
+  // and destination workspace (or be admin) — otherwise a workspace-scoped
+  // caller could annex any project simply by knowing its ID.
   route('PUT', '/api/pm/projects/:id/workspace', async (req, res, params) => {
     const id = params.get('id')!;
     const body = await helpers.readBody(req, 4096);
@@ -241,6 +279,20 @@ export function createPmRouter(
     let parsed: { workspace_id?: string };
     try { parsed = JSON.parse(body); } catch { helpers.json(res, { error: 'Invalid JSON' }, 400); return; }
     if (!parsed.workspace_id) { helpers.json(res, { error: 'Missing workspace_id' }, 400); return; }
+
+    const project = pmStore.getProject(id);
+    if (!project) { helpers.json(res, { error: 'Project not found' }, 404); return; }
+
+    const caller = helpers.resolveCaller(req);
+    if (!caller.isAdmin) {
+      const sourceOk = !!project.workspaceId && project.workspaceId === caller.workspaceId;
+      const destOk = parsed.workspace_id === caller.workspaceId;
+      if (!sourceOk || !destOk) {
+        helpers.json(res, { error: 'Forbidden: caller must own both source and destination workspace' }, 403);
+        return;
+      }
+    }
+
     try {
       pmStore.setProjectWorkspace(id, parsed.workspace_id);
       helpers.json(res, { ok: true });
@@ -253,11 +305,21 @@ export function createPmRouter(
   // Workspaces (multi-tenant)
   // ============================================================
 
-  route('GET', '/api/pm/workspaces', (_req, res) => {
-    helpers.json(res, { data: pmStore.listWorkspaces() });
+  // List workspaces: admins see all; workspace-scoped callers see only their own.
+  route('GET', '/api/pm/workspaces', (req, res) => {
+    const caller = helpers.resolveCaller(req);
+    const all = pmStore.listWorkspaces();
+    if (caller.isAdmin) {
+      helpers.json(res, { data: all });
+      return;
+    }
+    const filtered = caller.workspaceId ? all.filter((w) => w.id === caller.workspaceId) : [];
+    helpers.json(res, { data: filtered });
   });
 
+  // Creating a workspace is a cluster-level operation — admin only.
   route('POST', '/api/pm/workspaces', async (req, res) => {
+    if (!requireAdmin(helpers, req, res)) return;
     const body = await helpers.readBody(req, 4096);
     if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
     let parsed: { name?: string; slug?: string; description?: string };
@@ -274,8 +336,9 @@ export function createPmRouter(
     }
   });
 
-  route('GET', '/api/pm/workspaces/:id', (_req, res, params) => {
+  route('GET', '/api/pm/workspaces/:id', (req, res, params) => {
     const id = params.get('id')!;
+    if (!requireWorkspaceAccess(helpers, req, res, id)) return;
     const ws = pmStore.getWorkspace(id);
     if (!ws) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
     helpers.json(res, ws);
@@ -283,6 +346,7 @@ export function createPmRouter(
 
   route('PUT', '/api/pm/workspaces/:id', async (req, res, params) => {
     const id = params.get('id')!;
+    if (!requireWorkspaceAccess(helpers, req, res, id)) return;
     if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
     const body = await helpers.readBody(req, 4096);
     if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
@@ -296,7 +360,9 @@ export function createPmRouter(
     }
   });
 
-  route('DELETE', '/api/pm/workspaces/:id', (_req, res, params) => {
+  // Deleting a workspace reassigns projects and wipes keys — admin only.
+  route('DELETE', '/api/pm/workspaces/:id', (req, res, params) => {
+    if (!requireAdmin(helpers, req, res)) return;
     const id = params.get('id')!;
     try {
       pmStore.deleteWorkspace(id);
@@ -306,16 +372,17 @@ export function createPmRouter(
     }
   });
 
-  route('GET', '/api/pm/workspaces/:id/api-keys', (_req, res, params) => {
+  route('GET', '/api/pm/workspaces/:id/api-keys', (req, res, params) => {
     const id = params.get('id')!;
+    if (!requireWorkspaceAccess(helpers, req, res, id)) return;
     if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
-    // Return keys WITH the secret — callers can re-read their keys.
-    // If we ever serve this endpoint to non-owners, mask all but the creator's most recent key.
+    // Raw secrets are never returned — listApiKeys only exposes prefix+last4.
     helpers.json(res, { data: pmStore.listApiKeys(id) });
   });
 
   route('POST', '/api/pm/workspaces/:id/api-keys', async (req, res, params) => {
     const id = params.get('id')!;
+    if (!requireWorkspaceAccess(helpers, req, res, id)) return;
     if (!pmStore.getWorkspace(id)) { helpers.json(res, { error: 'Workspace not found' }, 404); return; }
     const body = await helpers.readBody(req, 4096);
     if (!body) { helpers.json(res, { error: 'Missing body' }, 400); return; }
@@ -324,15 +391,20 @@ export function createPmRouter(
     if (!parsed.label) { helpers.json(res, { error: 'Missing label' }, 400); return; }
     try {
       const key = pmStore.createApiKey(id, parsed.label, parsed.expires_at);
-      // Returned ONCE — callers should store the `key` field; we don't expose it again
+      // The raw `key` field appears ONCE — the caller is responsible for storing it.
       helpers.json(res, key, 201);
     } catch (err) {
       helpers.json(res, { error: (err as Error).message }, 400);
     }
   });
 
-  route('DELETE', '/api/pm/api-keys/:key', (_req, res, params) => {
-    pmStore.revokeApiKey(params.get('key')!);
+  // Revoke by the public prefix ("tk_9f2a1c3b") — the dashboard never sees the raw secret.
+  route('DELETE', '/api/pm/api-keys/:prefix', (req, res, params) => {
+    const prefix = params.get('prefix')!;
+    const key = pmStore.findApiKeyByPrefix(prefix);
+    if (!key) { helpers.json(res, { error: 'Key not found' }, 404); return; }
+    if (!requireWorkspaceAccess(helpers, req, res, key.workspaceId)) return;
+    pmStore.revokeApiKey(prefix);
     helpers.json(res, { ok: true });
   });
 

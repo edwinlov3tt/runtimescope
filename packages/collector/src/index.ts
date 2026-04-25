@@ -20,6 +20,19 @@ export type {
 } from './project-config.js';
 export { SqliteStore } from './sqlite-store.js';
 export type { SqliteStoreOptions } from './sqlite-store.js';
+export { Wal } from './wal.js';
+export type { WalOptions } from './wal.js';
+export type { SnapshotResult } from './server.js';
+export { MetricsRegistry, Counter, Gauge } from './metrics.js';
+export type { LabelValues } from './metrics.js';
+export {
+  OtelExporter,
+  otelOptionsFromEnv,
+  parseOtelHeaders,
+  traceIdFromSession,
+  randomSpanId,
+} from './otel-exporter.js';
+export type { OtelExporterOptions } from './otel-exporter.js';
 export { isSqliteAvailable } from './sqlite-check.js';
 export { AuthManager, generateApiKey } from './auth.js';
 export type { ApiKeyEntry, AuthConfig } from './auth.js';

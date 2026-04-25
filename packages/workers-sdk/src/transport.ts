@@ -24,7 +24,11 @@ export class WorkersTransport {
 
   constructor(config: WorkersConfig) {
     this.sessionId = generateSessionId();
-    this.url = config.httpEndpoint ?? DEFAULT_ENDPOINT;
+    // Prefer the canonical `endpoint` field (consistent with the browser
+    // and server SDKs). Fall back to the deprecated `httpEndpoint` for
+    // backwards compatibility — without this fallback we'd silently break
+    // every v0.10.x consumer on upgrade.
+    this.url = config.endpoint ?? config.httpEndpoint ?? DEFAULT_ENDPOINT;
     this.appName = config.appName;
     this.projectId = config.projectId;
     this.authToken = config.authToken;

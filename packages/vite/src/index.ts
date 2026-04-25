@@ -191,6 +191,9 @@ export function runtimescope(options: RuntimeScopePluginOptions = {}): VitePlugi
       handler(html: string) {
         if (options.devOnly && activeMode === 'production') return html;
         if (!resolvedDsn) return html;
+        // Skip if the user already injected RuntimeScope themselves —
+        // avoids double-init and the reconnect churn that causes.
+        if (/RuntimeScope\.init\s*\(/i.test(html)) return html;
 
         const extraConfig = options.sdkConfig
           ? Object.entries(options.sdkConfig)
@@ -202,9 +205,20 @@ export function runtimescope(options: RuntimeScopePluginOptions = {}): VitePlugi
           ...(extraConfig ? [extraConfig] : []),
         ].join(', ');
 
-        const snippet = `<script type="module">
+        // In `vite dev`, bare-specifier imports resolve via the module graph.
+        // In `vite build`, emitted HTML is static — a bare specifier will 404
+        // in the browser. Load the IIFE bundle from the collector instead; it
+        // exposes `RuntimeScope` globally and works identically in both modes.
+        const httpPort = options.httpPort ?? 6768;
+        const snippet =
+          activeMode === 'development'
+            ? `<script type="module">
 import { RuntimeScope } from '@runtimescope/sdk';
 RuntimeScope.init({ ${configFields} });
+</script>`
+            : `<script src="http://127.0.0.1:${httpPort}/runtimescope.js"></script>
+<script>
+if (typeof RuntimeScope !== 'undefined') { RuntimeScope.init({ ${configFields} }); }
 </script>`;
 
         return html.replace('</head>', `${snippet}\n</head>`);

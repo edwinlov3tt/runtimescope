@@ -1,4 +1,4 @@
-import { Transport } from './transport.js';
+import { Transport, setTransportDebug } from './transport.js';
 import { interceptFetch } from './interceptors/fetch.js';
 import { interceptConsole } from './interceptors/console.js';
 import { interceptXhr } from './interceptors/xhr.js';
@@ -14,9 +14,35 @@ import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, U
 
 const SDK_VERSION = '0.10.0';
 
-// Save original console.debug BEFORE interceptors patch it.
-// debug-level messages are hidden by default in Chrome DevTools.
-const _log = console.debug.bind(console);
+// Save original console methods BEFORE interceptors patch them. The SDK uses
+// these for its own diagnostics so its messages don't loop back through the
+// console interceptor (which would emit a console event for every internal log).
+const _origDebug = console.debug.bind(console);
+const _origWarn = console.warn.bind(console);
+
+/**
+ * Internal-only debug logging. Quiet by default — set
+ * `localStorage.RUNTIMESCOPE_DEBUG = '1'` or pass `verbose: true` to
+ * `RuntimeScope.init()` to see them. Most users never need to see SDK
+ * lifecycle chatter, and seeing it stacks up fast in DevTools.
+ */
+let _debugEnabled = false;
+function _log(...args: unknown[]): void {
+  if (_debugEnabled) _origDebug(...args);
+}
+
+/**
+ * Always-visible warning. Reserved for things the user genuinely needs to
+ * see: config mistakes, repeated init with conflicting DSN, auth failure.
+ * Deduped — the same warning text only fires once per page load so a noisy
+ * caller can't fill the console with the same message.
+ */
+const _warnedOnce = new Set<string>();
+function _warn(message: string, ...rest: unknown[]): void {
+  if (_warnedOnce.has(message)) return;
+  _warnedOnce.add(message);
+  _origWarn(message, ...rest);
+}
 
 // --- Double-init safety: Symbol.for() originals store ---
 // Survives HMR module reloads because Symbol.for() returns the same symbol across realms.
@@ -57,6 +83,8 @@ export class RuntimeScope {
   private static restoreFns: (() => void)[] = [];
   private static _sessionId: string | null = null;
   private static _state: 'stopped' | 'started' = 'stopped';
+  /** Cached config fingerprint from the last init() call — used to detect double-init with conflicting config. */
+  private static _initSignature: string | null = null;
   private static _sampleRate: number = 1;
   private static _maxEventsPerSecond: number | undefined;
   private static _windowCount = 0;
@@ -128,11 +156,39 @@ export class RuntimeScope {
       }
     }
 
-    // Guard against double-init: disconnect cleanly first
+    // Resolve `verbose` early so the rest of init logs go through the right path.
+    if (config.verbose === true) _debugEnabled = true;
+    else if (typeof localStorage !== 'undefined') {
+      try {
+        if (localStorage.getItem('RUNTIMESCOPE_DEBUG') === '1') _debugEnabled = true;
+      } catch {
+        // localStorage can throw in sandboxed iframes — just ignore.
+      }
+    }
+    // Propagate to the transport — it has its own _log because it lives in a
+    // separate module and the user might construct a Transport directly.
+    setTransportDebug(_debugEnabled);
+
+    // Idempotent re-init: a second init() call with the same effective config
+    // is a silent no-op. With a *different* serverUrl/appName/projectId we
+    // warn loudly — that's almost always a footgun where the user has the
+    // SDK initialized by the Vite plugin AND by their own bootstrap code,
+    // and the second call silently overrides the first to a wrong endpoint.
+    const sigCandidate = `${config.appName ?? ''}|${config.serverUrl ?? config.endpoint ?? ''}|${config.dsn ?? ''}|${config.projectId ?? ''}`;
     if (this._state === 'started') {
-      _log('[RuntimeScope] Already connected — disconnecting before re-init');
+      if (this._initSignature === sigCandidate) {
+        // Same config — nothing to do. Stay connected.
+        return;
+      }
+      _warn(
+        `[RuntimeScope] init() called twice with different config — disconnecting and re-initializing.\n` +
+          `  previous: ${this._initSignature}\n` +
+          `  next:     ${sigCandidate}\n` +
+          `If the SDK is loaded by @runtimescope/vite, drop your manual RuntimeScope.init() call — the plugin handles it.`,
+      );
       this.disconnect();
     }
+    this._initSignature = sigCandidate;
 
     const resolved = {
       serverUrl: config.serverUrl ?? config.endpoint ?? 'ws://localhost:6767',
@@ -151,6 +207,7 @@ export class RuntimeScope {
       redactHeaders: config.redactHeaders ?? ['authorization', 'cookie'],
       batchSize: config.batchSize ?? 50,
       flushIntervalMs: config.flushIntervalMs ?? 100,
+      dedupeConsole: config.dedupeConsole ?? false,
     };
 
     // Save true originals before any patching (idempotent — only saves on first call ever)
@@ -256,7 +313,7 @@ export class RuntimeScope {
     // Console interceptor
     if (resolved.captureConsole) {
       this.restoreFns.push(
-        interceptConsole(emit, this._sessionId, resolved.beforeSend)
+        interceptConsole(emit, this._sessionId, resolved.beforeSend, resolved.dedupeConsole)
       );
     }
 

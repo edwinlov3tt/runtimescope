@@ -111,7 +111,16 @@ export interface WorkersConfig {
   appName: string;
   /** Project ID — links this worker to a PM project */
   projectId?: string;
-  /** HTTP endpoint for collector (default: http://localhost:6768/api/events) */
+  /**
+   * HTTP endpoint for collector (default: http://localhost:6768/api/events).
+   * Matches the option name used by `@runtimescope/sdk` and `@runtimescope/server-sdk`,
+   * keeping the SDK config surface consistent across runtimes.
+   */
+  endpoint?: string;
+  /**
+   * @deprecated Use `endpoint` instead. Kept for backwards compatibility with v0.10.x.
+   * Will be removed in a future major version. If both are passed, `endpoint` wins.
+   */
   httpEndpoint?: string;
   /** Auth token for authenticated collectors */
   authToken?: string;

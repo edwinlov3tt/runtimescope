@@ -1,4 +1,4 @@
-import { renameSync, existsSync } from 'node:fs';
+import { renameSync, existsSync, statSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import type {
   RuntimeEvent,
@@ -122,8 +122,8 @@ export class SqliteStore {
     this.insertSessionStmt = db.prepare(`
       INSERT OR REPLACE INTO sessions (
         session_id, project, app_name, connected_at, sdk_version,
-        event_count, is_connected, build_meta
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        event_count, is_connected, build_meta, project_id
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     this.updateSessionDisconnectedStmt = db.prepare(`
@@ -178,6 +178,12 @@ export class SqliteStore {
       CREATE INDEX IF NOT EXISTS idx_snapshots_project ON session_snapshots(project, created_at);
     `);
 
+    // v0.10.2 — `project_id` (the runtime projectId, e.g. proj_xxx) needed to
+    // rehydrate the in-memory session→projectId map after a crash so that
+    // `/api/events/*?project_id=...` queries work post-recovery. Idempotent.
+    try { d.exec('ALTER TABLE sessions ADD COLUMN project_id TEXT'); } catch { /* already exists */ }
+    try { d.exec('CREATE INDEX IF NOT EXISTS idx_sessions_project_id ON sessions(project_id)'); } catch { /* ignore */ }
+
     // Migrate from old session_metrics table if it exists
     this.migrateSessionMetrics(d);
   }
@@ -228,8 +234,50 @@ export class SqliteStore {
       info.sdkVersion,
       info.eventCount,
       info.isConnected ? 1 : 0,
-      info.buildMeta ? JSON.stringify(info.buildMeta) : null
+      info.buildMeta ? JSON.stringify(info.buildMeta) : null,
+      info.projectId ?? null,
     );
+  }
+
+  /**
+   * Read every session record stored for a project. Used by the in-memory
+   * EventStore at startup to rehydrate the session→projectId map after a
+   * crash, so post-recovery `?project_id=...` queries return the right rows.
+   * Each row is returned as a `SessionInfo` shape compatible with EventStore.
+   */
+  getStoredSessions(project: string): SessionInfoExtended[] {
+    const rows = this.db
+      .prepare(
+        `SELECT session_id, project, app_name, connected_at, disconnected_at,
+                sdk_version, event_count, is_connected, build_meta, project_id
+         FROM sessions WHERE project = ?`,
+      )
+      .all(project) as {
+        session_id: string;
+        project: string;
+        app_name: string;
+        connected_at: number;
+        disconnected_at: number | null;
+        sdk_version: string;
+        event_count: number;
+        is_connected: number;
+        build_meta: string | null;
+        project_id: string | null;
+      }[];
+    return rows.map((r) => ({
+      sessionId: r.session_id,
+      project: r.project,
+      appName: r.app_name,
+      connectedAt: r.connected_at,
+      sdkVersion: r.sdk_version,
+      eventCount: r.event_count,
+      // Recovered sessions are NEVER live — only an active WS reconnect
+      // flips this back to true. The persisted `is_connected = 1` only
+      // means "was connected when last written"; if we crashed, it's stale.
+      isConnected: false,
+      buildMeta: r.build_meta ? JSON.parse(r.build_meta) : undefined,
+      projectId: r.project_id ?? undefined,
+    }));
   }
 
   updateSessionDisconnected(sessionId: string, disconnectedAt: number): void {
@@ -265,6 +313,22 @@ export class SqliteStore {
   }
 
   // --- Read Operations ---
+
+  /**
+   * Return the most recent `limit` events for a project, in chronological
+   * order (oldest-first). Used at startup to warm the in-memory ring buffer
+   * so MCP tools see recent activity immediately after a collector restart.
+   */
+  getRecentEvents(project: string, limit: number): RuntimeEvent[] {
+    const rows = this.db
+      .prepare(
+        `SELECT data FROM events WHERE project = ? ORDER BY timestamp DESC LIMIT ?`,
+      )
+      .all(project, limit) as { data: string }[];
+    // Reverse: caller wants oldest-first so ring-buffer push order matches
+    // wall-clock order.
+    return rows.reverse().map((row) => JSON.parse(row.data) as RuntimeEvent);
+  }
 
   getEvents(filter: HistoricalFilter): RuntimeEvent[] {
     const conditions: string[] = [];
@@ -475,6 +539,29 @@ export class SqliteStore {
 
   vacuum(): void {
     this.db.exec('VACUUM');
+  }
+
+  /**
+   * Atomically copy the live database to `targetPath` using SQLite's
+   * `VACUUM INTO`. The destination is a self-contained, defragmented copy of
+   * the DB at the moment the statement runs — no readers are blocked beyond
+   * the duration of the copy, and the WAL/journal contents are folded in.
+   * The target file must not already exist; SQLite refuses to overwrite.
+   *
+   * Returns the size in bytes of the resulting file.
+   */
+  snapshotTo(targetPath: string): number {
+    // Drain any pending writes first so the snapshot reflects the latest
+    // events the caller has handed us.
+    this.flush();
+    // Parameterized path — `prepare(...).run(targetPath)` keeps the path out
+    // of the SQL text and away from any string-concatenation injection risk.
+    this.db.prepare('VACUUM INTO ?').run(targetPath);
+    try {
+      return statSync(targetPath).size;
+    } catch {
+      return 0;
+    }
   }
 
   close(): void {

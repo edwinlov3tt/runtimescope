@@ -355,13 +355,13 @@ function ApiKeysPanel({ workspaceId }: { workspaceId: string }) {
         <div className="space-y-1">
           {keys.map((key) => (
             <div
-              key={key.key}
+              key={key.keyPrefix}
               className="flex items-center gap-3 px-3 py-2 rounded-md hover:bg-bg-hover group"
             >
               <div className="flex-1 min-w-0">
                 <div className="text-[13px] font-medium text-text-primary">{key.label}</div>
                 <div className="text-[11px] text-text-muted font-mono truncate">
-                  {key.key.slice(0, 12)}…{key.key.slice(-4)}
+                  {key.keyPrefix}…{key.keyLast4}
                   {' · created '}
                   {new Date(key.createdAt).toLocaleDateString()}
                   {key.lastUsedAt && ` · last used ${new Date(key.lastUsedAt).toLocaleString()}`}
@@ -370,7 +370,7 @@ function ApiKeysPanel({ workspaceId }: { workspaceId: string }) {
               <button
                 onClick={() => {
                   if (confirm(`Revoke key "${key.label}"? SDKs using it will stop authenticating.`)) {
-                    revokeApiKey(key.key, workspaceId);
+                    revokeApiKey(key.keyPrefix, workspaceId);
                   }
                 }}
                 className={`${BTN_DANGER} opacity-0 group-hover:opacity-100`}

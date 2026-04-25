@@ -251,6 +251,7 @@ export function registerSetupTools(
   store: EventStore,
   collector: CollectorServer,
   projectManager: ProjectManager,
+  pmStore?: { findProjectIdByApp(appName: string): string | null } | null,
 ): void {
   server.tool(
     'setup_project',
@@ -326,8 +327,13 @@ export function registerSetupTools(
           projectManager.setProjectIdForApp(sdk.appName, config.projectId);
         }
       }
-      // Rebuild the reverse index so future connections resolve correctly
-      projectManager.rebuildAppIndex();
+      // Rebuild the reverse index so future connections resolve correctly.
+      // Pass pmStore so the index also considers PM projects' runtimeApps —
+      // otherwise the next handshake for an appName that was declared in the
+      // project-level .runtimescope/config.json but not yet bootstrapped into
+      // ~/.runtimescope/projects/ falls through to step 3 and generates a
+      // fresh (wrong) projectId.
+      projectManager.rebuildAppIndex(pmStore ?? undefined);
 
       // --- 5. Generate snippets for each SDK type ---
       const snippets = frameworks.map((fw) => ({

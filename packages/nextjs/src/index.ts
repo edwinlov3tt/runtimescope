@@ -10,10 +10,9 @@
  *
  * This root entry re-exports only the shared utilities (DSN helpers, types).
  * Importing SDK classes from here would bundle all three runtimes into every
- * runtime, breaking Next's build. Always use the subpath imports.
+ * runtime, breaking Next's build. Always use the subpath imports — including
+ * `register` from `@runtimescope/nextjs/server` (do not import it from the root,
+ * because that drags `@runtimescope/server-sdk` into edge and client bundles).
  */
 export { parseDsn, buildDsn } from '@runtimescope/sdk';
 export type { ParsedDsn } from '@runtimescope/sdk';
-
-/** Re-exported `register()` for `instrumentation.ts` convenience. */
-export { register } from './server/index.js';

@@ -1,5 +1,5 @@
 import Database from 'better-sqlite3';
-import { randomBytes } from 'node:crypto';
+import { randomBytes, createHash, timingSafeEqual } from 'node:crypto';
 import type {
   PmProject,
   PmTask,
@@ -200,6 +200,26 @@ export class PmStore {
     // Multi-tenancy (Phase 1): projects belong to workspaces
     try { this.db.exec('ALTER TABLE pm_projects ADD COLUMN workspace_id TEXT DEFAULT NULL'); } catch { /* already exists */ }
 
+    // v0.10.1 — API key storage changed from plaintext to SHA-256 hash.
+    // New columns for user-visible identification without exposing the secret.
+    let apiKeyColumnsAdded = false;
+    try {
+      this.db.exec('ALTER TABLE pm_api_keys ADD COLUMN key_prefix TEXT');
+      apiKeyColumnsAdded = true;
+    } catch { /* already exists */ }
+    try { this.db.exec('ALTER TABLE pm_api_keys ADD COLUMN key_last4 TEXT'); } catch { /* already exists */ }
+    try { this.db.exec('CREATE INDEX IF NOT EXISTS idx_api_keys_prefix ON pm_api_keys(key_prefix)'); } catch { /* ignore */ }
+
+    // If we just added the new columns, any existing rows contain plaintext
+    // tokens (v0.10.0 behavior). Revoke them unconditionally — the hash/prefix
+    // columns are null so they can't authenticate under the new scheme anyway,
+    // and leaving them visible in the DB is the B3 leak we're fixing.
+    if (apiKeyColumnsAdded) {
+      this.db
+        .prepare('UPDATE pm_api_keys SET revoked_at = ? WHERE revoked_at IS NULL AND key_prefix IS NULL')
+        .run(Date.now());
+    }
+
     this.ensureDefaultWorkspace();
   }
 
@@ -237,12 +257,18 @@ export class PmStore {
   upsertProject(project: PmProject): void {
     // New projects without an explicit workspace go to the default workspace.
     // Existing projects keep whatever workspace they already had (COALESCE below).
-    const workspaceId =
-      project.workspaceId ?? this.db
+    //
+    // Prior implementation combined the two lookups in a single `??` chain and
+    // then tried to disambiguate with `typeof` — but the explicit-string branch
+    // was discarded because the ternary resolved to the else side when the
+    // value was already a string. Rewritten to make both branches explicit.
+    let resolvedWorkspaceId: string | null = project.workspaceId ?? null;
+    if (!resolvedWorkspaceId) {
+      const row = this.db
         .prepare('SELECT id FROM pm_workspaces WHERE is_default = 1 LIMIT 1')
         .get() as { id: string } | undefined;
-    const resolvedWorkspaceId =
-      typeof workspaceId === 'string' ? workspaceId : workspaceId?.id ?? null;
+      resolvedWorkspaceId = row?.id ?? null;
+    }
 
     this.db.prepare(`
       INSERT INTO pm_projects (id, workspace_id, name, path, claude_project_key, runtimescope_project,
@@ -498,15 +524,20 @@ export class PmStore {
   createApiKey(workspaceId: string, label: string, expiresAt?: number): PmApiKey {
     const ws = this.getWorkspace(workspaceId);
     if (!ws) throw new Error(`Workspace ${workspaceId} does not exist`);
-    const key = `tk_${randomBytes(24).toString('hex')}`;
+    const raw = `tk_${randomBytes(24).toString('hex')}`;
+    const hash = hashApiKey(raw);
+    const prefix = raw.slice(0, 11);   // "tk_" + 8 hex = first 11 chars
+    const last4 = raw.slice(-4);
     const now = Date.now();
     this.db
       .prepare(
-        `INSERT INTO pm_api_keys (key, workspace_id, label, created_at, expires_at)
-         VALUES (?, ?, ?, ?, ?)`,
+        `INSERT INTO pm_api_keys (key, workspace_id, label, created_at, expires_at, key_prefix, key_last4)
+         VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
-      .run(key, workspaceId, label, now, expiresAt ?? null);
-    return { key, workspaceId, label, createdAt: now, expiresAt };
+      .run(hash, workspaceId, label, now, expiresAt ?? null, prefix, last4);
+    // Return the raw token ONCE — the caller must store it; we never persist or
+    // re-expose it. Subsequent list/read endpoints see only prefix + last4.
+    return { key: raw, keyPrefix: prefix, keyLast4: last4, workspaceId, label, createdAt: now, expiresAt };
   }
 
   listApiKeys(workspaceId: string): PmApiKey[] {
@@ -515,14 +546,54 @@ export class PmStore {
         `SELECT * FROM pm_api_keys WHERE workspace_id = ? AND revoked_at IS NULL ORDER BY created_at DESC`,
       )
       .all(workspaceId) as PmApiKeyRow[];
+    // mapApiKeyRow masks the secret — the `key` field is blank, only prefix + last4 remain.
     return rows.map(mapApiKeyRow);
   }
 
-  revokeApiKey(key: string): void {
-    this.db.prepare('UPDATE pm_api_keys SET revoked_at = ? WHERE key = ?').run(Date.now(), key);
+  /** Revoke by the public prefix (what the dashboard shows), not the raw secret. */
+  revokeApiKey(prefix: string): void {
+    this.db.prepare('UPDATE pm_api_keys SET revoked_at = ? WHERE key_prefix = ?').run(Date.now(), prefix);
   }
 
-  getWorkspaceByApiKey(key: string): PmWorkspace | null {
+  /** Look up an API key's workspace by its public prefix. Used for per-workspace authorization on the revoke route. */
+  findApiKeyByPrefix(prefix: string): PmApiKey | null {
+    const row = this.db
+      .prepare(`SELECT * FROM pm_api_keys WHERE key_prefix = ? AND revoked_at IS NULL LIMIT 1`)
+      .get(prefix) as PmApiKeyRow | undefined;
+    return row ? mapApiKeyRow(row) : null;
+  }
+
+  /**
+   * True if any non-revoked workspace API key exists. The HTTP auth gate uses
+   * this to enforce auth whenever workspace keys are in play, even when the
+   * global AuthManager has no keys configured. Without this check, a user who
+   * creates a workspace key expecting it to gate access gets no auth at all
+   * (the H5 bypass).
+   */
+  hasActiveApiKeys(): boolean {
+    const row = this.db
+      .prepare('SELECT 1 AS n FROM pm_api_keys WHERE revoked_at IS NULL LIMIT 1')
+      .get() as { n: number } | undefined;
+    return !!row;
+  }
+
+  /**
+   * Given a runtime projectId (proj_xxx), return the workspaceId it belongs to,
+   * or null if the projectId isn't registered with any PM project. Used to
+   * enforce per-workspace isolation on event-read routes — the caller can only
+   * query events from runtime projects owned by their workspace.
+   */
+  getWorkspaceIdByRuntimeProjectId(runtimeProjectId: string): string | null {
+    if (!runtimeProjectId) return null;
+    const row = this.db
+      .prepare('SELECT workspace_id FROM pm_projects WHERE runtime_project_id = ? LIMIT 1')
+      .get(runtimeProjectId) as { workspace_id: string | null } | undefined;
+    return row?.workspace_id ?? null;
+  }
+
+  getWorkspaceByApiKey(rawKey: string): PmWorkspace | null {
+    if (!rawKey || typeof rawKey !== 'string') return null;
+    const hash = hashApiKey(rawKey);
     const row = this.db
       .prepare(
         `SELECT w.* FROM pm_api_keys k
@@ -530,11 +601,11 @@ export class PmStore {
          WHERE k.key = ? AND k.revoked_at IS NULL
          AND (k.expires_at IS NULL OR k.expires_at > ?)`,
       )
-      .get(key, Date.now()) as PmWorkspaceRow | undefined;
+      .get(hash, Date.now()) as PmWorkspaceRow | undefined;
     if (!row) return null;
     // Update last_used_at — best-effort, non-fatal
     try {
-      this.db.prepare('UPDATE pm_api_keys SET last_used_at = ? WHERE key = ?').run(Date.now(), key);
+      this.db.prepare('UPDATE pm_api_keys SET last_used_at = ? WHERE key = ?').run(Date.now(), hash);
     } catch { /* ignore */ }
     return mapWorkspaceRow(row);
   }
@@ -1438,6 +1509,28 @@ interface PmApiKeyRow {
   last_used_at: number | null;
   expires_at: number | null;
   revoked_at: number | null;
+  key_prefix: string | null;
+  key_last4: string | null;
+}
+
+function hashApiKey(raw: string): string {
+  return createHash('sha256').update(raw, 'utf8').digest('hex');
+}
+
+/**
+ * Constant-time comparison of two hex-encoded hashes. Both inputs must be the
+ * same length (SHA-256 hex = 64 chars) for timingSafeEqual to work. We use
+ * this wherever a partial match could allow a timing side-channel.
+ */
+export function safeHashEqual(a: string, b: string): boolean {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) {
+    return false;
+  }
+  try {
+    return timingSafeEqual(Buffer.from(a, 'hex'), Buffer.from(b, 'hex'));
+  } catch {
+    return false;
+  }
 }
 
 function generateWorkspaceId(): string {
@@ -1458,7 +1551,11 @@ function mapWorkspaceRow(row: PmWorkspaceRow): PmWorkspace {
 
 function mapApiKeyRow(row: PmApiKeyRow): PmApiKey {
   return {
-    key: row.key,
+    // Never return the stored value (it's the hash) — list responses expose
+    // only prefix + last4 for display. The raw token appears once, at create.
+    key: '',
+    keyPrefix: row.key_prefix ?? '',
+    keyLast4: row.key_last4 ?? '',
     workspaceId: row.workspace_id,
     label: row.label,
     createdAt: row.created_at,

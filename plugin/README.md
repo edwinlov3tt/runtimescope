@@ -36,10 +36,17 @@ You should see `/runtimescope:setup`, `/runtimescope:diagnose`, `/runtimescope:n
 
 ## Quickstart
 
-1. Open a project you want to monitor.
-2. Run `/runtimescope:setup` — Claude detects the framework, scaffolds `.runtimescope/config.json`, and generates the correct SDK init snippet.
-3. Start your dev server.
-4. Run `/runtimescope:diagnose` for a full health report, or ask Claude questions like "What's slow about this app?" or "Show me failing network requests."
+**One-time per machine** (run once, ever):
+1. Run `/runtimescope:install` — installs the global CLI, registers the collector as a launchd/systemd background service so it persists across reboots, and verifies the MCP server is wired up. Takes ~30s on a clean machine.
+
+**Per project** (run in each project you want to monitor):
+2. Open the project directory.
+3. Run `/runtimescope:setup` — Claude detects the framework, scaffolds `.runtimescope/config.json`, installs the right SDK package, and generates the correct init snippet.
+4. Start your dev server.
+5. Run `/runtimescope:diagnose` for a full health report, or ask Claude questions like "What's slow about this app?" or "Show me failing network requests."
+
+**Maintenance** (run any time):
+- `/runtimescope:update-all` — finds every project on this machine that has RuntimeScope installed and bumps everything (CLI, service, MCP, plugin, every project's `@runtimescope/*` packages) to the latest version in one pass.
 
 ## What's inside
 
@@ -63,9 +70,12 @@ Registered automatically. Categories:
 - **Collector control** (2): start_collector, stop_collector
 - **Workspaces** (4): list_workspaces, create_workspace, move_project_to_workspace, create_workspace_api_key
 
-### Slash commands (23)
+### Slash commands (17)
 
-`setup`, `diagnose`, `network`, `queries`, `renders`, `api`, `devops`, `dev`, `events`, `trace`, `snapshot`, `recon`, `clone-ui`, `audit`, `onboard`, `sync`, `task`, `feature`, `handoff`, `push`, `history`, `fix-config`, `update-runtime`.
+**Lifecycle**: `install`, `setup`, `update-all`, `update-runtime`, `fix-config`.
+**Diagnose**: `diagnose`, `network`, `queries`, `renders`, `api`, `devops`, `trace`.
+**Capture**: `events`, `snapshot`, `history`.
+**UI**: `recon`, `clone-ui`.
 
 All under the `/runtimescope:` namespace.
 

@@ -3,7 +3,11 @@ description: Install or repair RuntimeScope — detects existing config, install
 allowed-tools: ["Bash", "Read", "Write", "Edit", "Grep", "Glob", "mcp__runtimescope__setup_project", "mcp__runtimescope__get_sdk_snippet", "mcp__runtimescope__get_session_info", "mcp__runtimescope__wait_for_session", "mcp__runtimescope__get_project_config", "mcp__runtimescope__list_projects"]
 ---
 
-# Setup — Install or Repair RuntimeScope
+# Setup — Install or Repair RuntimeScope (per-project)
+
+Wires RuntimeScope into the **current project**: scaffolds `.runtimescope/config.json`, detects the framework, installs the right SDK package, generates the init snippet. Does NOT install or modify the collector itself.
+
+**Best paired with `/runtimescope:install`** — that's the one-time machine-level installer that runs the collector as a persistent background service. Without it, this command still works (the MCP server starts an embedded collector), but events don't survive Claude Code closing.
 
 Detects whether RuntimeScope is already configured in the project and takes the right path:
 
@@ -14,7 +18,15 @@ Detects whether RuntimeScope is already configured in the project and takes the 
 
 ---
 
-## Step 0: Detect existing install
+## Step 0: Confirm a collector is reachable
+
+```bash
+curl -sS --max-time 1 http://127.0.0.1:6768/readyz
+```
+
+If `{"status":"ready"}`, proceed. If not reachable, suggest running `/runtimescope:install` first (one-time per machine) so the SDK has somewhere to send events. Then continue — `setup_project` will still scaffold config; events just won't flow until the collector is up.
+
+## Step 1: Detect existing install
 
 Check what's already in the project:
 

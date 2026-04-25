@@ -18,7 +18,12 @@ export interface PmWorkspace {
 }
 
 export interface PmApiKey {
+  /** Raw token — only present in the response from `createApiKey` (shown once). Empty in every list/read response. */
   key: string;
+  /** User-visible prefix ("tk_9f2a1c3b") — safe to display in logs and UI. */
+  keyPrefix: string;
+  /** Last 4 chars of the raw token — for visual confirmation. */
+  keyLast4: string;
   workspaceId: string;
   label: string;
   createdAt: number;

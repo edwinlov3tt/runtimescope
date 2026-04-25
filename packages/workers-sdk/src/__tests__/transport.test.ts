@@ -23,6 +23,61 @@ describe('WorkersTransport', () => {
     expect(transport.sessionId).toMatch(/^wk-/);
   });
 
+  it('accepts the canonical `endpoint` config field', async () => {
+    const transport = new WorkersTransport({
+      appName: 'endpoint-app',
+      endpoint: 'https://canonical.example.com/api/events',
+    });
+    transport.queue({
+      eventId: 'evt-1',
+      sessionId: transport.sessionId,
+      timestamp: 0,
+      eventType: 'console',
+      level: 'log',
+      message: 'x',
+      args: [],
+    });
+    await transport.flush();
+    expect(mockFetch.mock.calls[0][0]).toBe('https://canonical.example.com/api/events');
+  });
+
+  it('still accepts the deprecated `httpEndpoint` alias', async () => {
+    const transport = new WorkersTransport({
+      appName: 'legacy-app',
+      httpEndpoint: 'https://legacy.example.com/api/events',
+    });
+    transport.queue({
+      eventId: 'evt-2',
+      sessionId: transport.sessionId,
+      timestamp: 0,
+      eventType: 'console',
+      level: 'log',
+      message: 'x',
+      args: [],
+    });
+    await transport.flush();
+    expect(mockFetch.mock.calls[0][0]).toBe('https://legacy.example.com/api/events');
+  });
+
+  it('prefers `endpoint` when both `endpoint` and `httpEndpoint` are passed', async () => {
+    const transport = new WorkersTransport({
+      appName: 'both-app',
+      endpoint: 'https://wins.example.com/api/events',
+      httpEndpoint: 'https://loses.example.com/api/events',
+    });
+    transport.queue({
+      eventId: 'evt-3',
+      sessionId: transport.sessionId,
+      timestamp: 0,
+      eventType: 'console',
+      level: 'log',
+      message: 'x',
+      args: [],
+    });
+    await transport.flush();
+    expect(mockFetch.mock.calls[0][0]).toBe('https://wins.example.com/api/events');
+  });
+
   it('should queue events and flush via fetch POST', async () => {
     const transport = new WorkersTransport({
       appName: 'test-app',

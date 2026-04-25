@@ -55,7 +55,7 @@ interface WorkspaceState {
 
   fetchApiKeys: (workspaceId: string) => Promise<void>;
   createApiKey: (workspaceId: string, label: string) => Promise<PmApiKey | null>;
-  revokeApiKey: (key: string, workspaceId: string) => Promise<void>;
+  revokeApiKey: (keyPrefix: string, workspaceId: string) => Promise<void>;
   clearNewlyCreatedKey: () => void;
 }
 
@@ -162,13 +162,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     return null;
   },
 
-  revokeApiKey: async (key, workspaceId) => {
-    const ok = await pmApi.revokeApiKey(key);
+  revokeApiKey: async (keyPrefix, workspaceId) => {
+    const ok = await pmApi.revokeApiKey(keyPrefix);
     if (ok) {
       set((s) => ({
         apiKeysByWorkspace: {
           ...s.apiKeysByWorkspace,
-          [workspaceId]: (s.apiKeysByWorkspace[workspaceId] ?? []).filter((k) => k.key !== key),
+          [workspaceId]: (s.apiKeysByWorkspace[workspaceId] ?? []).filter((k) => k.keyPrefix !== keyPrefix),
         },
       }));
       toast.success('API key revoked');

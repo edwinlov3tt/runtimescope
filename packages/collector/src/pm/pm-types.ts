@@ -27,7 +27,17 @@ export interface PmWorkspace {
  * events from that key.
  */
 export interface PmApiKey {
-  key: string;            // the actual secret (tk_xxx)
+  /**
+   * Raw secret. Populated ONLY by `createApiKey()`'s return value — the caller
+   * must store it on the spot. Every subsequent read (list/get) returns this
+   * field as an empty string; the server stores a SHA-256 hash, not the
+   * plaintext, so there is no way to recover it later.
+   */
+  key: string;
+  /** User-visible identifier — first ~11 chars of the raw token, e.g. "tk_9f2a1c3b". Safe to log. */
+  keyPrefix: string;
+  /** Last 4 chars of the raw token — for visual confirmation ("...a4f1"). */
+  keyLast4: string;
   workspaceId: string;
   label: string;
   createdAt: number;

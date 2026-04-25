@@ -187,6 +187,9 @@ async function main() {
     discovery,
     projectManager,
     getConnectedSessions: () => collector.getConnectedSessions(),
+    isReady: () => collector.isReady(),
+    createSnapshot: () => collector.createSnapshot(),
+    renderMetrics: () => collector.getMetricsRegistry().render(),
   });
 
   try {

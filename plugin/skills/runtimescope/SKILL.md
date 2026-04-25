@@ -44,15 +44,22 @@ Rules:
 
 After any setup or config change, call `get_session_info` (or `wait_for_session`) and verify every connected app reports the same `projectId`.
 
-## Setup flow
+## Setup flow — two-step model
 
-Always prefer `/runtimescope:setup` or the `setup_project` tool over manual instructions — it auto-detects the framework, scaffolds `.runtimescope/config.json`, picks the right package (framework-specific when available), and generates the init snippet.
+The cleanest user experience is split across two commands:
 
-**Never** restart, kill, or modify the user's dev server during setup. Only scaffold files and generate snippets; the user starts their own app.
+1. **One-time per machine**: `/runtimescope:install` — installs the unscoped CLI globally, registers the collector as a launchd/systemd background service, registers the MCP server, writes a marker at `~/.runtimescope/installed-at`. After this the collector runs persistently across reboots on `:6767/:6768`.
+2. **Once per project**: `/runtimescope:setup` — scaffolds `.runtimescope/config.json`, detects the framework, installs the right SDK package, generates the init snippet. **Does not** install or modify the collector.
+
+Then for cross-project upkeep: `/runtimescope:update-all` — finds every project on the machine with `@runtimescope/*` deps and bumps them to the latest version, plus updates the global CLI / service / MCP / plugin in one pass.
+
+If the user has not run `/runtimescope:install` yet, `/runtimescope:setup` still works — the MCP server starts its own embedded collector — but events won't survive Claude Code closing. Suggest running install first for any serious use.
+
+`setup_project` does the heavy lifting under the hood: framework detection, package selection (framework-specific over base when possible), config write, snippet generation. **Never** restart, kill, or modify the user's dev server during setup.
 
 If `setup_project` is unavailable (older MCP versions), fall back to:
 1. Detect framework from `package.json` / `wrangler.toml` / `pyproject.toml`.
-2. Pick the right package (see SDK guides below — Next.js, Remix, SvelteKit, Vite, and Python all have dedicated packages).
+2. Pick the right package (see SDK guides below).
 3. Call `get_sdk_snippet` with `{ app_name, framework, project_id }`.
 4. Paste the returned snippet into the user's entrypoint.
 
@@ -96,16 +103,51 @@ Only load these when the detected stack matches — don't front-load all three.
 
 ## Slash commands bundled with this plugin
 
-All commands live under `/runtimescope:*`. The most-used:
+All commands live under `/runtimescope:*`. 17 total, grouped by purpose:
 
-- `/runtimescope:setup` — install the SDK end-to-end
+**Lifecycle (5)**
+- `/runtimescope:install` — one-time user-level install: global CLI + background service + MCP registration. Run once per machine.
+- `/runtimescope:setup` — per-project: scaffold config, install SDK, generate init snippet. Run in each project.
+- `/runtimescope:update-all` — find every project on this machine with RuntimeScope and update everything in one pass.
+- `/runtimescope:update-runtime` — update RuntimeScope packages in the current project only.
+- `/runtimescope:fix-config` — repair a broken or partial `.runtimescope/config.json`.
+
+**Diagnose / observe (10) — need a connected SDK**
 - `/runtimescope:diagnose` — full-stack health report
 - `/runtimescope:network` / `:queries` / `:renders` / `:api` — targeted audits
-- `/runtimescope:trace` — reproduce a user flow and analyze the causal chain
 - `/runtimescope:devops` — processes, ports, build/deploy status
-- `/runtimescope:onboard` — orient a fresh Claude instance to the project
+- `/runtimescope:trace` — reproduce a user flow and analyze the causal chain
+- `/runtimescope:snapshot` — capture a session snapshot for before/after comparison
+- `/runtimescope:events` — define + analyze custom business events
+- `/runtimescope:history` — query past events from the SQLite store
 
-Use `/help` for the full list.
+**UI capture (2)**
+- `/runtimescope:recon` — full website recon (tech stack, design tokens, layout, fonts, a11y)
+- `/runtimescope:clone-ui` — extract a component's styles, snapshot, design tokens
+
+Use `/help` for full descriptions.
+
+## Operator endpoints (HTTP API on port 6768)
+
+The collector exposes a few non-MCP HTTP routes that are useful when running it as a long-lived service. All are public except admin routes.
+
+| Route | Purpose |
+|---|---|
+| `GET /api/health` | Liveness probe — process is alive. |
+| `GET /readyz` | Readiness probe — startup recovery (WAL replay, ring-buffer warm) is complete. Distinct from `/api/health` so orchestrators avoid routing to a still-warming process. |
+| `GET /metrics` | Prometheus exposition format — `runtimescope_events_total`, `runtimescope_sessions_connected`, `runtimescope_buffer_size`, etc. Drop into a `prometheus.yml` scrape config. Opt out via `RUNTIMESCOPE_DISABLE_METRICS=1`. |
+| `POST /api/v1/admin/snapshot` | Atomic SQLite + WAL backup of every project. Admin-only (global token), rate-limited to one call per minute. Output lands in `~/.runtimescope/snapshots/<ISO>/`. |
+
+For shipping events to an existing observability stack: set `RUNTIMESCOPE_OTEL_ENDPOINT` and the collector exports every event as OTLP/HTTP to the configured endpoint (Jaeger, Honeycomb, Datadog, Tempo, otel-collector, etc.). Network → CLIENT span, database → DB span, console → log record, performance → gauge metric.
+
+## Reliability internals
+
+For users running the collector as a service:
+- **WAL durability**: every event is fsync'd to a per-project WAL before being acknowledged. A SIGKILL can't lose ack'd events.
+- **Crash recovery on startup**: replays leftover WAL files into SqliteStore, then warms the ring buffer with up to 1000 events per project, then rehydrates the session→projectId map so post-crash queries with `?project_id=` work immediately.
+- **Atomic snapshots**: `VACUUM INTO` per-project SQLite + WAL copy; safe to invoke during traffic.
+
+These are transparent to SDK users — they're for operators who care about restart safety.
 
 ## Ports and environment
 

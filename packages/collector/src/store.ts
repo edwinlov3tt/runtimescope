@@ -71,6 +71,64 @@ export class EventStore {
     this.currentProject = project;
   }
 
+  /**
+   * Pre-load recent events from a SqliteStore into the in-memory ring buffer.
+   * Used at collector startup to make MCP tools immediately useful after a
+   * restart — without this, the buffer is empty until the SDK reconnects and
+   * generates new traffic.
+   *
+   * Also rehydrates the session→projectId map from SqliteStore's `sessions`
+   * table. Without this, queries filtered by `project_id` after a crash
+   * return nothing because the in-memory map is empty: events are tagged
+   * by sessionId, and matchesProjectId() looks up the session record to
+   * find the project. (Pre-fix: only sessions whose `session` event happens
+   * to be in the warmed window got rehydrated, which is rare in long runs.)
+   *
+   * Does NOT propagate to SqliteStore (we just read FROM it). Ring-buffer
+   * eviction handles overflow naturally if multiple projects are warmed.
+   */
+  warmFromSqlite(sqliteStore: SqliteStore, project: string, limit: number): void {
+    // 1. Rehydrate the session map so projectId-filtered queries work
+    //    immediately after a crash, even for sessions whose original
+    //    SessionEvent isn't among the warmed events.
+    for (const stored of sqliteStore.getStoredSessions(project)) {
+      if (this.sessions.has(stored.sessionId)) continue; // live session wins
+      this.sessions.set(stored.sessionId, {
+        sessionId: stored.sessionId,
+        appName: stored.appName,
+        connectedAt: stored.connectedAt,
+        sdkVersion: stored.sdkVersion,
+        eventCount: 0, // recompute from warmed events below
+        isConnected: false,
+        projectId: stored.projectId,
+      });
+    }
+
+    // 2. Warm the ring buffer with the most recent N events.
+    const events = sqliteStore.getRecentEvents(project, limit);
+    for (const event of events) {
+      if (event.eventType === 'session') {
+        const se = event as SessionEvent;
+        if (!this.sessions.has(se.sessionId)) {
+          this.sessions.set(se.sessionId, {
+            sessionId: se.sessionId,
+            appName: se.appName,
+            connectedAt: se.connectedAt,
+            sdkVersion: se.sdkVersion,
+            eventCount: 0,
+            isConnected: false,
+            projectId: se.projectId,
+          });
+        }
+      }
+      const session = this.sessions.get(event.sessionId);
+      if (session) session.eventCount++;
+      this.buffer.push(event);
+      // No SqliteStore dual-write, no listener notification — this is a load,
+      // not a new event.
+    }
+  }
+
   onEvent(callback: (event: RuntimeEvent) => void): void {
     this.onEventCallbacks.push(callback);
   }
@@ -158,6 +216,20 @@ export class EventStore {
 
   getSessionInfo(): SessionInfo[] {
     return Array.from(this.sessions.values());
+  }
+
+  /**
+   * Fast O(sessions) event count for a specific projectId. Callers that just
+   * want to know "have any events arrived for project X yet?" should use this
+   * instead of `getAllEvents(..., projectId).length`, which allocates and
+   * filters the entire 10K-event ring buffer on every call.
+   */
+  eventCountForProject(projectId: string): number {
+    let total = 0;
+    for (const session of this.sessions.values()) {
+      if (session.projectId === projectId) total += session.eventCount;
+    }
+    return total;
   }
 
   markDisconnected(sessionId: string): void {

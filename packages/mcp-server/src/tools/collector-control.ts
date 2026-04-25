@@ -315,7 +315,10 @@ export function registerCollectorControlTools(server: McpServer): void {
         }
       }
 
-      // 2. If anything else is still on the port, kill it
+      // 2. If anything else is still on the port, kill it — but ONLY if the
+      //    process's command line identifies it as a RuntimeScope collector.
+      //    Previously this SIGTERM'd *any* process on :6768, which killed
+      //    unrelated user dev servers that happened to use the default port.
       if (os === 'darwin' || os === 'linux') {
         try {
           const pidList = execFileSync('lsof', ['-ti', `:${httpPort}`], {
@@ -323,13 +326,34 @@ export function registerCollectorControlTools(server: McpServer): void {
           }).trim();
           for (const pidStr of pidList.split('\n').filter(Boolean)) {
             const pid = parseInt(pidStr, 10);
-            if (Number.isFinite(pid) && pid !== process.pid) {
-              try {
-                process.kill(pid);
-                stopped = true;
-              } catch {
-                /* already gone */
-              }
+            if (!Number.isFinite(pid) || pid === process.pid) continue;
+
+            let cmdline = '';
+            try {
+              cmdline = execFileSync('ps', ['-p', String(pid), '-o', 'command='], {
+                encoding: 'utf-8',
+              }).trim();
+            } catch {
+              issues.push(`Process ${pid} on port ${httpPort} could not be identified — skipped.`);
+              continue;
+            }
+
+            const looksLikeCollector =
+              /runtimescope/i.test(cmdline) ||
+              /standalone\.js/i.test(cmdline) ||
+              /@runtimescope\/(collector|mcp-server)/i.test(cmdline);
+            if (!looksLikeCollector) {
+              issues.push(
+                `Process ${pid} on port ${httpPort} is not a RuntimeScope collector (${cmdline.slice(0, 80)}) — left running.`,
+              );
+              continue;
+            }
+
+            try {
+              process.kill(pid);
+              stopped = true;
+            } catch {
+              /* already gone */
             }
           }
         } catch {

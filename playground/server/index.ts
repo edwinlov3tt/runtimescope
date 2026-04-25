@@ -8,7 +8,9 @@ import http from 'node:http';
 import { RuntimeScope } from '@runtimescope/server-sdk';
 
 RuntimeScope.connect({
-  dsn: 'runtimescope://proj_playground_demo@localhost:6768/playground-api',
+  dsn:
+    process.env.RUNTIMESCOPE_DSN ??
+    'runtimescope://proj_playground_demo@localhost:6768/playground-api',
   captureConsole: true,
   captureErrors: true,
   capturePerformance: true,

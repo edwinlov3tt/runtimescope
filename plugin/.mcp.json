@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "runtimescope": {
+      "type": "stdio",
+      "command": "npx",
+      "args": ["-y", "@runtimescope/mcp-server@latest"]
+    }
+  }
+}

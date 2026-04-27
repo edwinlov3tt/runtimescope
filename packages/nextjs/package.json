@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/nextjs",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "RuntimeScope for Next.js — one install, works in client, server, and edge runtimes",
   "type": "module",
   "main": "./dist/index.js",
@@ -49,9 +49,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.1",
-    "@runtimescope/server-sdk": "0.10.1",
-    "@runtimescope/workers-sdk": "0.10.1"
+    "@runtimescope/sdk": "0.10.2",
+    "@runtimescope/server-sdk": "0.10.2",
+    "@runtimescope/workers-sdk": "0.10.2"
   },
   "peerDependencies": {
     "next": ">=13.0.0",

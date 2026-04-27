@@ -209,7 +209,7 @@ async function main() {
     rateLimits: globalConfig.rateLimits,
     tls: tlsConfig,
   });
-  await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 1000 });
+  await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 50 });
   const actualWsPort = collector.getPort() ?? COLLECTOR_PORT;
 
   const store = collector.getStore();
@@ -318,37 +318,51 @@ async function main() {
     });
   }
 
-  // 6. Start HTTP API for dashboard. If the requested port is held by another
-  //    collector, HttpServer's own port-increment retry logic will find a free one.
-  const httpServer = new HttpServer(store, processMonitor, {
-    authManager,
-    allowedOrigins: corsOrigins,
-    rateLimiter: collector.getRateLimiter(),
-    pmStore,
-    discovery,
-    projectManager,
-    getConnectedSessions: () => collector.getConnectedSessions(),
-    isReady: () => collector.isReady(),
-    createSnapshot: () => collector.createSnapshot(),
-    renderMetrics: () => collector.getMetricsRegistry().render(),
-  });
+  // 6. Start HTTP API for dashboard — only when no other healthy collector
+  //    is already serving it. Starting our own here when one exists previously
+  //    led to an `EADDRINUSE` that surfaced as an uncaughtException AND left
+  //    httpServer.start() hung (neither resolving nor rejecting), which
+  //    blocked `mcp.connect(transport)` and timed out Claude Code's MCP
+  //    handshake. The user's existing collector already serves /snippet, the
+  //    dashboard, and SSE, so MCP tools work fine without our own HTTP API.
+  let httpServer: InstanceType<typeof HttpServer> | undefined;
   let actualHttpPort = HTTP_PORT;
-  try {
-    await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
-    actualHttpPort = httpServer.getPort() ?? HTTP_PORT;
-  } catch (err) {
-    console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
-    // Non-fatal: MCP tools still work without HTTP API
+  if (!existingHealthy) {
+    httpServer = new HttpServer(store, processMonitor, {
+      authManager,
+      allowedOrigins: corsOrigins,
+      rateLimiter: collector.getRateLimiter(),
+      pmStore,
+      discovery,
+      projectManager,
+      getConnectedSessions: () => collector.getConnectedSessions(),
+      isReady: () => collector.isReady(),
+      createSnapshot: () => collector.createSnapshot(),
+      renderMetrics: () => collector.getMetricsRegistry().render(),
+    });
+    try {
+      await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
+      actualHttpPort = httpServer.getPort() ?? HTTP_PORT;
+    } catch (err) {
+      console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
+      httpServer = undefined;
+    }
+  } else {
+    console.error('[RuntimeScope] Skipping our own HTTP API — existing collector serves it.');
   }
 
   collector.onConnect((sessionId, projectName, projectId) => {
-    try { httpServer.broadcastSessionChange('session_connected', sessionId, projectName); } catch { /* non-fatal */ }
+    if (httpServer) {
+      try { httpServer.broadcastSessionChange('session_connected', sessionId, projectName); } catch { /* non-fatal */ }
+    }
     if (pmStore) {
       try { pmStore.autoLinkApp(projectName, projectId); } catch { /* non-fatal */ }
     }
   });
   collector.onDisconnect((sessionId, projectName) => {
-    try { httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName); } catch { /* non-fatal */ }
+    if (httpServer) {
+      try { httpServer.broadcastSessionChange('session_disconnected', sessionId, projectName); } catch { /* non-fatal */ }
+    }
   });
 
   // 6. Create Playwright scanner (lazy — browser launches on first scan)
@@ -459,7 +473,7 @@ async function main() {
     await safe('processMonitor', () => processMonitor.stop());
     await safe('scanner', () => scanner.shutdown());
     await safe('connectionManager', () => connectionManager.closeAll());
-    await safe('httpServer', () => httpServer.stop());
+    await safe('httpServer', () => httpServer?.stop());
     await safe('collector', () => collector.stop());
     await safe('pmStore', () => pmStore?.close());
 

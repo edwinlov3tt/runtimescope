@@ -1,6 +1,6 @@
 {
   "name": "runtimescope",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "description": "Runtime monitoring for Claude Code — captures network, console, state, renders, Web Vitals, DB queries, and server metrics from your running app and exposes them as MCP tools.",
   "author": {
     "name": "RuntimeScope",

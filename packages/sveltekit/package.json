@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/sveltekit",
-  "version": "0.10.1",
+  "version": "0.10.2",
   "description": "RuntimeScope for SvelteKit — one install, works in hooks.client.ts and hooks.server.ts",
   "type": "module",
   "main": "./dist/index.js",
@@ -41,8 +41,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.1",
-    "@runtimescope/server-sdk": "0.10.1"
+    "@runtimescope/sdk": "0.10.2",
+    "@runtimescope/server-sdk": "0.10.2"
   },
   "peerDependencies": {
     "@sveltejs/kit": ">=1.0.0"

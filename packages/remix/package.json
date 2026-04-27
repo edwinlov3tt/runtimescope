@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/remix",
-  "version": "0.10.0",
+  "version": "0.10.1",
   "description": "RuntimeScope for Remix — one install, works in entry.client.tsx and entry.server.tsx",
   "type": "module",
   "main": "./dist/index.js",
@@ -41,8 +41,8 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.0",
-    "@runtimescope/server-sdk": "0.10.0"
+    "@runtimescope/sdk": "0.10.1",
+    "@runtimescope/server-sdk": "0.10.1"
   },
   "peerDependencies": {
     "@remix-run/node": ">=2.0.0",

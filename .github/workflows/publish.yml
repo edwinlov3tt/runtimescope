@@ -17,6 +17,9 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
+      # Build extension first — mcp-server's tsup config bundles
+      # @runtimescope/extension via noExternal, so its dist/ must exist.
+      - run: npm run build -w packages/extension
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite
       - run: npm test

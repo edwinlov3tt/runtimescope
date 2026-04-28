@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/collector",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "Event collector and persistence layer for RuntimeScope",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,7 +9,8 @@
     ".": {
       "import": "./dist/index.js",
       "types": "./dist/index.d.ts"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "runtimescope-collector": "./dist/standalone.js"

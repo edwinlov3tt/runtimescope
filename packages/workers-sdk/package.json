@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/workers-sdk",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "RuntimeScope SDK for Cloudflare Workers — instruments requests, D1, KV, R2, console, and errors",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,7 +9,8 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "files": [
     "dist"

@@ -7,14 +7,14 @@
   },
   "metadata": {
     "description": "Official RuntimeScope marketplace — runtime monitoring plugins for Claude Code.",
-    "version": "0.10.6"
+    "version": "0.10.7"
   },
   "plugins": [
     {
       "name": "runtimescope",
       "source": "./plugin",
       "description": "Runtime monitoring for Claude Code — capture network, console, state, renders, Web Vitals, DB queries, and server metrics from your running app and expose them as MCP tools.",
-      "version": "0.10.6",
+      "version": "0.10.7",
       "category": "devtools",
       "tags": [
         "runtime",

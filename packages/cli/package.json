@@ -1,6 +1,6 @@
 {
   "name": "runtimescope",
-  "version": "0.10.2",
+  "version": "0.10.3",
   "description": "RuntimeScope — runtime observability for web apps. One install, full visibility.",
   "type": "module",
   "main": "./dist/index.js",
@@ -15,7 +15,8 @@
       "types": "./dist/server.d.ts",
       "import": "./dist/server.js",
       "require": "./dist/server.cjs"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "runtimescope": "./dist/cli.js"
@@ -41,9 +42,9 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.2",
-    "@runtimescope/server-sdk": "0.10.2",
-    "@runtimescope/collector": "0.10.2"
+    "@runtimescope/sdk": "0.10.3",
+    "@runtimescope/server-sdk": "0.10.3",
+    "@runtimescope/collector": "0.10.3"
   },
   "devDependencies": {
     "tsup": "^8.0.0",

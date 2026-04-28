@@ -11,7 +11,7 @@
 // ============================================================
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { homedir, platform } from 'node:os';
 import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
@@ -46,10 +46,15 @@ function resolveCollectorPath(): string {
   // Prefer the sibling workspace build if we're running from the monorepo
   const require = createRequire(import.meta.url);
 
-  // Try resolving via the @runtimescope/collector package
+  // Try resolving via the @runtimescope/collector main entry. We deliberately
+  // avoid `require.resolve('@runtimescope/collector/package.json')` because
+  // the published exports map (≤ 0.10.2) only declares ".", not "./package.json",
+  // so that lookup throws ERR_PACKAGE_PATH_NOT_EXPORTED. Resolving the main
+  // entry always works because "." IS exported, and the package directory is
+  // two levels up from dist/index.js.
   try {
-    const pkgJsonPath = require.resolve('@runtimescope/collector/package.json');
-    const pkgDir = pkgJsonPath.replace(/\/package\.json$/, '');
+    const mainPath = require.resolve('@runtimescope/collector');
+    const pkgDir = dirname(dirname(mainPath));
     const standalone = join(pkgDir, 'dist', 'standalone.js');
     if (existsSync(standalone)) return standalone;
   } catch {

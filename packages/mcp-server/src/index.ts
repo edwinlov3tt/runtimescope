@@ -209,7 +209,20 @@ async function main() {
     rateLimits: globalConfig.rateLimits,
     tls: tlsConfig,
   });
-  await collector.start({ port: COLLECTOR_PORT, maxRetries: 5, retryDelayMs: 50 });
+  // When an existing healthy collector is already serving 6768, the MCP
+  // server's in-process collector binds an alternate WS port and receives
+  // zero SDK events (SDKs talk to the launchd collector). Skipping the
+  // recovery pass in that mode shaves multiple seconds off boot — on a
+  // machine with 40+ projects, opening every SQLite store synchronously
+  // pushed the MCP transport-ready time past Claude Code's plugin reconnect
+  // timeout, manifesting as "no matter how many times I restart, MCP can't
+  // connect". The recovery still runs lazily on the first SDK connection.
+  await collector.start({
+    port: COLLECTOR_PORT,
+    maxRetries: 5,
+    retryDelayMs: 50,
+    skipRecovery: existingHealthy,
+  });
   const actualWsPort = collector.getPort() ?? COLLECTOR_PORT;
 
   const store = collector.getStore();
@@ -261,8 +274,12 @@ async function main() {
     }
   }, AUTO_SNAPSHOT_INTERVAL_MS);
 
-  // Retention policy: prune events older than N days on startup (requires SQLite)
-  if (isSqliteAvailable()) {
+  // Retention policy: prune events older than N days on startup (requires SQLite).
+  // When an existing healthy collector is already running, retention is its
+  // job — duplicating it from this short-lived MCP-embedded process just
+  // serializes 40+ SQLite open/close cycles into the boot path and pushes the
+  // MCP handshake past Claude Code's reconnect timeout.
+  if (isSqliteAvailable() && !existingHealthy) {
     const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
     const cutoffMs = Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000;
     for (const projectName of projectManager.listProjects()) {

@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { ApiDiscoveryEngine } from '../engines/api-discovery.js';
 import { EventStore } from '../store.js';
-import { makeNetworkEvent } from './factories.js';
+import { makeNetworkEvent, makeSessionEvent } from './factories.js';
 
 describe('ApiDiscoveryEngine', () => {
   let store: EventStore;
@@ -166,6 +166,81 @@ describe('ApiDiscoveryEngine', () => {
       engine.rebuild();
       const issues = engine.detectIssues();
       expect(issues.some((i) => i.pattern === 'api_degradation')).toBe(false);
+    });
+  });
+
+  // Regression: cross-project bleed. Before this fix, the engine's endpoint
+  // map was built from ALL sessions and getCatalog/getHealth/getServiceMap/
+  // detectIssues took no projectId filter. A query scoped to project A
+  // returned endpoints, error rates, and degradation issues from project B.
+  describe('projectId filtering (cross-project bleed regression)', () => {
+    function setupTwoProjects() {
+      // Project A: 3 calls to /good (all 200)
+      store.addEvent(makeSessionEvent({ sessionId: 'sess-a', projectId: 'proj_aaa', appName: 'app-a' }));
+      for (let i = 0; i < 3; i++) {
+        store.addEvent(makeNetworkEvent({
+          sessionId: 'sess-a',
+          url: 'https://api.example.com/good',
+          status: 200,
+        }));
+      }
+      // Project B: 4 calls to /broken (all 500 — would trigger api_degradation)
+      store.addEvent(makeSessionEvent({ sessionId: 'sess-b', projectId: 'proj_bbb', appName: 'app-b' }));
+      for (let i = 0; i < 4; i++) {
+        store.addEvent(makeNetworkEvent({
+          sessionId: 'sess-b',
+          url: 'https://api.broken.com/broken',
+          status: 500,
+        }));
+      }
+      engine.markDirty();
+      engine.rebuild();
+    }
+
+    it('getCatalog scoped to a project excludes other projects\' endpoints', () => {
+      setupTwoProjects();
+      const aOnly = engine.getCatalog({ projectId: 'proj_aaa' });
+      expect(aOnly.map((ep) => ep.normalizedPath)).toEqual(['/good']);
+      const bOnly = engine.getCatalog({ projectId: 'proj_bbb' });
+      expect(bOnly.map((ep) => ep.normalizedPath)).toEqual(['/broken']);
+      // Without filter, both endpoints visible
+      const all = engine.getCatalog();
+      expect(all.map((ep) => ep.normalizedPath).sort()).toEqual(['/broken', '/good']);
+    });
+
+    it('getHealth scoped to a project does not leak other-project error rates', () => {
+      setupTwoProjects();
+      const aHealth = engine.getHealth({ projectId: 'proj_aaa' });
+      // Project A has 100% success — no /broken endpoint should appear
+      expect(aHealth.map((h) => h.normalizedPath)).toEqual(['/good']);
+      expect(aHealth[0].errorRate).toBe(0);
+    });
+
+    it('getServiceMap scoped to a project excludes other-project services', () => {
+      setupTwoProjects();
+      const aServices = engine.getServiceMap({ projectId: 'proj_aaa' });
+      // example.com only — broken.com belongs to project B
+      const hosts = aServices.map((s) => new URL(s.baseUrl).hostname);
+      expect(hosts).toContain('api.example.com');
+      expect(hosts).not.toContain('api.broken.com');
+    });
+
+    it('detectIssues scoped to a project does not flag other-project degradation', () => {
+      setupTwoProjects();
+      // Project B's /broken would trigger api_degradation (100% error, ≥3 calls).
+      // Querying project A must NOT see that issue.
+      const aIssues = engine.detectIssues('proj_aaa');
+      expect(aIssues.some((i) => i.pattern === 'api_degradation')).toBe(false);
+      const bIssues = engine.detectIssues('proj_bbb');
+      expect(bIssues.some((i) => i.pattern === 'api_degradation')).toBe(true);
+    });
+
+    it('returns empty results for an unknown projectId', () => {
+      setupTwoProjects();
+      expect(engine.getCatalog({ projectId: 'proj_nope' })).toEqual([]);
+      expect(engine.getHealth({ projectId: 'proj_nope' })).toEqual([]);
+      expect(engine.getServiceMap({ projectId: 'proj_nope' })).toEqual([]);
+      expect(engine.detectIssues('proj_nope')).toEqual([]);
     });
   });
 });

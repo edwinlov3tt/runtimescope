@@ -18,8 +18,8 @@ export function registerApiDiscoveryTools(
       min_calls: z.number().optional().describe('Only show endpoints with at least N calls'),
     },
     async ({ project_id, service, min_calls }) => {
-      const catalog = engine.getCatalog({ service, minCalls: min_calls });
-      const services = engine.getServiceMap();
+      const catalog = engine.getCatalog({ service, minCalls: min_calls, projectId: project_id });
+      const services = engine.getServiceMap({ projectId: project_id });
 
       const { sessionId } = resolveSessionContext(store, project_id);
 
@@ -75,7 +75,7 @@ export function registerApiDiscoveryTools(
       since_seconds: z.number().optional().describe('Only consider requests from the last N seconds'),
     },
     async ({ project_id, endpoint, since_seconds }) => {
-      const health = engine.getHealth({ endpoint, sinceSeconds: since_seconds });
+      const health = engine.getHealth({ endpoint, sinceSeconds: since_seconds, projectId: project_id });
 
       const { sessionId } = resolveSessionContext(store, project_id);
 
@@ -123,7 +123,7 @@ export function registerApiDiscoveryTools(
       service: z.string().optional().describe('Generate docs for a specific service only'),
     },
     async ({ project_id, service }) => {
-      const docs = engine.getDocumentation({ service });
+      const docs = engine.getDocumentation({ service, projectId: project_id });
 
       return {
         content: [{ type: 'text' as const, text: docs }],
@@ -139,7 +139,7 @@ export function registerApiDiscoveryTools(
       project_id: projectIdParam,
     },
     async ({ project_id }) => {
-      const services = engine.getServiceMap();
+      const services = engine.getServiceMap({ projectId: project_id });
 
       const { sessionId } = resolveSessionContext(store, project_id);
 

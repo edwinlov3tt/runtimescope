@@ -51,6 +51,16 @@ export interface CollectorServerOptions {
    * configured endpoint. Failures are logged but never break ingestion.
    */
   otel?: OtelExporterOptions;
+  /**
+   * Skip the synchronous startup recovery pass (WAL replay + SQLite warm).
+   * The MCP server uses this when an existing healthy collector is already
+   * holding port 6768: in that case the in-process collector receives zero
+   * SDK events (SDKs talk to the launchd collector instead), so warming
+   * 40+ SQLite stores during boot is pure cost — and it pushes the MCP
+   * transport-ready time past Claude Code's plugin reconnect timeout.
+   * Recovery still runs lazily on the first SDK connection per project.
+   */
+  skipRecovery?: boolean;
 }
 
 interface ClientInfo {
@@ -326,10 +336,17 @@ export class CollectorServer {
     // warmed with the most recent events per project. New WS connections only
     // start arriving after this completes, so there's no race with incoming
     // events overlapping the warm-up.
-    try {
-      this.runStartupRecovery();
-    } catch (err) {
-      console.error('[RuntimeScope] Startup recovery failed (non-fatal):', (err as Error).message);
+    //
+    // When skipRecovery is set (MCP server in attach-mode), we bypass this:
+    // there's no point opening 40+ SQLite stores when this collector instance
+    // will receive zero events. WAL recovery for THIS process's prior crash
+    // is moot too (a fresh npx-launched mcp-server has no prior WAL on disk).
+    if (!options.skipRecovery) {
+      try {
+        this.runStartupRecovery();
+      } catch (err) {
+        console.error('[RuntimeScope] Startup recovery failed (non-fatal):', (err as Error).message);
+      }
     }
     this.ready = true;
 

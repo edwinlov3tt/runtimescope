@@ -336,26 +336,45 @@ export class ApiDiscoveryEngine {
 
   // --- Public API ---
 
-  getCatalog(filter?: { service?: string; minCalls?: number }): ApiEndpoint[] {
+  /**
+   * Resolve a projectId to the set of sessionIds that belong to it. Returns
+   * null when no projectId is supplied (caller should skip filtering). Returns
+   * an empty set when the projectId has no known sessions — in that case
+   * every endpoint should be excluded from results.
+   *
+   * The endpoints map is global (built from all network events across every
+   * project), so any project-scoped read MUST filter ep.events by sessionId
+   * to avoid bleeding traffic from one project into another's tool output.
+   */
+  private resolveProjectSessionIds(projectId?: string): Set<string> | null {
+    if (!projectId) return null;
+    return new Set(this.store.getSessionIdsForProjectId(projectId));
+  }
+
+  getCatalog(filter?: { service?: string; minCalls?: number; projectId?: string }): ApiEndpoint[] {
     this.rebuild();
     this.refineEndpoints();
 
+    const sessionIds = this.resolveProjectSessionIds(filter?.projectId);
     const results: ApiEndpoint[] = [];
     for (const ep of this.endpoints.values()) {
       if (filter?.service && ep.service !== filter.service) continue;
-      if (filter?.minCalls && ep.events.length < filter.minCalls) continue;
 
-      const timestamps = ep.events.map((e) => e.timestamp);
+      const events = sessionIds ? ep.events.filter((e) => sessionIds.has(e.sessionId)) : ep.events;
+      if (events.length === 0) continue;
+      if (filter?.minCalls && events.length < filter.minCalls) continue;
+
+      const timestamps = events.map((e) => e.timestamp);
       results.push({
         normalizedPath: ep.normalizedPath,
         method: ep.method,
         baseUrl: ep.baseUrl,
         service: ep.service,
-        callCount: ep.events.length,
+        callCount: events.length,
         firstSeen: Math.min(...timestamps),
         lastSeen: Math.max(...timestamps),
         auth: ep.auth,
-        contract: inferContract(ep.events),
+        contract: inferContract(events),
         graphqlOperation: ep.graphqlOperation,
       });
     }
@@ -363,11 +382,12 @@ export class ApiDiscoveryEngine {
     return results.sort((a, b) => b.callCount - a.callCount);
   }
 
-  getHealth(filter?: { endpoint?: string; sinceSeconds?: number }): ApiEndpointHealth[] {
+  getHealth(filter?: { endpoint?: string; sinceSeconds?: number; projectId?: string }): ApiEndpointHealth[] {
     this.rebuild();
     this.refineEndpoints();
 
     const since = filter?.sinceSeconds ? Date.now() - filter.sinceSeconds * 1000 : 0;
+    const sessionIds = this.resolveProjectSessionIds(filter?.projectId);
     const results: ApiEndpointHealth[] = [];
 
     for (const ep of this.endpoints.values()) {
@@ -376,7 +396,11 @@ export class ApiDiscoveryEngine {
         if (!key.includes(filter.endpoint)) continue;
       }
 
-      const events = ep.events.filter((e) => e.timestamp >= since);
+      const events = ep.events.filter((e) => {
+        if (e.timestamp < since) return false;
+        if (sessionIds && !sessionIds.has(e.sessionId)) return false;
+        return true;
+      });
       if (events.length === 0) continue;
 
       const durations = events.map((e) => e.duration).sort((a, b) => a - b);
@@ -405,9 +429,9 @@ export class ApiDiscoveryEngine {
     return results.sort((a, b) => b.callCount - a.callCount);
   }
 
-  getDocumentation(filter?: { service?: string; format?: string }): string {
-    const catalog = this.getCatalog(filter ? { service: filter.service } : undefined);
-    const health = this.getHealth();
+  getDocumentation(filter?: { service?: string; format?: string; projectId?: string }): string {
+    const catalog = this.getCatalog(filter ? { service: filter.service, projectId: filter.projectId } : undefined);
+    const health = this.getHealth(filter ? { projectId: filter.projectId } : undefined);
     const healthMap = new Map(health.map((h) => [`${h.method} ${h.normalizedPath}`, h]));
 
     const lines: string[] = ['# API Documentation (Auto-Generated from Traffic)', ''];
@@ -457,9 +481,11 @@ export class ApiDiscoveryEngine {
     return lines.join('\n');
   }
 
-  getServiceMap(): ServiceInfo[] {
+  getServiceMap(filter?: { projectId?: string }): ServiceInfo[] {
     this.rebuild();
     this.refineEndpoints();
+
+    const sessionIds = this.resolveProjectSessionIds(filter?.projectId);
 
     const services = new Map<string, {
       baseUrl: string;
@@ -472,12 +498,15 @@ export class ApiDiscoveryEngine {
     }>();
 
     for (const ep of this.endpoints.values()) {
+      const events = sessionIds ? ep.events.filter((e) => sessionIds.has(e.sessionId)) : ep.events;
+      if (events.length === 0) continue;
+
       const existing = services.get(ep.service);
       if (existing) {
         existing.endpoints.add(`${ep.method} ${ep.normalizedPath}`);
-        existing.totalCalls += ep.events.length;
-        existing.totalDuration += ep.events.reduce((s, e) => s + e.duration, 0);
-        existing.errorCount += ep.events.filter((e) => e.status >= 400).length;
+        existing.totalCalls += events.length;
+        existing.totalDuration += events.reduce((s, e) => s + e.duration, 0);
+        existing.errorCount += events.filter((e) => e.status >= 400).length;
       } else {
         let detectedPlatform: string | undefined;
         try {
@@ -493,9 +522,9 @@ export class ApiDiscoveryEngine {
         services.set(ep.service, {
           baseUrl: ep.baseUrl,
           endpoints: new Set([`${ep.method} ${ep.normalizedPath}`]),
-          totalCalls: ep.events.length,
-          totalDuration: ep.events.reduce((s, e) => s + e.duration, 0),
-          errorCount: ep.events.filter((e) => e.status >= 400).length,
+          totalCalls: events.length,
+          totalDuration: events.reduce((s, e) => s + e.duration, 0),
+          errorCount: events.filter((e) => e.status >= 400).length,
           auth: ep.auth,
           platform: detectedPlatform,
         });
@@ -613,9 +642,9 @@ export class ApiDiscoveryEngine {
     return catalog;
   }
 
-  detectIssues(): DetectedIssue[] {
+  detectIssues(projectId?: string): DetectedIssue[] {
     const issues: DetectedIssue[] = [];
-    const health = this.getHealth();
+    const health = this.getHealth({ projectId });
 
     for (const ep of health) {
       // API degradation: >50% error rate
@@ -646,8 +675,8 @@ export class ApiDiscoveryEngine {
     }
 
     // Auth inconsistency: same service with mixed auth patterns
-    const services = this.getServiceMap();
-    const catalog = this.getCatalog();
+    const services = this.getServiceMap({ projectId });
+    const catalog = this.getCatalog({ projectId });
     for (const service of services) {
       const serviceEndpoints = catalog.filter((ep) => ep.service === service.name);
       const authTypes = new Set(serviceEndpoints.map((ep) => ep.auth.type));

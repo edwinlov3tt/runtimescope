@@ -553,6 +553,118 @@ async function stop() {
   log('');
 }
 
+/**
+ * Inspect npm-global links via `npm ls -g --depth=0 --link=true --json`.
+ * Catches three classes of bug surfaced during desktop installs:
+ *   1. The unscoped `runtimescope` package linked to a monorepo *root*
+ *      whose package.json has no `bin` field — silently useless link.
+ *   2. Multiple checkouts of the runtimescope monorepo on the same
+ *      machine (each linking @runtimescope/* into its own path),
+ *      which causes "which version is actually loading?" confusion.
+ *   3. Stale package.json `version` mismatched with what the running
+ *      collector reports on /api/health — local source has been edited
+ *      but dist hasn't been rebuilt, or the link points to an old tree.
+ */
+function inspectNpmLinks(): {
+  staleRuntimescopeLink?: { path: string; reason: string };
+  multipleCheckouts?: string[];
+  packageVersions: Map<string, { path: string; version: string; hasBin: boolean }>;
+} {
+  const out = run('npm ls -g --depth=0 --link=true --json 2>/dev/null');
+  if (!out) return { packageVersions: new Map() };
+
+  let parsed: { dependencies?: Record<string, { resolved?: string; version?: string }> };
+  try {
+    parsed = JSON.parse(out);
+  } catch {
+    return { packageVersions: new Map() };
+  }
+
+  const versions = new Map<string, { path: string; version: string; hasBin: boolean }>();
+  const checkoutRoots = new Set<string>();
+  let staleLink: { path: string; reason: string } | undefined;
+
+  for (const [name, dep] of Object.entries(parsed.dependencies ?? {})) {
+    const resolved = dep.resolved;
+    if (!resolved) continue;
+    // npm reports `resolved: "file:/path/to/pkg"` for linked packages
+    if (!resolved.startsWith('file:')) continue;
+
+    const linkPath = resolved.slice('file:'.length);
+    const pkgJsonPath = join(linkPath, 'package.json');
+    if (!existsSync(pkgJsonPath)) continue;
+
+    let pkg: { version?: string; bin?: unknown };
+    try {
+      pkg = JSON.parse(readFileSync(pkgJsonPath, 'utf-8'));
+    } catch {
+      continue;
+    }
+
+    versions.set(name, {
+      path: linkPath,
+      version: pkg.version ?? 'unknown',
+      hasBin: !!pkg.bin,
+    });
+
+    // Walk up to find the workspace root (a directory containing `packages/`).
+    // Track unique roots so we can flag multi-checkout setups.
+    let cursor = linkPath;
+    for (let depth = 0; depth < 5; depth++) {
+      const parent = join(cursor, '..');
+      if (existsSync(join(parent, 'packages'))) {
+        checkoutRoots.add(parent);
+        break;
+      }
+      if (parent === cursor) break;
+      cursor = parent;
+    }
+
+    // The unscoped `runtimescope` package MUST expose a bin entry — that's
+    // the whole point of the global install. Linking it to a monorepo root
+    // (which has no bin) is the silent-fail bug seen on desktop. The
+    // unscoped CLI lives at `packages/cli`, not the repo root.
+    if (name === 'runtimescope' && !pkg.bin) {
+      staleLink = {
+        path: linkPath,
+        reason: 'Linked to a directory whose package.json has no `bin` field — the runtimescope CLI is missing from PATH despite the link.',
+      };
+    }
+  }
+
+  const multipleCheckouts = checkoutRoots.size > 1 ? [...checkoutRoots] : undefined;
+  return { staleRuntimescopeLink: staleLink, multipleCheckouts, packageVersions: versions };
+}
+
+/**
+ * Verify @runtimescope/collector's exports map exposes ./package.json.
+ * The published 0.10.2 didn't, which broke `runtimescope service install`
+ * (the CLI's resolveCollectorPath fell through to a wrong fallback path).
+ * 0.10.3+ has the fix; doctor flags any older copy still on disk.
+ */
+function checkExportsMap(): { ok: boolean; detail?: string } {
+  try {
+    const require = createRequire(import.meta.url);
+    require.resolve('@runtimescope/collector/package.json');
+    return { ok: true };
+  } catch (e) {
+    const error = e as NodeJS.ErrnoException & { code?: string };
+    if (error.code === 'ERR_PACKAGE_PATH_NOT_EXPORTED') {
+      return {
+        ok: false,
+        detail: '@runtimescope/collector\'s exports map doesn\'t expose ./package.json (≤0.10.2 bug). Reinstall with: npm install -g runtimescope@latest',
+      };
+    }
+    if (error.code === 'MODULE_NOT_FOUND') {
+      return {
+        ok: false,
+        detail: '@runtimescope/collector not resolvable from the CLI. Reinstall: npm install -g runtimescope@latest',
+      };
+    }
+    return { ok: false, detail: error.message };
+  }
+}
+
 async function doctor() {
   log('');
   log(`  ${BOLD}RuntimeScope Doctor${RESET}`);
@@ -575,6 +687,18 @@ async function doctor() {
     detail: healthJson === null ? 'Not running — start with `npx runtimescope start`' : undefined,
   });
 
+  // Pull the running collector's reported version once — used both for the
+  // dist-staleness comparison below and for the existing health check.
+  let runningVersion: string | null = null;
+  if (healthJson) {
+    try {
+      const parsed = JSON.parse(healthJson) as { version?: string };
+      runningVersion = parsed.version ?? null;
+    } catch {
+      /* health endpoint returned something non-JSON — leave version unknown */
+    }
+  }
+
   const wsListen = run('lsof -ti :6767 2>/dev/null');
   checks.push({
     label: 'WebSocket on :6767',
@@ -595,6 +719,76 @@ async function doctor() {
     ok: mcpRegistered,
     detail: !mcpRegistered ? 'Run `claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server`' : undefined,
   });
+
+  // ── Exports map sanity (the 0.10.2 bug that broke service install) ──
+  const exportsCheck = checkExportsMap();
+  checks.push({
+    label: 'Collector exports map exposes ./package.json',
+    ok: exportsCheck.ok,
+    detail: exportsCheck.detail,
+  });
+
+  // ── Stale `runtimescope-mcp` v0.6.0 binary still on PATH ─────────────
+  // The current package ships `runtimescope` (CLI) and `runtimescope-collector`
+  // (collector bin). The old `runtimescope-mcp` was the v0.6.0 entrypoint
+  // and shouldn't be on PATH any more — if it is, it's stale and confuses
+  // tooling (default-port mismatch alone breaks SDK connections).
+  const staleMcpBin = run('which runtimescope-mcp 2>/dev/null');
+  checks.push({
+    label: 'No stale runtimescope-mcp v0.6.0 binary on PATH',
+    ok: !staleMcpBin,
+    detail: staleMcpBin
+      ? `Found at ${staleMcpBin.trim()}. This binary is from v0.6.0 (uses old default ports 9090/9091). Remove it: rm ${staleMcpBin.trim()}`
+      : undefined,
+  });
+
+  // ── npm link health: stale links + multiple checkouts + version drift ─
+  const linkInfo = inspectNpmLinks();
+
+  if (linkInfo.staleRuntimescopeLink) {
+    checks.push({
+      label: 'Global `runtimescope` link is bound to a directory with a bin',
+      ok: false,
+      detail: `Linked to ${linkInfo.staleRuntimescopeLink.path}. ${linkInfo.staleRuntimescopeLink.reason} Fix: cd to the CLI source (e.g. packages/cli) and re-run \`npm link\`, or just \`npm install -g runtimescope@latest\` to replace the link with the published package.`,
+    });
+  } else if (linkInfo.packageVersions.has('runtimescope')) {
+    checks.push({
+      label: `Global \`runtimescope\` link → ${linkInfo.packageVersions.get('runtimescope')!.path}`,
+      ok: true,
+    });
+  }
+
+  if (linkInfo.multipleCheckouts) {
+    checks.push({
+      label: 'Single monorepo checkout used for npm-linked packages',
+      ok: false,
+      detail: `Found ${linkInfo.multipleCheckouts.length} different checkout roots: ${linkInfo.multipleCheckouts.join(', ')}. This causes "which version is actually loading?" confusion. Pick one canonical checkout, \`npm unlink -g\` from the others, and re-link only from the canonical path.`,
+    });
+  }
+
+  // ── Dist staleness: compare resolved collector pkg version vs running ─
+  if (runningVersion) {
+    try {
+      const require = createRequire(import.meta.url);
+      const collectorPkgPath = require.resolve('@runtimescope/collector/package.json');
+      const installedPkg = JSON.parse(readFileSync(collectorPkgPath, 'utf-8')) as { version?: string };
+      const installedVersion = installedPkg.version;
+      if (installedVersion && installedVersion !== runningVersion) {
+        checks.push({
+          label: 'Installed collector version matches the running collector',
+          ok: false,
+          detail: `Installed: ${installedVersion} → ${collectorPkgPath.replace('/package.json', '')}\nRunning:   ${runningVersion}\nIf you just rebuilt locally, restart the service: \`runtimescope service restart\`. If you just upgraded the package, the running collector was started from an earlier install.`,
+        });
+      } else if (installedVersion) {
+        checks.push({
+          label: `Installed collector version ${installedVersion} matches running`,
+          ok: true,
+        });
+      }
+    } catch {
+      // Already covered by the exports-map check above.
+    }
+  }
 
   const localConfigPath = join(process.cwd(), '.runtimescope', 'config.json');
   const hasLocalConfig = existsSync(localConfigPath);
@@ -638,6 +832,7 @@ function printHelp() {
   log(`    ${BOLD}status${RESET}        Show collector health and connected projects`);
   log(`    ${BOLD}doctor${RESET}        Diagnose common problems and suggest fixes`);
   log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/logs)`);
+  log(`    ${BOLD}mcp doctor${RESET}    Diagnose why Claude Code can't connect to the runtimescope MCP`);
   log(`    ${BOLD}--version${RESET}     Print the installed CLI version and exit`);
   log(`    ${DIM}(no args)${RESET}     Start the collector (same as ${BOLD}start${RESET})`);
   log('');
@@ -704,6 +899,19 @@ switch (command) {
     import('./service.js').then(({ serviceCommand }) =>
       serviceCommand(process.argv[3]),
     ).catch((e) => { err(e.message); process.exit(1); });
+    break;
+  }
+  case 'mcp': {
+    const sub = process.argv[3];
+    if (sub === 'doctor') {
+      import('./mcp-doctor.js').then(({ mcpDoctor }) =>
+        mcpDoctor(),
+      ).catch((e) => { err(e.message); process.exit(1); });
+    } else {
+      err(`Unknown mcp subcommand: ${sub ?? '(none)'}`);
+      info('Valid: doctor');
+      process.exit(1);
+    }
     break;
   }
   case 'help':

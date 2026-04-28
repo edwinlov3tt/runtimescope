@@ -30,13 +30,20 @@ export function registerIssueTools(
       const events = store.getAllEvents(since_seconds, undefined, project_id);
       const allIssues: DetectedIssue[] = [...detectIssues(events)];
 
-      // Merge engine-contributed issues
+      // Merge engine-contributed issues, scoped to project_id when supplied.
+      // ApiDiscoveryEngine builds a global endpoint map across all sessions,
+      // so it MUST be told the projectId or we leak traffic from other
+      // projects into the per-project tool output.
       if (apiDiscovery) {
         try {
-          allIssues.push(...apiDiscovery.detectIssues());
+          allIssues.push(...apiDiscovery.detectIssues(project_id));
         } catch { /* engine may not have data yet */ }
       }
-      if (processMonitor) {
+      // ProcessMonitor observes OS-level processes (PIDs, ports, memory) —
+      // those have no project_id concept. Including them when scoped to a
+      // project would imply they belong to that project, which they don't.
+      // Only surface process issues when no project filter is in play.
+      if (processMonitor && !project_id) {
         try {
           allIssues.push(...processMonitor.detectIssues());
         } catch { /* engine may not have scanned yet */ }

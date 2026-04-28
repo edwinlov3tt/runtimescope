@@ -118,6 +118,18 @@ That's it — the collector is already running in the background and persists ac
 - **Service install fails** (no launchctl/systemctl) → fall back to a manual "run it yourself" instruction, but mark the install incomplete.
 - **Port 6767 or 6768 already bound by something else** → run `runtimescope doctor` to identify, don't kill the offending process without consent.
 
+## Migrating from a plugin-only setup
+
+If the user already has the Claude Code plugin installed (and Claude Code is currently running), the plugin's MCP server has its own embedded collector listening on `:6768`. That's the most common reason `runtimescope service install` fails on Step 3 — port held by the plugin, not by a stranger.
+
+The CLI's foreign-collector detector (v0.10.4+) catches this and aborts with a tailored message that says exactly which process to free. Tell the user:
+
+1. **Quit Claude Code** — the plugin's embedded collector exits with the host.
+2. **Re-run** `runtimescope service install` — the launchd/systemd service takes the port.
+3. **Restart Claude Code** — the plugin's MCP server detects the existing healthy collector on `:6768` and gracefully attaches to it (skips its own collector entirely, transports MCP-ready in seconds instead of timing out).
+
+After this migration, the plugin and the launchd service coexist: the launchd collector owns the data path, the plugin's MCP server is a thin proxy. Persistent collector across Claude Code restarts is the upgrade.
+
 ## Rules
 
 - **NEVER** install with elevated privileges unless the user explicitly asks.

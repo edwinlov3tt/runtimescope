@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/dashboard",
-  "version": "0.10.5",
+  "version": "0.10.6",
   "private": true,
   "type": "module",
   "scripts": {
@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.5",
+    "@runtimescope/sdk": "0.10.6",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
     "lightningcss": "^1.30.2",

@@ -8,10 +8,18 @@
 // ============================================================
 
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve, basename } from 'node:path';
+import { join, resolve, basename, dirname } from 'node:path';
 import { execSync, spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+
+// ESM doesn't define __dirname natively, and tsup's ESM bundle doesn't
+// polyfill it. Without this, every code path that reads __dirname (the
+// monorepo-sibling fallbacks for collector/mcp-server) crashes with
+// "__dirname is not defined" on every fresh global install.
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
 
 // ── Helpers ──────────────────────────────────────────────────
 

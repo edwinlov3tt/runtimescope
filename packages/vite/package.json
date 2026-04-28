@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/vite",
-  "version": "0.10.6",
+  "version": "0.10.7",
   "description": "Vite plugin for RuntimeScope — auto-inject the SDK, read DSN from env, skip in production builds without a DSN",
   "type": "module",
   "main": "./dist/index.js",
@@ -32,7 +32,7 @@
     "clean": "rm -rf dist"
   },
   "dependencies": {
-    "@runtimescope/sdk": "0.10.6"
+    "@runtimescope/sdk": "0.10.7"
   },
   "peerDependencies": {
     "vite": ">=4.0.0"

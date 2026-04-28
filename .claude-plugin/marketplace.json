@@ -14,7 +14,7 @@
       "name": "runtimescope",
       "source": "./plugin",
       "description": "Runtime monitoring for Claude Code — capture network, console, state, renders, Web Vitals, DB queries, and server metrics from your running app and expose them as MCP tools.",
-      "version": "0.10.10",
+      "version": "0.10.11",
       "category": "devtools",
       "tags": [
         "runtime",

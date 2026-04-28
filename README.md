@@ -15,17 +15,46 @@ Any URL ──Playwright scan──┘
 
 ---
 
-## Install the MCP Server
+## Quick Start
 
-Register RuntimeScope as an MCP server so Claude Code can use all 46 tools:
+Three steps. Total time: ~2 minutes.
+
+### 1. Install the Claude Code plugin
+
+```
+/plugin marketplace add edwinlov3tt/runtimescope
+/plugin install runtimescope@runtimescope
+```
+
+The plugin bundles the MCP server, 23 slash commands (`/runtimescope:diagnose`, `/runtimescope:setup`, `/runtimescope:trace`, etc.), and the runtimescope skill. Restart Claude Code to activate.
+
+### 2. Run the collector as a background service
+
+Persistent across reboots, listens on `ws://127.0.0.1:6767` (SDK) and `http://127.0.0.1:6768` (dashboard + HTTP API):
+
+```bash
+runtimescope service install   # writes ~/Library/LaunchAgents/com.runtimescope.collector.plist
+runtimescope service start
+runtimescope service status    # confirm it's listening
+```
+
+Or just ask Claude: **`/runtimescope:install`** — handles the full setup, detects existing installs, and verifies the collector is responding.
+
+### 3. Add the SDK to your app
+
+Once the collector is running, wire the SDK into the app you want to monitor — see [Add the SDK to Your App](#add-the-sdk-to-your-app) below. Or run **`/runtimescope:setup`** in your project and Claude will detect the framework and generate the snippet for you.
+
+---
+
+### Alternative: standalone MCP (no plugin)
+
+If you don't want the plugin's slash commands, you can register the MCP server alone:
 
 ```bash
 claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
 ```
 
-That's it. Restart Claude Code and the MCP server is available globally across all projects.
-
-For Claude Desktop, add this to your `claude_desktop_config.json`:
+For Claude Desktop, add to `claude_desktop_config.json`:
 
 ```json
 {

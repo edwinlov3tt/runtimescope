@@ -12,7 +12,7 @@ import { generateId, generateSessionId } from './utils/id.js';
 import { parseDsn } from './dsn.js';
 import type { RuntimeScopeConfig, RuntimeEvent, DomSnapshotEvent, CustomEvent, UIInteractionEvent, UserContext } from './types.js';
 
-const SDK_VERSION = '0.10.4';
+const SDK_VERSION = '0.10.5';
 
 // Save original console methods BEFORE interceptors patch them. The SDK uses
 // these for its own diagnostics so its messages don't loop back through the

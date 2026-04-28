@@ -256,8 +256,15 @@ function detectForeignCollector(): ForeignCollector | null {
 
   // If the listener is OUR launchd service, it's not foreign — it's ourselves.
   // launchctl reports the PID for the label when the service is running.
+  // Silence stderr — when the label isn't registered, launchctl writes
+  // "Could not find service ... in domain" to stderr that would otherwise
+  // bleed into the user-facing install output above the foreign-collector
+  // warning.
   try {
-    const out = execFileSync('launchctl', ['list', LAUNCHD_LABEL], { encoding: 'utf-8' });
+    const out = execFileSync('launchctl', ['list', LAUNCHD_LABEL], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
     const launchdPidMatch = out.match(/"PID"\s*=\s*(\d+)/);
     if (launchdPidMatch && parseInt(launchdPidMatch[1], 10) === pid) {
       return null;
@@ -266,15 +273,26 @@ function detectForeignCollector(): ForeignCollector | null {
     /* not registered with launchd → definitely foreign */
   }
 
-  // Identify the source by ps. Plugin-embedded collectors have the path
-  // `@runtimescope/mcp-server` in their argv (the plugin's .mcp.json runs
-  // `npx -y @runtimescope/mcp-server@latest`).
+  // Identify the source by ps. Three patterns cover every form the plugin's
+  // MCP collector takes in practice:
+  //   1. `@runtimescope/mcp-server` — package path inside node_modules
+  //   2. `mcp-server/dist` — local-link / monorepo build
+  //   3. `runtimescope-mcp` bin — the npx-resolved bin entry. THIS is the
+  //      most common case (the plugin's .mcp.json runs
+  //      `npx -y @runtimescope/mcp-server@latest`, and npx resolves that
+  //      to ~/.npm/_npx/<hash>/node_modules/.bin/runtimescope-mcp). Without
+  //      this match the user falls into the generic "unknown PID" path
+  //      and loses the "quit Claude Code, then re-run install" walkthrough.
   let source: ForeignCollector['source'] = 'unknown';
   try {
     const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
       encoding: 'utf-8',
     }).trim();
-    if (cmd.includes('@runtimescope/mcp-server') || cmd.includes('mcp-server/dist')) {
+    if (
+      cmd.includes('@runtimescope/mcp-server') ||
+      cmd.includes('mcp-server/dist') ||
+      /[/\\.](?:bin\/)?runtimescope-mcp(?:\s|$)/.test(cmd)
+    ) {
       source = 'plugin-embedded';
     } else if (cmd.includes('runtimescope-collector') || cmd.includes('collector/dist/standalone')) {
       source = 'standalone';

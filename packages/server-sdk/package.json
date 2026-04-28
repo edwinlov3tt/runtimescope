@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/server-sdk",
-  "version": "0.10.3",
+  "version": "0.10.4",
   "description": "Server-side SDK for RuntimeScope — instruments database queries, HTTP requests, console output, and performance metrics",
   "type": "module",
   "main": "./dist/index.cjs",

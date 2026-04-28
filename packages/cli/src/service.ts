@@ -43,33 +43,86 @@ const STDERR_LOG = join(LOGS_DIR, 'collector.err.log');
 // ---------- Resolve absolute paths to node + the collector entry point ----------
 
 function resolveCollectorPath(): string {
-  // Prefer the sibling workspace build if we're running from the monorepo
+  // Walk through several resolution strategies. Each attempt is recorded so
+  // that on total failure we can surface a diagnostic listing every path tried
+  // and why it failed — far more useful than the generic "could not locate"
+  // message that sent every previous user on an archaeological dig.
   const require = createRequire(import.meta.url);
+  const attempts: { strategy: string; result: string }[] = [];
 
-  // Try resolving via the @runtimescope/collector main entry. We deliberately
-  // avoid `require.resolve('@runtimescope/collector/package.json')` because
-  // the published exports map (≤ 0.10.2) only declares ".", not "./package.json",
-  // so that lookup throws ERR_PACKAGE_PATH_NOT_EXPORTED. Resolving the main
-  // entry always works because "." IS exported, and the package directory is
-  // two levels up from dist/index.js.
+  // Strategy 1: resolve via the @runtimescope/collector main entry.
+  // We deliberately avoid require.resolve('@runtimescope/collector/package.json')
+  // because the published exports map (≤ 0.10.2) only declared "." — that
+  // lookup throws ERR_PACKAGE_PATH_NOT_EXPORTED. The main entry "." has always
+  // been exported, so this works against every published version.
   try {
     const mainPath = require.resolve('@runtimescope/collector');
     const pkgDir = dirname(dirname(mainPath));
     const standalone = join(pkgDir, 'dist', 'standalone.js');
     if (existsSync(standalone)) return standalone;
-  } catch {
-    /* fall through */
+    attempts.push({
+      strategy: `require.resolve('@runtimescope/collector') → ${pkgDir}`,
+      result: `standalone.js missing at ${standalone}`,
+    });
+  } catch (e) {
+    attempts.push({
+      strategy: `require.resolve('@runtimescope/collector')`,
+      result: (e as Error).message,
+    });
   }
 
-  // Monorepo fallback — CLI installed from source
+  // Strategy 2: monorepo sibling — CLI running from source tree.
+  // From packages/cli/dist/cli.js, ../../../collector/dist/standalone.js lands
+  // at packages/collector/dist/standalone.js. Note: this only matches the
+  // unscoped monorepo layout, not a global node_modules tree (where the path
+  // would need the @runtimescope/ prefix).
   const monorepoPath = resolve(
     new URL(import.meta.url).pathname,
     '..', '..', '..', 'collector', 'dist', 'standalone.js',
   );
   if (existsSync(monorepoPath)) return monorepoPath;
+  attempts.push({
+    strategy: 'monorepo sibling (packages/collector/dist/standalone.js)',
+    result: `not found at ${monorepoPath}`,
+  });
+
+  // Strategy 3: runtimescope-collector binary on PATH. The collector package
+  // declares `bin: { runtimescope-collector: ./dist/standalone.js }`, so when
+  // it's installed globally npm puts a wrapper on PATH. `which` resolves it
+  // to the actual standalone.js even when require.resolve fails for any
+  // weird package-resolution reason.
+  try {
+    const which = execFileSync('which', ['runtimescope-collector'], {
+      encoding: 'utf-8',
+    }).trim();
+    if (which && existsSync(which)) {
+      // The bin entry is usually a wrapper symlink; readlink-style
+      // resolution isn't strictly needed because Node will follow it,
+      // but the dist file IS the actual entry. If `which` returns a
+      // direct path to standalone.js, use it; if it's a wrapper, use it
+      // anyway since Node will execute it identically.
+      return which;
+    }
+    attempts.push({
+      strategy: `which runtimescope-collector`,
+      result: `returned '${which}' but file missing`,
+    });
+  } catch (e) {
+    attempts.push({
+      strategy: 'which runtimescope-collector',
+      result: (e as Error).message.split('\n')[0] ?? 'not on PATH',
+    });
+  }
+
+  const summary = attempts
+    .map(({ strategy, result }) => `    - ${strategy}\n        → ${result}`)
+    .join('\n');
 
   throw new Error(
-    'Could not locate the collector binary. Install runtimescope globally or from a monorepo.',
+    `Could not locate the collector binary. Tried:\n${summary}\n` +
+      `\n` +
+      `If you installed runtimescope from npm, try reinstalling: npm install -g runtimescope@latest\n` +
+      `If you're running from a monorepo, build it first: npm run build -w packages/collector`,
   );
 }
 
@@ -161,6 +214,133 @@ function ensureLogsDir(): void {
   if (!existsSync(LOGS_DIR)) mkdirSync(LOGS_DIR, { recursive: true });
 }
 
+// ---------- Pre-install: detect a foreign collector on the standard port ----------
+
+interface ForeignCollector {
+  pid: number;
+  /** Best-effort identification of who's running it. */
+  source: 'plugin-embedded' | 'standalone' | 'unknown';
+}
+
+/**
+ * Inspect port 6768. If something is already listening, identify it. Returns
+ * null when the port is free (or when the only listener IS the launchd service
+ * we're about to manage — that's not "foreign").
+ *
+ * "Foreign" specifically means: a collector started by something OTHER than
+ * launchd (typically the Claude Code plugin's embedded MCP collector). Those
+ * processes hold the port until the owner exits, so installing the launchd
+ * service while one is running causes EADDRINUSE — and the failure mode is
+ * silent unless we surface it here.
+ */
+function detectForeignCollector(): ForeignCollector | null {
+  if (platform() !== 'darwin' && platform() !== 'linux') return null;
+
+  // lsof is the lowest-friction way to find the listener. -i :PORT, -P avoids
+  // service-name lookup, -n skips DNS, -t prints just the PID.
+  let pidStr: string;
+  try {
+    pidStr = execFileSync('lsof', ['-tnP', '-iTCP:6768', '-sTCP:LISTEN'], {
+      encoding: 'utf-8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+  } catch {
+    // Either lsof isn't installed or nothing's on the port. Either way, no foreign.
+    return null;
+  }
+  if (!pidStr) return null;
+
+  // Multiple PIDs is unexpected — treat the first as canonical.
+  const pid = parseInt(pidStr.split('\n')[0] ?? '', 10);
+  if (!Number.isFinite(pid)) return null;
+
+  // If the listener is OUR launchd service, it's not foreign — it's ourselves.
+  // launchctl reports the PID for the label when the service is running.
+  try {
+    const out = execFileSync('launchctl', ['list', LAUNCHD_LABEL], { encoding: 'utf-8' });
+    const launchdPidMatch = out.match(/"PID"\s*=\s*(\d+)/);
+    if (launchdPidMatch && parseInt(launchdPidMatch[1], 10) === pid) {
+      return null;
+    }
+  } catch {
+    /* not registered with launchd → definitely foreign */
+  }
+
+  // Identify the source by ps. Plugin-embedded collectors have the path
+  // `@runtimescope/mcp-server` in their argv (the plugin's .mcp.json runs
+  // `npx -y @runtimescope/mcp-server@latest`).
+  let source: ForeignCollector['source'] = 'unknown';
+  try {
+    const cmd = execFileSync('ps', ['-o', 'command=', '-p', String(pid)], {
+      encoding: 'utf-8',
+    }).trim();
+    if (cmd.includes('@runtimescope/mcp-server') || cmd.includes('mcp-server/dist')) {
+      source = 'plugin-embedded';
+    } else if (cmd.includes('runtimescope-collector') || cmd.includes('collector/dist/standalone')) {
+      source = 'standalone';
+    }
+  } catch {
+    /* ps unavailable or process gone */
+  }
+
+  return { pid, source };
+}
+
+// ---------- Post-install: poll /readyz until the collector responds ----------
+
+/**
+ * After loading the launchd plist or starting the systemd unit, the service
+ * manager reports "started" instantly — but the collector itself might crash
+ * milliseconds later (most commonly EADDRINUSE if a foreign collector raced
+ * us, or a node version incompatibility). Poll /readyz to confirm the
+ * collector is actually serving traffic before we declare success.
+ *
+ * Returns true if the collector responded healthy within the deadline.
+ */
+async function waitForCollectorReady(timeoutMs: number = 5000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    try {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 500);
+      const res = await fetch('http://127.0.0.1:6768/readyz', {
+        signal: controller.signal,
+      });
+      clearTimeout(timer);
+      if (res.ok) return true;
+    } catch {
+      /* keep polling */
+    }
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  return false;
+}
+
+/** Print the last `lines` of stderr log so users can see why it failed. */
+function tailStderrLog(lines: number = 20): void {
+  if (!existsSync(STDERR_LOG)) {
+    info('No stderr log yet — service may not have started at all.');
+    return;
+  }
+  try {
+    const out = execFileSync('tail', ['-n', String(lines), STDERR_LOG], {
+      encoding: 'utf-8',
+    });
+    if (out.trim()) {
+      log('');
+      log(`  ${DIM}Last ${lines} lines of ${STDERR_LOG}:${RESET}`);
+      log('');
+      for (const line of out.split('\n')) {
+        if (line) log(`  ${DIM}│${RESET} ${line}`);
+      }
+    } else {
+      info('Log is empty — collector may have exited before writing anything.');
+    }
+  } catch {
+    info('Could not read stderr log.');
+  }
+}
+
 // ---------- launchd (macOS) ----------
 
 function buildLaunchdPlist(nodePath: string, collectorPath: string): string {
@@ -222,7 +402,7 @@ function buildLaunchdPlist(nodePath: string, collectorPath: string): string {
 `;
 }
 
-function installLaunchd(): void {
+async function installLaunchd(): Promise<void> {
   const nodePath = process.execPath;
   const collectorPath = resolveCollectorPath();
 
@@ -243,10 +423,27 @@ function installLaunchd(): void {
   success(`Wrote ${LAUNCHD_PLIST}`);
 
   execFileSync('launchctl', ['load', '-w', LAUNCHD_PLIST]);
-  success('Service loaded and started');
   info(`  Node:      ${nodePath}`);
   info(`  Collector: ${collectorPath}`);
   info(`  Logs:      ${LOGS_DIR}`);
+
+  // launchctl returns success the moment the plist is loaded, but the
+  // collector hasn't actually bound its ports yet. Poll /readyz so we report
+  // the real state to the user — and tail the log if it never comes up.
+  log('');
+  info('Waiting for collector to come up…');
+  const ready = await waitForCollectorReady(5000);
+  if (ready) {
+    success('Collector is healthy and serving on http://127.0.0.1:6768');
+  } else {
+    err('Collector did not respond on /readyz within 5s.');
+    tailStderrLog(20);
+    log('');
+    info('Common causes:');
+    info('  - Another process is holding port 6767 or 6768 (run: runtimescope service status)');
+    info('  - Node version mismatch (collector targets node 20+)');
+    info('  - Crash on startup (the log above should show the stack)');
+  }
 }
 
 function uninstallLaunchd(): void {
@@ -332,7 +529,7 @@ WantedBy=default.target
 `;
 }
 
-function installSystemd(): void {
+async function installSystemd(): Promise<void> {
   const nodePath = process.execPath;
   const collectorPath = resolveCollectorPath();
 
@@ -345,10 +542,27 @@ function installSystemd(): void {
 
   execFileSync('systemctl', ['--user', 'daemon-reload']);
   execFileSync('systemctl', ['--user', 'enable', '--now', 'runtimescope.service']);
-  success('Service enabled and started');
   info(`  Node:      ${nodePath}`);
   info(`  Collector: ${collectorPath}`);
-  info('');
+
+  // systemctl returns once the unit is started — same readiness gap as
+  // launchd. Poll /readyz before declaring success.
+  log('');
+  info('Waiting for collector to come up…');
+  const ready = await waitForCollectorReady(5000);
+  if (ready) {
+    success('Collector is healthy and serving on http://127.0.0.1:6768');
+  } else {
+    err('Collector did not respond on /readyz within 5s.');
+    log('');
+    info(`Tail the journal: ${CYAN}journalctl --user -u runtimescope.service -n 20${RESET}`);
+    log('');
+    info('Common causes:');
+    info('  - Another process is holding port 6767 or 6768');
+    info('  - Node version mismatch (collector targets node 20+)');
+  }
+
+  log('');
   info('Optional: keep running when you log out (always-on):');
   info(`  sudo loginctl enable-linger $USER`);
 }
@@ -490,8 +704,8 @@ async function updateService(): Promise<void> {
 
   // Regenerate plist/unit (paths may have changed when Node version changed etc.)
   info('Regenerating service configuration with current paths…');
-  if (os === 'darwin') installLaunchd();
-  else installSystemd();
+  if (os === 'darwin') await installLaunchd();
+  else await installSystemd();
 
   // Already restarted as part of install, but double-check health
   log('');
@@ -565,8 +779,37 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       log('');
       log(`  ${BOLD}Installing RuntimeScope as a background service…${RESET}`);
       log('');
-      if (os === 'darwin') installLaunchd();
-      else installSystemd();
+
+      // Detect a foreign collector before we touch the service manager.
+      // Continuing past this would just trade one EADDRINUSE for another,
+      // so name the conflict and the fix instead of letting the user
+      // discover it via mysterious "service installed but not responding".
+      const foreign = detectForeignCollector();
+      if (foreign) {
+        warn(`Collector already running on :6768 (PID ${foreign.pid}, not owned by launchd)`);
+        log('');
+        if (foreign.source === 'plugin-embedded') {
+          info('This is the Claude Code plugin\'s embedded collector. To free the port:');
+          info('  1. Quit Claude Code (the plugin\'s collector exits with it)');
+          info('  2. Re-run: runtimescope service install');
+          info('  3. Restart Claude Code — the plugin will detect the launchd service and yield');
+        } else if (foreign.source === 'standalone') {
+          info('A standalone collector is already running. To free the port:');
+          info(`  kill ${foreign.pid}`);
+          info('  Then re-run: runtimescope service install');
+        } else {
+          info(`Some process (PID ${foreign.pid}) is holding the port. To inspect:`);
+          info(`  ps -o command= -p ${foreign.pid}`);
+          info(`  Then either kill it or stop the program that started it, then re-run install.`);
+        }
+        log('');
+        info('Install aborted.');
+        log('');
+        process.exit(1);
+      }
+
+      if (os === 'darwin') await installLaunchd();
+      else await installSystemd();
       log('');
       log('  The collector will now start automatically on login and');
       log('  restart if it crashes. Check status with:');

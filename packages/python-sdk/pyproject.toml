@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "runtimescope"
-version = "0.10.3"
+version = "0.10.4"
 description = "RuntimeScope SDK for Python — runtime profiling and telemetry for Django, Flask, FastAPI, and any Python app"
 readme = "README.md"
 requires-python = ">=3.8"

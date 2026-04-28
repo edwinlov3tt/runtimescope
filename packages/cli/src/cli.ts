@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, resolve, basename } from 'node:path';
 import { execSync, spawn, execFileSync } from 'node:child_process';
 import { createInterface } from 'node:readline';
+import { createRequire } from 'node:module';
 
 // ── Helpers ──────────────────────────────────────────────────
 
@@ -637,6 +638,7 @@ function printHelp() {
   log(`    ${BOLD}status${RESET}        Show collector health and connected projects`);
   log(`    ${BOLD}doctor${RESET}        Diagnose common problems and suggest fixes`);
   log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/logs)`);
+  log(`    ${BOLD}--version${RESET}     Print the installed CLI version and exit`);
   log(`    ${DIM}(no args)${RESET}     Start the collector (same as ${BOLD}start${RESET})`);
   log('');
   log(`  ${BOLD}Packages:${RESET}`);
@@ -648,6 +650,38 @@ function printHelp() {
 // ── Main ─────────────────────────────────────────────────────
 
 const command = process.argv[2];
+
+function printVersion() {
+  // Version comes from the runtimescope package.json that ships with the
+  // CLI. POSIX-shaped CLIs need a --version flag because every which-style
+  // wrapper, package manager, and "what's installed?" diagnostic looks for
+  // it. Without this, scripts can't tell what they're running against.
+  try {
+    const require = createRequire(import.meta.url);
+    const pkg = require('runtimescope/package.json') as { version?: string };
+    if (pkg.version) {
+      console.log(pkg.version);
+      return;
+    }
+  } catch {
+    /* fall through to monorepo lookup */
+  }
+  // Monorepo: read the local package.json
+  try {
+    const cliPath = new URL(import.meta.url).pathname;
+    const packageJson = resolve(cliPath, '..', '..', 'package.json');
+    if (existsSync(packageJson)) {
+      const pkg = JSON.parse(readFileSync(packageJson, 'utf-8')) as { version?: string };
+      if (pkg.version) {
+        console.log(pkg.version);
+        return;
+      }
+    }
+  } catch {
+    /* give up */
+  }
+  console.log('unknown');
+}
 
 switch (command) {
   case 'init':
@@ -676,6 +710,11 @@ switch (command) {
   case '--help':
   case '-h':
     printHelp();
+    break;
+  case 'version':
+  case '--version':
+  case '-v':
+    printVersion();
     break;
   default:
     if (command && !command.startsWith('-')) {

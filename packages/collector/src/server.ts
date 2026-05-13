@@ -86,6 +86,13 @@ export class CollectorServer {
   private pendingHandshakes: Set<WebSocket> = new Set();
   private pendingCommands: Map<string, PendingCommand> = new Map();
   private sqliteStores: Map<string, SqliteStore> = new Map();
+  // Per-project last-access timestamps for the SQLite stores. Used by the
+  // LRU eviction timer to close handles for projects that haven't been read
+  // from or written to recently — without this, every project ever seen
+  // keeps its WAL handle + ~2-3MB page cache open forever, which on a
+  // 40-project machine adds up to ~100MB of permanently-allocated baseline
+  // RSS. ensureSqliteStore() updates this on every access.
+  private sqliteStoreLastAccess: Map<string, number> = new Map();
   private wals: Map<string, Wal> = new Map();
   private ready = false;
   private metrics: MetricsRegistry = new MetricsRegistry();
@@ -100,6 +107,7 @@ export class CollectorServer {
   private disconnectCallbacks: ((sessionId: string, projectName: string, projectId?: string) => void)[] = [];
   private pruneTimer: ReturnType<typeof setInterval> | null = null;
   private heartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  private sqliteEvictTimer: ReturnType<typeof setInterval> | null = null;
   private tlsConfig: TlsConfig | null = null;
   private pmStore: PmStoreLike | null = null;
 
@@ -350,7 +358,71 @@ export class CollectorServer {
     }
     this.ready = true;
 
+    // Start the idle-store eviction timer. Without this, every project ever
+    // touched keeps its SQLite handle (page cache + WAL pointer ~ 2-3MB) open
+    // for the life of the process. On the user's machine — 44 historical
+    // projects — that's ~100MB of permanently allocated RSS.
+    this.startSqliteEvictionTimer();
+
     return this.tryStart(port, host, maxRetries, retryDelayMs, tls);
+  }
+
+  /**
+   * Close SQLite stores that haven't been accessed in IDLE_TIMEOUT_MS. Any
+   * subsequent `ensureSqliteStore(name)` call will transparently re-open the
+   * store from disk, so eviction is invisible to callers — they just see a
+   * brief warm-up the next time they touch a project.
+   *
+   * We deliberately do NOT evict stores belonging to currently-connected
+   * SDK clients, since those are guaranteed to write again soon and closing
+   * + reopening on every event would be expensive.
+   */
+  private startSqliteEvictionTimer(): void {
+    if (this.sqliteEvictTimer) return;
+    // Overridable via env so the memory-leak stress test can drive eviction
+    // on a much tighter cycle than the 5-minute production default.
+    const IDLE_TIMEOUT_MS = parseInt(
+      process.env.RUNTIMESCOPE_SQLITE_IDLE_MS ?? String(5 * 60 * 1000),
+      10,
+    );
+    const SWEEP_INTERVAL_MS = parseInt(
+      process.env.RUNTIMESCOPE_SQLITE_SWEEP_MS ?? String(60 * 1000),
+      10,
+    );
+    this.sqliteEvictTimer = setInterval(() => {
+      const now = Date.now();
+      // Build the set of project names with at least one live WS client so
+      // we never evict a store that's about to be written to.
+      const liveProjects = new Set<string>();
+      for (const info of this.clients.values()) {
+        liveProjects.add(info.projectName);
+      }
+
+      for (const [projectName, store] of this.sqliteStores) {
+        if (liveProjects.has(projectName)) continue;
+        const lastAccess = this.sqliteStoreLastAccess.get(projectName) ?? 0;
+        if (now - lastAccess < IDLE_TIMEOUT_MS) continue;
+        try {
+          store.close();
+        } catch (e) {
+          console.error(
+            `[RuntimeScope] Failed to close idle SQLite store "${projectName}":`,
+            (e as Error).message,
+          );
+          continue;
+        }
+        this.sqliteStores.delete(projectName);
+        this.sqliteStoreLastAccess.delete(projectName);
+        // The EventStore's `currentProject` pointer may still reference this
+        // store. Clear it so the store doesn't get a stale handle on the
+        // next event. EventStore.ensureSqliteStore() is called on every
+        // event ingest and will recreate the binding.
+        this.store.clearSqliteStoreIfMatches(projectName);
+      }
+    }, SWEEP_INTERVAL_MS);
+    // Don't keep the event loop alive for this alone — if everything else
+    // exits, the process should too.
+    this.sqliteEvictTimer.unref?.();
   }
 
   /**
@@ -490,6 +562,10 @@ export class CollectorServer {
   private ensureSqliteStore(projectName: string): SqliteStore | null {
     if (!this.projectManager) return null;
     if (!isSqliteAvailable()) return null;
+
+    // Touch the access time even on hits so idle eviction below treats this
+    // project as recently used.
+    this.sqliteStoreLastAccess.set(projectName, Date.now());
 
     let sqliteStore = this.sqliteStores.get(projectName);
     if (!sqliteStore) {
@@ -961,6 +1037,12 @@ export class CollectorServer {
     if (this.pruneTimer) {
       clearInterval(this.pruneTimer);
       this.pruneTimer = null;
+    }
+
+    // Stop idle SQLite store eviction
+    if (this.sqliteEvictTimer) {
+      clearInterval(this.sqliteEvictTimer);
+      this.sqliteEvictTimer = null;
     }
 
     // Notify connected SDKs that the server is restarting — SDK resets backoff for fast reconnect

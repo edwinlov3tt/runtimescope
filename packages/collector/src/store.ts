@@ -72,6 +72,19 @@ export class EventStore {
   }
 
   /**
+   * Drop the SQLite pointer if it matches the given project. Called by the
+   * collector's idle-store eviction timer so the store doesn't try to write
+   * through a closed handle after eviction. The next `setSqliteStore` (from
+   * the next event for this project) restores the binding.
+   */
+  clearSqliteStoreIfMatches(project: string): void {
+    if (this.currentProject === project) {
+      this.sqliteStore = null;
+      this.currentProject = null;
+    }
+  }
+
+  /**
    * Pre-load recent events from a SqliteStore into the in-memory ring buffer.
    * Used at collector startup to make MCP tools immediately useful after a
    * restart — without this, the buffer is empty until the SDK reconnects and

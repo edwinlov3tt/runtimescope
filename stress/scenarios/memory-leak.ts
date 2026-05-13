@@ -36,7 +36,14 @@ async function rssMb(pid: number): Promise<number> {
 }
 
 export async function memoryLeak(checks: CheckCollector): Promise<void> {
-  const collector = await spawnCollector({ bufferSize: 10_000 });
+  // Tight eviction window so the per-project SQLite store handles get
+  // closed during the test instead of after the 5-minute production
+  // default. Without this, the test can't observe the LRU eviction fix.
+  const collector = await spawnCollector({
+    bufferSize: 10_000,
+    sqliteIdleMs: 1_000,
+    sqliteSweepMs: 500,
+  });
   try {
     await collector.ready();
     const pid = collector.proc.pid!;
@@ -59,8 +66,10 @@ export async function memoryLeak(checks: CheckCollector): Promise<void> {
       await driver.flush();
       await driver.close();
 
-      // Let the collector drain + GC settle.
-      await new Promise((r) => setTimeout(r, 250));
+      // Wait past the idle threshold so this cycle's store gets evicted
+      // before we sample. Without this, every cycle's handle is still open
+      // and the growth measurement reflects pre-fix behaviour.
+      await new Promise((r) => setTimeout(r, 1_500));
 
       const rss = await rssMb(pid);
       samples.push(rss);
@@ -74,10 +83,19 @@ export async function memoryLeak(checks: CheckCollector): Promise<void> {
       `RSS samples (MB) across ${CYCLES} cycles: ${samples.join(' → ')}`,
       true,
     );
+    // Pre-fix this was 49% — a hair under the 50% gate, hiding a real
+    // per-project handle leak. With LRU eviction in place, observed
+    // growth is ~28-36% depending on whether earlier scenarios warmed
+    // V8's heap in this process (the harness runs scenarios sequentially
+    // in the same node process, so memory-leak after framework-smoke
+    // sees a hotter starting baseline than memory-leak in isolation).
+    // The 40% gate still catches a real regression to per-project-
+    // permanent handles (which trips at ≥47%) without flaking on
+    // V8/SQLite hygiene noise.
     checks.leq(
       `heap growth from cycle 1 to ${CYCLES}`,
       growth,
-      50,
+      40,
       '%',
     );
 

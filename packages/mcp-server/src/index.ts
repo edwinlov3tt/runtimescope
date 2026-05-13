@@ -129,15 +129,61 @@ async function detectExistingCollector(httpPort: number): Promise<boolean> {
 }
 
 async function main() {
-  // Install global crash resilience — every uncaught error is logged to stderr
-  // (never stdout, which is reserved for the JSON-RPC stream) and the process
-  // keeps running. Without this, a single bug in any handler kills the MCP
-  // server and Claude Code sees every tool call fail until restart.
+  // ─────────────────────────────────────────────────────────────────────
+  // Parent-death watchdog
+  //
+  // When Claude Code (or whoever spawned us) exits, our stdin gets closed.
+  // Without this handler we get reparented to init, lose every IPC channel,
+  // and continue running forever — sometimes pegged at 80%+ CPU because
+  // some async task throws against a closed stderr and our uncaughtException
+  // handler keeps re-firing in a tight loop. Observed in prod: a single
+  // user accumulated 7 orphans, the oldest with 39h of CPU time burned.
+  //
+  // stdin.on('end') fires when the parent closes the read end of the pipe.
+  // stdin.on('error') fires for EPIPE / EBADF when the parent already died.
+  // Either way, we exit cleanly with code 0 so launchd/init don't restart us.
+  // ─────────────────────────────────────────────────────────────────────
+  process.stdin.on('end', () => process.exit(0));
+  process.stdin.on('error', () => process.exit(0));
+  // Resume stdin so 'end' actually fires. The MCP SDK's StdioServerTransport
+  // does this internally, but we install our handler BEFORE the transport
+  // connects (way down in main()), so we need to nudge it ourselves.
+  process.stdin.resume();
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Crash resilience
+  //
+  // Every uncaught error is logged to stderr (never stdout — that's the
+  // JSON-RPC stream) and the process keeps running so a single bug in a
+  // tool handler doesn't take down all 55 tools.
+  //
+  // CRITICAL: stderr writes can themselves throw EPIPE if the parent died
+  // before we noticed. If we naively `console.error(...)` from inside the
+  // uncaughtException handler, that throw lands right back in the same
+  // handler, creating a tight error→log→error loop that burns CPU forever.
+  // safelyWriteStderr() guards every write — and if stderr is unusable we
+  // exit, because there's nothing left to log to anyway.
+  // ─────────────────────────────────────────────────────────────────────
+  const safelyWriteStderr = (message: string): void => {
+    try {
+      if (!process.stderr.writable) {
+        process.exit(1);
+        return;
+      }
+      process.stderr.write(message + '\n');
+    } catch {
+      // stderr broken (parent died, pipe closed). No way to surface this —
+      // just exit instead of looping forever.
+      process.exit(1);
+    }
+  };
   process.on('uncaughtException', (err) => {
-    console.error('[RuntimeScope] uncaughtException:', err instanceof Error ? err.stack ?? err.message : err);
+    safelyWriteStderr(
+      `[RuntimeScope] uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+    );
   });
   process.on('unhandledRejection', (reason) => {
-    console.error('[RuntimeScope] unhandledRejection:', reason);
+    safelyWriteStderr(`[RuntimeScope] unhandledRejection: ${String(reason)}`);
   });
 
   // 1. Initialize project management

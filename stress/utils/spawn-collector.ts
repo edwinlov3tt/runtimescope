@@ -41,7 +41,15 @@ async function nextFreePair(): Promise<[number, number]> {
 }
 
 export async function spawnCollector(
-  options: { otelEndpoint?: string; bufferSize?: number } = {},
+  options: {
+    otelEndpoint?: string;
+    bufferSize?: number;
+    /** Override the SQLite idle-eviction timeout (ms). Used by the
+     *  memory-leak scenario to drive eviction on a 1-second window
+     *  instead of the 5-minute production default. */
+    sqliteIdleMs?: number;
+    sqliteSweepMs?: number;
+  } = {},
 ): Promise<SpawnedCollector> {
   const [wsPort, httpPort] = await nextFreePair();
   const rootDir = mkdtempSync(join(tmpdir(), 'rs-stress-'));
@@ -54,6 +62,12 @@ export async function spawnCollector(
   };
   if (options.otelEndpoint) env.RUNTIMESCOPE_OTEL_ENDPOINT = options.otelEndpoint;
   if (options.bufferSize) env.RUNTIMESCOPE_BUFFER_SIZE = String(options.bufferSize);
+  if (options.sqliteIdleMs !== undefined) {
+    env.RUNTIMESCOPE_SQLITE_IDLE_MS = String(options.sqliteIdleMs);
+  }
+  if (options.sqliteSweepMs !== undefined) {
+    env.RUNTIMESCOPE_SQLITE_SWEEP_MS = String(options.sqliteSweepMs);
+  }
 
   const distPath = join(
     new URL('.', import.meta.url).pathname,

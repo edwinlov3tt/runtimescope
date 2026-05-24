@@ -20,6 +20,15 @@ jobs:
       # Build extension first — mcp-server's tsup config bundles
       # @runtimescope/extension via noExternal, so its dist/ must exist.
       - run: npm run build -w packages/extension
+      # Build the dashboard BEFORE the collector — the collector's tsup
+      # config has an onSuccess hook that copies packages/dashboard/dist/
+      # into packages/collector/dist/dashboard-assets/ so the /dashboard
+      # SPA ships inside the @runtimescope/collector npm package. If the
+      # dashboard hasn't been built when the collector builds, the copy
+      # silently no-ops with a warning that nobody sees in CI logs —
+      # which is exactly what happened in v0.10.10 (dashboard route 404'd
+      # because the assets were missing from the published tarball).
+      - run: npm run build -w packages/dashboard
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk -w packages/collector -w packages/mcp-server
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite
       - run: npm test

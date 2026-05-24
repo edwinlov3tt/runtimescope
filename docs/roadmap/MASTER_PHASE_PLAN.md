@@ -229,6 +229,10 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 - **Workspace-key authentication, multi-tenant routing, etc.** — out of scope for the Rust port; revisit only after v0.13.0 ships.
 - **Data migration from v0.10.x to v0.12.x.** Explicitly accepted as data loss per ADR-0002. Revisit only when there's a second user.
 
+## Proposed but not yet scheduled
+
+- **Switch internal monorepo tooling from npm to pnpm.** Captured as [ADR-0005 (Proposed)](../decisions/0005-pnpm-over-npm-for-internal-tooling.md). Trigger: early Phase Rust-Collector when the Node collector is days from retirement. Not acted on until then.
+
 ## Revision policy
 
 This file changes when:

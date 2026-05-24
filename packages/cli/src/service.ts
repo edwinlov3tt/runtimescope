@@ -450,7 +450,7 @@ async function installLaunchd(): Promise<void> {
   // the real state to the user — and tail the log if it never comes up.
   log('');
   info('Waiting for collector to come up…');
-  const READYZ_TIMEOUT_MS = 30000;
+  const READYZ_TIMEOUT_MS = 60000;
   const ready = await waitForCollectorReady(READYZ_TIMEOUT_MS);
   if (ready) {
     success('Collector is healthy and serving on http://127.0.0.1:6768');
@@ -568,7 +568,7 @@ async function installSystemd(): Promise<void> {
   // launchd. Poll /readyz before declaring success.
   log('');
   info('Waiting for collector to come up…');
-  const READYZ_TIMEOUT_MS = 30000;
+  const READYZ_TIMEOUT_MS = 60000;
   const ready = await waitForCollectorReady(READYZ_TIMEOUT_MS);
   if (ready) {
     success('Collector is healthy and serving on http://127.0.0.1:6768');

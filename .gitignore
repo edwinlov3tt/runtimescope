@@ -2,6 +2,15 @@ node_modules/
 dist/
 *.tsbuildinfo
 .DS_Store
-docs/
 *.zip
 .playwright-mcp/
+
+# docs/ used to be globally ignored. Now we maintain a phased-work docs
+# convention (ADRs, audits, phase reports, handoffs, etc.) per mc-v2's
+# pattern. The structured files are tracked; large/sensitive artifacts
+# stay ignored explicitly:
+docs/transcripts/
+docs/ui-update/
+docs/.demo-data/
+docs/.DS_Store
+**/.DS_Store

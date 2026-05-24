@@ -315,7 +315,7 @@ function detectForeignCollector(): ForeignCollector | null {
  *
  * Returns true if the collector responded healthy within the deadline.
  */
-async function waitForCollectorReady(timeoutMs: number = 5000): Promise<boolean> {
+async function waitForCollectorReady(timeoutMs: number = 30000): Promise<boolean> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
     try {
@@ -450,7 +450,7 @@ async function installLaunchd(): Promise<void> {
   // the real state to the user — and tail the log if it never comes up.
   log('');
   info('Waiting for collector to come up…');
-  const ready = await waitForCollectorReady(5000);
+  const ready = await waitForCollectorReady(30000);
   if (ready) {
     success('Collector is healthy and serving on http://127.0.0.1:6768');
   } else {
@@ -567,7 +567,7 @@ async function installSystemd(): Promise<void> {
   // launchd. Poll /readyz before declaring success.
   log('');
   info('Waiting for collector to come up…');
-  const ready = await waitForCollectorReady(5000);
+  const ready = await waitForCollectorReady(30000);
   if (ready) {
     success('Collector is healthy and serving on http://127.0.0.1:6768');
   } else {

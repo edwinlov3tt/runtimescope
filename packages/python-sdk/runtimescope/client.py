@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Optional
 from .dsn import ParsedDsn, parse_dsn
 from .transport import HttpTransport, now_ms
 
-SDK_VERSION = "0.10.9"
+SDK_VERSION = "0.10.10"
 
 _log = logging.getLogger("runtimescope")
 

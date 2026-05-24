@@ -593,6 +593,31 @@ export class HttpServer {
     return null;
   }
 
+  /**
+   * Resolve the directory containing the built dashboard SPA. The tsup
+   * onSuccess hook copies packages/dashboard/dist/ into the collector's
+   * dist/dashboard-assets/ so the dashboard ships inside the @runtimescope/
+   * collector npm package. Cached after first resolution.
+   */
+  private dashboardAssetsRoot: string | null = null;
+  private resolveDashboardAssets(): string | null {
+    if (this.dashboardAssetsRoot) return this.dashboardAssetsRoot;
+
+    const __dir = dirname(fileURLToPath(import.meta.url));
+    const candidates = [
+      resolve(__dir, 'dashboard-assets'),                    // npm published: dist/dashboard-assets/
+      resolve(__dir, '../../dashboard/dist'),                // monorepo dev: sibling package
+    ];
+
+    for (const p of candidates) {
+      if (existsSync(resolve(p, 'index.html'))) {
+        this.dashboardAssetsRoot = p;
+        return p;
+      }
+    }
+    return null;
+  }
+
   getPort(): number {
     return this.activePort;
   }
@@ -812,7 +837,10 @@ export class HttpServer {
       || url.pathname === '/readyz'
       || url.pathname === '/metrics'
       || url.pathname === '/runtimescope.js'
-      || url.pathname === '/snippet';
+      || url.pathname === '/snippet'
+      || url.pathname === '/dashboard'
+      || url.pathname.startsWith('/dashboard/')
+      || url.pathname.startsWith('/assets/');
 
     // Resolve caller identity:
     //   isAdmin    → global AuthManager token, OR auth disabled (local trust mode)
@@ -863,6 +891,70 @@ export class HttpServer {
         res.writeHead(404, { 'Content-Type': 'text/plain' });
         res.end('SDK bundle not found. Run: npm run build -w packages/sdk');
       }
+      return;
+    }
+
+    // Serve the static dashboard SPA at /dashboard. The built bundle is
+    // copied into dist/dashboard-assets/ by the collector's tsup config
+    // (onSuccess hook). We also serve /assets/* because Vite emits asset
+    // paths as absolute (e.g., /assets/index-XYZ.js inside index.html);
+    // changing that would require a Vite base-path rebuild which we don't
+    // need. Path traversal protection: URL normalization happens before
+    // routing, so /dashboard/../../etc/passwd resolves to /etc/passwd and
+    // doesn't even match this branch.
+    const isDashboardRoute = url.pathname === '/dashboard' || url.pathname.startsWith('/dashboard/');
+    const isAssetRoute = url.pathname.startsWith('/assets/');
+    if (req.method === 'GET' && (isDashboardRoute || isAssetRoute)) {
+      const assetsRoot = this.resolveDashboardAssets();
+      if (!assetsRoot) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Dashboard assets not found. Run: npm run build -w packages/dashboard');
+        return;
+      }
+      // Map URL → relative path inside dashboard-assets:
+      //   /dashboard, /dashboard/         → index.html
+      //   /dashboard/<route>              → <route> (SPA falls back to index.html below)
+      //   /assets/<name>                  → assets/<name>
+      const relativePath = isAssetRoute
+        ? url.pathname.slice(1) // strip leading /
+        : url.pathname === '/dashboard' || url.pathname === '/dashboard/'
+          ? 'index.html'
+          : url.pathname.slice('/dashboard/'.length);
+      const filePath = resolve(assetsRoot, relativePath);
+      // Asset request (has an extension) → serve as-is or 404.
+      // SPA route (no extension) → fall back to index.html for client-side routing.
+      const hasExtension = /\.[a-zA-Z0-9]+$/.test(relativePath);
+      const targetPath = existsSync(filePath)
+        ? filePath
+        : hasExtension || isAssetRoute
+          ? null
+          : resolve(assetsRoot, 'index.html');
+      if (!targetPath || !existsSync(targetPath)) {
+        res.writeHead(404, { 'Content-Type': 'text/plain' });
+        res.end('Not found');
+        return;
+      }
+      const ext = targetPath.slice(targetPath.lastIndexOf('.')).toLowerCase();
+      const contentType =
+        ext === '.html' ? 'text/html; charset=utf-8' :
+        ext === '.js' ? 'application/javascript; charset=utf-8' :
+        ext === '.mjs' ? 'application/javascript; charset=utf-8' :
+        ext === '.css' ? 'text/css; charset=utf-8' :
+        ext === '.json' ? 'application/json; charset=utf-8' :
+        ext === '.svg' ? 'image/svg+xml' :
+        ext === '.png' ? 'image/png' :
+        ext === '.jpg' || ext === '.jpeg' ? 'image/jpeg' :
+        ext === '.ico' ? 'image/x-icon' :
+        ext === '.woff' ? 'font/woff' :
+        ext === '.woff2' ? 'font/woff2' :
+        'application/octet-stream';
+      // Hashed Vite assets are cache-forever; index.html is no-cache so the
+      // SPA picks up new builds on next reload.
+      const cacheControl = targetPath.endsWith('index.html') || targetPath.endsWith('/index.html')
+        ? 'no-cache'
+        : 'public, max-age=31536000, immutable';
+      res.writeHead(200, { 'Content-Type': contentType, 'Cache-Control': cacheControl });
+      res.end(readFileSync(targetPath));
       return;
     }
 

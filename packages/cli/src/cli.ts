@@ -840,6 +840,7 @@ function printHelp() {
   log(`    ${BOLD}status${RESET}        Show collector health and connected projects`);
   log(`    ${BOLD}doctor${RESET}        Diagnose common problems and suggest fixes`);
   log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/logs)`);
+  log(`    ${BOLD}dashboard${RESET}     Open the dashboard in your browser (use ${DIM}--network${RESET} for LAN URL)`);
   log(`    ${BOLD}mcp doctor${RESET}    Diagnose why Claude Code can't connect to the runtimescope MCP`);
   log(`    ${BOLD}--version${RESET}     Print the installed CLI version and exit`);
   log(`    ${DIM}(no args)${RESET}     Start the collector (same as ${BOLD}start${RESET})`);
@@ -906,6 +907,12 @@ switch (command) {
     // Lazy-load so the CLI stays fast for non-service commands
     import('./service.js').then(({ serviceCommand }) =>
       serviceCommand(process.argv[3]),
+    ).catch((e) => { err(e.message); process.exit(1); });
+    break;
+  }
+  case 'dashboard': {
+    import('./dashboard-cmd.js').then(({ dashboardCommand }) =>
+      dashboardCommand(process.argv.slice(3)),
     ).catch((e) => { err(e.message); process.exit(1); });
     break;
   }

@@ -34,6 +34,7 @@ export {
 } from './otel-exporter.js';
 export type { OtelExporterOptions } from './otel-exporter.js';
 export { isSqliteAvailable } from './sqlite-check.js';
+export { safeLog } from './log.js';
 export { AuthManager, generateApiKey } from './auth.js';
 export type { ApiKeyEntry, AuthConfig } from './auth.js';
 export { SessionRateLimiter } from './rate-limiter.js';

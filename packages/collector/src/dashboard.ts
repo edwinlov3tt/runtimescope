@@ -18,6 +18,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { safeLog } from './log.js';
 
 const __dirname = fileURLToPath(new URL('.', import.meta.url));
 // dist/ is at packages/collector/dist/, so repo root is 3 levels up
@@ -46,7 +47,7 @@ async function main(): Promise<void> {
   const children: ChildProcess[] = [];
 
   const cleanup = () => {
-    console.error('\n[RuntimeScope] Shutting down...');
+    safeLog.error('\n[RuntimeScope] Shutting down...');
     for (const child of children) {
       try { child.kill('SIGTERM'); } catch { /* already dead */ }
     }
@@ -67,7 +68,7 @@ async function main(): Promise<void> {
       const res = await fetch(`http://127.0.0.1:${MCP_HTTP_PORT}/api/health`);
       const data = await res.json() as { status?: string };
       if (data.status === 'ok') {
-        console.error(`[RuntimeScope] MCP server detected on :${MCP_HTTP_PORT}`);
+        safeLog.error(`[RuntimeScope] MCP server detected on :${MCP_HTTP_PORT}`);
         collectorHttpPort = MCP_HTTP_PORT;
         collectorWsPort = MCP_WS_PORT;
       } else {
@@ -75,7 +76,7 @@ async function main(): Promise<void> {
       }
     } catch {
       // Port 6768 is in use but not by RuntimeScope — use fallback
-      console.error(`[RuntimeScope] Port ${MCP_HTTP_PORT} in use (not RuntimeScope) — using fallback ports`);
+      safeLog.error(`[RuntimeScope] Port ${MCP_HTTP_PORT} in use (not RuntimeScope) — using fallback ports`);
       collectorHttpPort = FALLBACK_HTTP_PORT;
       collectorWsPort = FALLBACK_WS_PORT;
     }
@@ -91,11 +92,11 @@ async function main(): Promise<void> {
   if (needsCollector) {
     const standalonePath = join(__dirname, 'standalone.js');
     if (!existsSync(standalonePath)) {
-      console.error('[RuntimeScope] Error: standalone.js not found. Run `npm run build -w packages/collector` first.');
+      safeLog.error('[RuntimeScope] Error: standalone.js not found. Run `npm run build -w packages/collector` first.');
       process.exit(1);
     }
 
-    console.error(`[RuntimeScope] Starting collector on ws://:${collectorWsPort} + http://:${collectorHttpPort}...`);
+    safeLog.error(`[RuntimeScope] Starting collector on ws://:${collectorWsPort} + http://:${collectorHttpPort}...`);
 
     collectorProcess = spawn('node', [standalonePath], {
       env: {
@@ -121,29 +122,29 @@ async function main(): Promise<void> {
   try {
     const res = await fetch(`http://127.0.0.1:${collectorHttpPort}/api/health`);
     const data = await res.json() as { status?: string; sessions?: number };
-    console.error(`[RuntimeScope] Collector ready (${data.sessions ?? 0} sessions)`);
+    safeLog.error(`[RuntimeScope] Collector ready (${data.sessions ?? 0} sessions)`);
   } catch {
-    console.error(`[RuntimeScope] Warning: Could not reach collector on :${collectorHttpPort}`);
+    safeLog.error(`[RuntimeScope] Warning: Could not reach collector on :${collectorHttpPort}`);
   }
 
   // 4. Start dashboard
   const dashboardDir = join(REPO_ROOT, 'packages', 'dashboard');
   if (!existsSync(dashboardDir)) {
-    console.error(`[RuntimeScope] Dashboard not found at ${dashboardDir}`);
+    safeLog.error(`[RuntimeScope] Dashboard not found at ${dashboardDir}`);
     process.exit(1);
   }
 
   // Check if port 3200 is free
   const dashboardInUse = await isPortInUse(DASHBOARD_PORT);
   if (dashboardInUse) {
-    console.error(`[RuntimeScope] Dashboard already running on http://localhost:${DASHBOARD_PORT}`);
-    console.error(`[RuntimeScope] Open http://localhost:${DASHBOARD_PORT} in your browser`);
+    safeLog.error(`[RuntimeScope] Dashboard already running on http://localhost:${DASHBOARD_PORT}`);
+    safeLog.error(`[RuntimeScope] Open http://localhost:${DASHBOARD_PORT} in your browser`);
     if (!needsCollector) process.exit(0);
     // Keep running if we started a collector
     return;
   }
 
-  console.error(`[RuntimeScope] Starting dashboard on http://localhost:${DASHBOARD_PORT}...`);
+  safeLog.error(`[RuntimeScope] Starting dashboard on http://localhost:${DASHBOARD_PORT}...`);
 
   const vite = spawn('npx', ['vite', '--port', String(DASHBOARD_PORT)], {
     cwd: dashboardDir,
@@ -167,24 +168,24 @@ async function main(): Promise<void> {
   await new Promise((r) => setTimeout(r, 3000));
 
   // 5. Print summary
-  console.error('');
-  console.error('  ╔══════════════════════════════════════════════╗');
-  console.error('  ║          RuntimeScope Dashboard              ║');
-  console.error('  ╠══════════════════════════════════════════════╣');
-  console.error(`  ║  Dashboard:  http://localhost:${DASHBOARD_PORT}            ║`);
-  console.error(`  ║  Collector:  ws://127.0.0.1:${collectorWsPort}             ║`);
-  console.error(`  ║  HTTP API:   http://127.0.0.1:${collectorHttpPort}           ║`);
-  console.error(`  ║  Source:     ${mcpRunning && collectorHttpPort === MCP_HTTP_PORT ? 'MCP Server (Claude Code)' : 'Standalone Collector  '}  ║`);
-  console.error('  ╚══════════════════════════════════════════════╝');
-  console.error('');
-  console.error('  Press Ctrl+C to stop.');
-  console.error('');
+  safeLog.error('');
+  safeLog.error('  ╔══════════════════════════════════════════════╗');
+  safeLog.error('  ║          RuntimeScope Dashboard              ║');
+  safeLog.error('  ╠══════════════════════════════════════════════╣');
+  safeLog.error(`  ║  Dashboard:  http://localhost:${DASHBOARD_PORT}            ║`);
+  safeLog.error(`  ║  Collector:  ws://127.0.0.1:${collectorWsPort}             ║`);
+  safeLog.error(`  ║  HTTP API:   http://127.0.0.1:${collectorHttpPort}           ║`);
+  safeLog.error(`  ║  Source:     ${mcpRunning && collectorHttpPort === MCP_HTTP_PORT ? 'MCP Server (Claude Code)' : 'Standalone Collector  '}  ║`);
+  safeLog.error('  ╚══════════════════════════════════════════════╝');
+  safeLog.error('');
+  safeLog.error('  Press Ctrl+C to stop.');
+  safeLog.error('');
 
   // Keep alive
   await new Promise(() => {});
 }
 
 main().catch((err) => {
-  console.error('[RuntimeScope] Fatal:', err);
+  safeLog.error('[RuntimeScope] Fatal:', err);
   process.exit(1);
 });

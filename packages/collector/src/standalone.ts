@@ -25,6 +25,7 @@ import { AuthManager } from './auth.js';
 import { Redactor } from './redactor.js';
 import { resolveTlsConfig } from './tls.js';
 import { migrateProjectIds } from './project-config.js';
+import { safeLog } from './log.js';
 
 const HOST = process.env.RUNTIMESCOPE_HOST ?? '127.0.0.1';
 // Same default ports as MCP server — only one should run at a time
@@ -34,7 +35,34 @@ const BUFFER_SIZE = parseInt(process.env.RUNTIMESCOPE_BUFFER_SIZE ?? '10000', 10
 const RETENTION_DAYS = parseInt(process.env.RUNTIMESCOPE_RETENTION_DAYS ?? '30', 10);
 
 async function main() {
-  console.error('[RuntimeScope] Starting standalone collector...');
+  // ─────────────────────────────────────────────────────────────────────
+  // F4: Parent-death watchdog (audit 0001 §F4)
+  //
+  // Mirror the v0.10.8 mcp-server fix for any case where the standalone
+  // is spawned as a child process via stdio pipe. The previous gate
+  // (`!process.stdin.isTTY`) was too aggressive: it fires for
+  // stdio:'ignore' (where stdin is /dev/null) and for launchd/systemd
+  // (which don't manage us via stdin at all). Both saw immediate EOF
+  // on stdin.resume() and exited instantly, breaking the stress
+  // harness and the launchd service.
+  //
+  // The correct discriminator is fstat(0).isSocket() — a piped stdin
+  // from a live parent is a Socket; /dev/null is a character device.
+  // Only install the watchdog in the Socket case.
+  // ─────────────────────────────────────────────────────────────────────
+  try {
+    const { fstatSync } = await import('node:fs');
+    if (fstatSync(0).isSocket()) {
+      process.stdin.on('end', () => process.exit(0));
+      process.stdin.on('error', () => process.exit(0));
+      process.stdin.resume();
+    }
+  } catch {
+    // fstat failed (closed FD, weird sandbox) — skip the watchdog.
+    // Launchd/systemd are unaffected; that's the production case.
+  }
+
+  safeLog.error('[RuntimeScope] Starting standalone collector...');
 
   // 1. Initialize project management + config
   const projectManager = new ProjectManager();
@@ -83,13 +111,13 @@ async function main() {
   if (authManager.isEnabled()) {
     const keyCount = (authFromEnv?.apiKeys?.length ?? globalConfig.auth?.apiKeys?.length ?? 0);
     const source = authFromEnv ? 'env' : 'config';
-    console.error(`[RuntimeScope] Auth enabled (${keyCount} API key${keyCount === 1 ? '' : 's'} from ${source})`);
+    safeLog.error(`[RuntimeScope] Auth enabled (${keyCount} API key${keyCount === 1 ? '' : 's'} from ${source})`);
   }
   if (tlsConfig) {
-    console.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);
+    safeLog.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);
   }
   if (redactor.isEnabled()) {
-    console.error('[RuntimeScope] Payload redaction enabled');
+    safeLog.error('[RuntimeScope] Payload redaction enabled');
   }
 
   // 3. Start collector WebSocket server
@@ -116,7 +144,7 @@ async function main() {
   collector.onDisconnect((sessionId, projectName) => {
     try {
       sessionManager.createSnapshot(sessionId, projectName);
-      console.error(`[RuntimeScope] Session ${sessionId} metrics saved`);
+      safeLog.error(`[RuntimeScope] Session ${sessionId} metrics saved`);
     } catch {
       // Non-fatal
     }
@@ -132,7 +160,7 @@ async function main() {
           const tempStore = new SqliteStore({ dbPath });
           const deleted = tempStore.deleteOldEvents(cutoffMs);
           if (deleted > 0) {
-            console.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
+            safeLog.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
           }
           tempStore.close();
         } catch {
@@ -156,7 +184,7 @@ async function main() {
 
     // Run discovery in background (non-blocking)
     discovery.discoverAll().then((result) => {
-      console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
+      safeLog.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
 
       // Rebuild app index after discovery completes
       projectManager.rebuildAppIndex(pmStore);
@@ -165,16 +193,16 @@ async function main() {
       try {
         const migrationResult = migrateProjectIds(projectManager, pmStore);
         if (migrationResult.unified > 0) {
-          console.error(`[RuntimeScope] Unified ${migrationResult.unified} project IDs`);
+          safeLog.error(`[RuntimeScope] Unified ${migrationResult.unified} project IDs`);
           for (const detail of migrationResult.details) {
-            console.error(`[RuntimeScope]   ${detail}`);
+            safeLog.error(`[RuntimeScope]   ${detail}`);
           }
           // Rebuild the app index after migration
           projectManager.rebuildAppIndex(pmStore);
         }
       } catch { /* non-fatal */ }
     }).catch((err) => {
-      console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
+      safeLog.error('[RuntimeScope] PM discovery error:', (err as Error).message);
     });
   }
 
@@ -195,7 +223,7 @@ async function main() {
   try {
     await httpServer.start({ port: HTTP_PORT, host: HOST, tls: tlsConfig });
   } catch (err) {
-    console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
+    safeLog.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
   }
 
   // Push session connect/disconnect to dashboard in real-time
@@ -213,18 +241,18 @@ async function main() {
   // 7. Startup summary
   const proto = tlsConfig ? 'wss' : 'ws';
   const httpProto = tlsConfig ? 'https' : 'http';
-  console.error(`[RuntimeScope] Standalone collector ready`);
-  console.error(`[RuntimeScope]   WebSocket: ${proto}://${HOST}:${COLLECTOR_PORT}`);
-  console.error(`[RuntimeScope]   HTTP API:  ${httpProto}://${HOST}:${HTTP_PORT}`);
-  console.error(`[RuntimeScope]   Health:    ${httpProto}://${HOST}:${HTTP_PORT}/api/health`);
-  console.error(`[RuntimeScope]   Ingest:    POST ${httpProto}://${HOST}:${HTTP_PORT}/api/events`);
+  safeLog.error(`[RuntimeScope] Standalone collector ready`);
+  safeLog.error(`[RuntimeScope]   WebSocket: ${proto}://${HOST}:${COLLECTOR_PORT}`);
+  safeLog.error(`[RuntimeScope]   HTTP API:  ${httpProto}://${HOST}:${HTTP_PORT}`);
+  safeLog.error(`[RuntimeScope]   Health:    ${httpProto}://${HOST}:${HTTP_PORT}/api/health`);
+  safeLog.error(`[RuntimeScope]   Ingest:    POST ${httpProto}://${HOST}:${HTTP_PORT}/api/events`);
 
   // 8. Graceful shutdown
   let shuttingDown = false;
   const shutdown = async () => {
     if (shuttingDown) return;
     shuttingDown = true;
-    console.error('[RuntimeScope] Shutting down...');
+    safeLog.error('[RuntimeScope] Shutting down...');
 
     await httpServer.stop();
     collector.stop();
@@ -238,6 +266,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[RuntimeScope] Fatal error:', err);
+  safeLog.error('[RuntimeScope] Fatal error:', err);
   process.exit(1);
 });

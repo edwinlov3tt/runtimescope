@@ -8,6 +8,7 @@ import type {
   SessionSnapshot,
   EventType,
 } from './types.js';
+import { safeLog } from './log.js';
 
 // ============================================================
 // SQLite Persistence Layer
@@ -62,6 +63,10 @@ export class SqliteStore {
     // Start flush timer
     const flushInterval = options.flushIntervalMs ?? 100;
     this.flushTimer = setInterval(() => this.flush(), flushInterval);
+    // F2: don't keep the event loop alive — if the process is otherwise
+    // ready to exit, this background flush shouldn't prevent it. close()
+    // is still responsible for an explicit final flush.
+    this.flushTimer.unref?.();
   }
 
   private openDatabase(options: SqliteStoreOptions): DatabaseInstance {
@@ -84,14 +89,14 @@ export class SqliteStore {
       return db;
     } catch (err) {
       // Corruption recovery: rename the bad DB and create a fresh one
-      console.error(
+      safeLog.error(
         `[RuntimeScope] SQLite database corrupt or unreadable (${(err as Error).message}), recreating...`
       );
       try {
         if (existsSync(options.dbPath)) {
           const backupPath = `${options.dbPath}.corrupt.${Date.now()}`;
           renameSync(options.dbPath, backupPath);
-          console.error(`[RuntimeScope] Renamed corrupt DB to ${backupPath}`);
+          safeLog.error(`[RuntimeScope] Renamed corrupt DB to ${backupPath}`);
         }
         // Also clean up WAL/SHM files
         for (const suffix of ['-wal', '-shm']) {
@@ -221,7 +226,7 @@ export class SqliteStore {
     try {
       insertMany();
     } catch (err) {
-      console.error('[RuntimeScope] SQLite flush error:', (err as Error).message);
+      safeLog.error('[RuntimeScope] SQLite flush error:', (err as Error).message);
     }
   }
 

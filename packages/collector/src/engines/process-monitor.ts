@@ -48,6 +48,8 @@ export class ProcessMonitor {
   start(intervalMs = 10_000): void {
     this.scan();
     this.scanInterval = setInterval(() => this.scan(), intervalMs);
+    // F2: OS process polling is background hygiene; don't gate exit on it.
+    this.scanInterval.unref?.();
   }
 
   stop(): void {

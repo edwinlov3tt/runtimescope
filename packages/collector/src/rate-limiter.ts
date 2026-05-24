@@ -4,6 +4,8 @@
 // flooding the collector with events
 // ============================================================
 
+import { safeLog } from './log.js';
+
 export interface RateLimitConfig {
   maxEventsPerSecond?: number;
   maxEventsPerMinute?: number;
@@ -118,7 +120,7 @@ export class SessionRateLimiter {
     // Log at most once per minute per session
     if (now - w.lastWarning >= 60_000) {
       w.lastWarning = now;
-      console.error(
+      safeLog.error(
         `[RuntimeScope] Rate limiting session ${sessionId.slice(0, 8)}... (dropped ${this._droppedTotal} total)`
       );
     }

@@ -6,6 +6,7 @@ import type { PmStore } from './pm-store.js';
 import type { ProjectManager } from '../project-manager.js';
 import type { PmProject, PmSession, PmCapexEntry } from './pm-types.js';
 import { parseSessionJsonl, calculateActiveMinutes, calculateCostMicrodollars } from './session-parser.js';
+import { safeLog } from '../log.js';
 
 // ============================================================
 // Project Discovery — scans filesystem for Claude Code and
@@ -234,7 +235,7 @@ export class ProjectDiscovery {
       return mergeResults(claudeResult, runtimeResult);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Fatal discovery error: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Fatal discovery error: ${msg}`);
       result.errors.push(`Fatal discovery error: ${msg}`);
       return result;
     }
@@ -267,7 +268,7 @@ export class ProjectDiscovery {
       entries = dirEntries.filter((d) => d.isDirectory()).map((d) => d.name);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Failed to read Claude projects dir: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Failed to read Claude projects dir: ${msg}`);
       result.errors!.push(`Failed to read Claude projects dir: ${msg}`);
       return result;
     }
@@ -277,7 +278,7 @@ export class ProjectDiscovery {
         await this.processClaudeProject(key, result);
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        console.error(`${LOG_PREFIX} Error processing Claude project ${key}: ${msg}`);
+        safeLog.error(`${LOG_PREFIX} Error processing Claude project ${key}: ${msg}`);
         result.errors!.push(`Claude project ${key}: ${msg}`);
       }
     }
@@ -362,13 +363,13 @@ export class ProjectDiscovery {
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`${LOG_PREFIX} Error processing RuntimeScope project ${projectName}: ${msg}`);
+          safeLog.error(`${LOG_PREFIX} Error processing RuntimeScope project ${projectName}: ${msg}`);
           result.errors!.push(`RuntimeScope project ${projectName}: ${msg}`);
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Failed to list RuntimeScope projects: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Failed to list RuntimeScope projects: ${msg}`);
       result.errors!.push(`Failed to list RuntimeScope projects: ${msg}`);
     }
 
@@ -383,7 +384,7 @@ export class ProjectDiscovery {
     const existingProjects = await this.pmStore.listProjects();
     const project = existingProjects.find((p) => p.id === projectId);
     if (!project) {
-      console.error(`${LOG_PREFIX} Project not found: ${projectId}`);
+      safeLog.error(`${LOG_PREFIX} Project not found: ${projectId}`);
       return 0;
     }
 
@@ -450,12 +451,12 @@ export class ProjectDiscovery {
           sessionsIndexed++;
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`${LOG_PREFIX} Error indexing session ${jsonlFile}: ${msg}`);
+          safeLog.error(`${LOG_PREFIX} Error indexing session ${jsonlFile}: ${msg}`);
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Error indexing sessions for project ${projectId}: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Error indexing sessions for project ${projectId}: ${msg}`);
     }
 
     return sessionsIndexed;
@@ -617,12 +618,12 @@ export class ProjectDiscovery {
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          console.error(`${LOG_PREFIX} Error indexing session ${jsonlFile} in ${claudeKey}: ${msg}`);
+          safeLog.error(`${LOG_PREFIX} Error indexing session ${jsonlFile} in ${claudeKey}: ${msg}`);
         }
       }
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Error scanning sessions for ${claudeKey}: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Error scanning sessions for ${claudeKey}: ${msg}`);
     }
 
     return counts;
@@ -735,7 +736,7 @@ export class ProjectDiscovery {
       };
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Failed to parse session ${sessionId}: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Failed to parse session ${sessionId}: ${msg}`);
 
       // Return a minimal session record — use file mtime instead of Date.now()
       // to avoid all failed sessions appearing with today's date
@@ -790,7 +791,7 @@ export class ProjectDiscovery {
       await this.pmStore.upsertCapexEntry(entry);
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error(`${LOG_PREFIX} Failed to create CapEx stub for session ${session.id}: ${msg}`);
+      safeLog.error(`${LOG_PREFIX} Failed to create CapEx stub for session ${session.id}: ${msg}`);
     }
   }
 }

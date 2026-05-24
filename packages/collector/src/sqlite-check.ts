@@ -2,6 +2,7 @@
 // Returns false if the native module failed to compile or load.
 
 import { createRequire } from 'node:module';
+import { safeLog } from './log.js';
 
 let _checked = false;
 let _available = false;
@@ -16,7 +17,7 @@ export function isSqliteAvailable(): boolean {
     _available = true;
   } catch {
     _available = false;
-    console.error(
+    safeLog.error(
       '[RuntimeScope] better-sqlite3 is not available — running in memory-only mode.\n' +
       '[RuntimeScope] Historical data persistence is disabled. To fix this:\n' +
       '[RuntimeScope]   macOS:   xcode-select --install\n' +

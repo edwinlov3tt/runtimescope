@@ -15,6 +15,7 @@ import { loadTlsOptions, type TlsConfig } from './tls.js';
 import type { PmStore } from './pm/pm-store.js';
 import type { ProjectDiscovery } from './pm/project-discovery.js';
 import { createPmRouter } from './pm/pm-routes.js';
+import { safeLog } from './log.js';
 
 // ============================================================
 // HTTP API Server for Dashboard
@@ -657,7 +658,7 @@ export class HttpServer {
       } catch (err) {
         const isAddrInUse = (err as NodeJS.ErrnoException).code === 'EADDRINUSE';
         if (isAddrInUse && attempt < maxRetries) {
-          console.error(`[RuntimeScope] HTTP port ${port} in use, trying ${port + 1}...`);
+          safeLog.error(`[RuntimeScope] HTTP port ${port} in use, trying ${port + 1}...`);
           continue;
         }
         throw err;
@@ -706,7 +707,7 @@ export class HttpServer {
         this.activePort = boundPort;
         this.startedAt = Date.now();
         const proto = tls ? 'https' : 'http';
-        console.error(`[RuntimeScope] HTTP API listening on ${proto}://${host}:${boundPort}`);
+        safeLog.error(`[RuntimeScope] HTTP API listening on ${proto}://${host}:${boundPort}`);
         resolve();
       });
 
@@ -745,7 +746,7 @@ export class HttpServer {
       return new Promise((resolve) => {
         this.server!.close(() => {
           this.server = null;
-          console.error('[RuntimeScope] HTTP API stopped');
+          safeLog.error('[RuntimeScope] HTTP API stopped');
           resolve();
         });
       });

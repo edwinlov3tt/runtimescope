@@ -41,6 +41,7 @@ import type {
   RenderEvent,
   PerformanceEvent,
 } from './types.js';
+import { safeLog } from './log.js';
 
 export interface OtelExporterOptions {
   /** Base URL of the OTel collector — no path. e.g. "http://localhost:4318". */
@@ -403,7 +404,7 @@ export class OtelExporter {
     const now = Date.now();
     if (now - this.lastFailureLog < 60_000) return;
     this.lastFailureLog = now;
-    console.error(`[RuntimeScope] ${msg}`);
+    safeLog.error(`[RuntimeScope] ${msg}`);
   }
 }
 

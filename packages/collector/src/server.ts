@@ -33,6 +33,7 @@ import type {
   SessionInfoExtended,
   RuntimeEvent,
 } from './types.js';
+import { safeLog } from './log.js';
 
 export interface CollectorServerOptions {
   port?: number;
@@ -94,6 +95,15 @@ export class CollectorServer {
   // RSS. ensureSqliteStore() updates this on every access.
   private sqliteStoreLastAccess: Map<string, number> = new Map();
   private wals: Map<string, Wal> = new Map();
+  // Per-project last-access timestamps for WAL handles, mirroring
+  // sqliteStoreLastAccess. The audit (docs/audits/0001 §F3) found that
+  // WAL handles followed the same "open on first use, only closed on
+  // stop()" lifetime as the SQLite stores did pre-v0.10.8 — fewer bytes
+  // per handle than SQLite, but each holds an open FD, so on machines
+  // with many projects the leak is real (ulimit risk + small RSS drift).
+  // ensureWal() updates this on every access; the sqliteEvictTimer sweep
+  // evicts idle handles in the same pass.
+  private walsLastAccess: Map<string, number> = new Map();
   private ready = false;
   private metrics: MetricsRegistry = new MetricsRegistry();
   private startedAt: number = Date.now();
@@ -125,6 +135,8 @@ export class CollectorServer {
     // Periodically prune stale rate limiter entries
     if (this.rateLimiter.isEnabled()) {
       this.pruneTimer = setInterval(() => this.rateLimiter.prune(), 60_000);
+      // F2: rate-limiter prune is a background hygiene task — don't gate exit on it.
+      this.pruneTimer.unref?.();
     }
 
     // --- Metrics registry ---
@@ -201,7 +213,7 @@ export class CollectorServer {
         // own timer. Errors are logged inside the exporter, never thrown out.
         this.otelExporter?.ingest(event);
       });
-      console.error(
+      safeLog.error(
         `[RuntimeScope] OpenTelemetry export enabled → ${otelOptions.endpoint}`,
       );
     }
@@ -235,6 +247,25 @@ export class CollectorServer {
 
   getSqliteStores(): Map<string, SqliteStore> {
     return this.sqliteStores;
+  }
+
+  /**
+   * Diagnostic counters for currently-open per-project resource handles
+   * and pending bidirectional commands. Exposed for tests + future
+   * tray-app health surfaces.
+   *
+   * - `sqliteStores` / `wals`: open handle counts. The eviction sweep
+   *   (5-minute idle in production, env-overridable for tests) drives
+   *   these down to zero for idle projects and back up on reconnect.
+   * - `pendingCommands`: in-flight WS commands (server → SDK). Settles
+   *   on response or via the per-command timeout — see audit F5.
+   */
+  getOpenHandleCounts(): { sqliteStores: number; wals: number; pendingCommands: number } {
+    return {
+      sqliteStores: this.sqliteStores.size,
+      wals: this.wals.size,
+      pendingCommands: this.pendingCommands.size,
+    };
   }
 
   getRateLimiter(): SessionRateLimiter {
@@ -293,7 +324,7 @@ export class CollectorServer {
           sqliteBytes = sqliteStore.snapshotTo(sqlitePath);
           eventCount = sqliteStore.getEventCount({ project: projectName });
         } catch (err) {
-          console.error(
+          safeLog.error(
             `[RuntimeScope] Snapshot of "${projectName}" SQLite failed:`,
             (err as Error).message,
           );
@@ -309,7 +340,7 @@ export class CollectorServer {
         try {
           walBytes = wal.snapshotTo(join(projectDir, 'wal'));
         } catch (err) {
-          console.error(
+          safeLog.error(
             `[RuntimeScope] Snapshot of "${projectName}" WAL failed:`,
             (err as Error).message,
           );
@@ -353,7 +384,7 @@ export class CollectorServer {
       try {
         this.runStartupRecovery();
       } catch (err) {
-        console.error('[RuntimeScope] Startup recovery failed (non-fatal):', (err as Error).message);
+        safeLog.error('[RuntimeScope] Startup recovery failed (non-fatal):', (err as Error).message);
       }
     }
     this.ready = true;
@@ -392,12 +423,13 @@ export class CollectorServer {
     this.sqliteEvictTimer = setInterval(() => {
       const now = Date.now();
       // Build the set of project names with at least one live WS client so
-      // we never evict a store that's about to be written to.
+      // we never evict a handle that's about to be written to.
       const liveProjects = new Set<string>();
       for (const info of this.clients.values()) {
         liveProjects.add(info.projectName);
       }
 
+      // 1. Evict idle SQLite stores (v0.10.8 fix).
       for (const [projectName, store] of this.sqliteStores) {
         if (liveProjects.has(projectName)) continue;
         const lastAccess = this.sqliteStoreLastAccess.get(projectName) ?? 0;
@@ -405,7 +437,7 @@ export class CollectorServer {
         try {
           store.close();
         } catch (e) {
-          console.error(
+          safeLog.error(
             `[RuntimeScope] Failed to close idle SQLite store "${projectName}":`,
             (e as Error).message,
           );
@@ -418,6 +450,27 @@ export class CollectorServer {
         // next event. EventStore.ensureSqliteStore() is called on every
         // event ingest and will recreate the binding.
         this.store.clearSqliteStoreIfMatches(projectName);
+      }
+
+      // 2. Evict idle WAL handles (audit F3 — mirrors the SQLite logic).
+      //    Each Wal holds an open file descriptor; without eviction we'd
+      //    leak FDs proportional to total distinct projects ever seen.
+      //    A subsequent `ensureWal(name)` re-opens transparently.
+      for (const [projectName, wal] of this.wals) {
+        if (liveProjects.has(projectName)) continue;
+        const lastAccess = this.walsLastAccess.get(projectName) ?? 0;
+        if (now - lastAccess < IDLE_TIMEOUT_MS) continue;
+        try {
+          wal.close();
+        } catch (e) {
+          safeLog.error(
+            `[RuntimeScope] Failed to close idle WAL "${projectName}":`,
+            (e as Error).message,
+          );
+          continue;
+        }
+        this.wals.delete(projectName);
+        this.walsLastAccess.delete(projectName);
       }
     }, SWEEP_INTERVAL_MS);
     // Don't keep the event loop alive for this alone — if everything else
@@ -478,7 +531,7 @@ export class CollectorServer {
     }
 
     if (walReplayed > 0 || warmed > 0) {
-      console.error(
+      safeLog.error(
         `[RuntimeScope] Recovery: ${walReplayed} WAL events replayed, ${warmed} events warmed into ring buffer.`,
       );
     }
@@ -504,7 +557,7 @@ export class CollectorServer {
           this.setupConnectionHandler(wss);
           this.setupPersistentErrorHandler(wss);
           this.startHeartbeat(wss);
-          console.error(`[RuntimeScope] Collector listening on wss://${host}:${port}`);
+          safeLog.error(`[RuntimeScope] Collector listening on wss://${host}:${port}`);
           resolve();
         });
 
@@ -523,7 +576,7 @@ export class CollectorServer {
           this.setupConnectionHandler(wss);
           this.setupPersistentErrorHandler(wss);
           this.startHeartbeat(wss);
-          console.error(`[RuntimeScope] Collector listening on ws://${host}:${port}`);
+          safeLog.error(`[RuntimeScope] Collector listening on ws://${host}:${port}`);
           resolve();
         });
 
@@ -547,14 +600,14 @@ export class CollectorServer {
   ): void {
     if (err.code === 'EADDRINUSE' && retriesLeft > 0) {
       const nextPort = port + 1;
-      console.error(
+      safeLog.error(
         `[RuntimeScope] Port ${port} in use, trying ${nextPort}...`
       );
       this.tryStart(nextPort, host, retriesLeft - 1, retryDelayMs, tls)
         .then(resolve)
         .catch(reject);
     } else {
-      console.error('[RuntimeScope] WebSocket server error:', err.message);
+      safeLog.error('[RuntimeScope] WebSocket server error:', err.message);
       reject(err);
     }
   }
@@ -575,9 +628,9 @@ export class CollectorServer {
         sqliteStore = new SqliteStore({ dbPath });
         this.sqliteStores.set(projectName, sqliteStore);
         this.store.setSqliteStore(sqliteStore, projectName);
-        console.error(`[RuntimeScope] SQLite store opened for project "${projectName}"`);
+        safeLog.error(`[RuntimeScope] SQLite store opened for project "${projectName}"`);
       } catch (err) {
-        console.error(
+        safeLog.error(
           `[RuntimeScope] Failed to open SQLite for "${projectName}":`,
           (err as Error).message
         );
@@ -609,6 +662,10 @@ export class CollectorServer {
    */
   private ensureWal(projectName: string): Wal | null {
     if (!this.projectManager) return null;
+    // Touch access time even on cache hits so the eviction sweep treats
+    // this project as recently used.
+    this.walsLastAccess.set(projectName, Date.now());
+
     let wal = this.wals.get(projectName);
     if (wal) return wal;
 
@@ -622,7 +679,7 @@ export class CollectorServer {
       this.wals.set(projectName, wal);
       return wal;
     } catch (err) {
-      console.error(
+      safeLog.error(
         `[RuntimeScope] Failed to open WAL for "${projectName}":`,
         (err as Error).message,
       );
@@ -662,7 +719,7 @@ export class CollectorServer {
       // SqliteStore.flush is synchronous — after this returns events are in
       // SQLite. Now safe to drop the WAL files.
       for (const file of files) Wal.deleteSealed(file);
-      console.error(
+      safeLog.error(
         `[RuntimeScope] WAL recovery: replayed ${replayed} events for "${projectName}"`,
       );
     }
@@ -686,7 +743,7 @@ export class CollectorServer {
   /** Catch runtime errors on the WSS so an unhandled error doesn't crash the process */
   private setupPersistentErrorHandler(wss: WebSocketServer): void {
     wss.on('error', (err) => {
-      console.error('[RuntimeScope] WebSocket server runtime error:', err.message);
+      safeLog.error('[RuntimeScope] WebSocket server runtime error:', err.message);
     });
   }
 
@@ -704,6 +761,9 @@ export class CollectorServer {
         ws.ping();
       }
     }, 15_000);
+    // F2: heartbeat is best-effort liveness probing. If everything else
+    // has exited the heartbeat shouldn't keep the process alive on its own.
+    this.heartbeatTimer.unref?.();
   }
 
   private setupConnectionHandler(wss: WebSocketServer): void {
@@ -743,7 +803,7 @@ export class CollectorServer {
           const msg: WSMessage = JSON.parse(data.toString());
           this.handleMessage(ws, msg);
         } catch {
-          console.error('[RuntimeScope] Malformed WebSocket message, ignoring');
+          safeLog.error('[RuntimeScope] Malformed WebSocket message, ignoring');
         }
       });
 
@@ -763,7 +823,7 @@ export class CollectorServer {
             sqliteStore.updateSessionDisconnected(clientInfo.sessionId, Date.now());
           }
 
-          console.error(`[RuntimeScope] Session ${clientInfo.sessionId} disconnected`);
+          safeLog.error(`[RuntimeScope] Session ${clientInfo.sessionId} disconnected`);
 
           // Notify disconnect listeners (for session snapshotting)
           for (const cb of this.disconnectCallbacks) {
@@ -778,7 +838,7 @@ export class CollectorServer {
       });
 
       ws.on('error', (err) => {
-        console.error('[RuntimeScope] WebSocket client error:', err.message);
+        safeLog.error('[RuntimeScope] WebSocket client error:', err.message);
       });
     });
   }
@@ -878,7 +938,7 @@ export class CollectorServer {
           sdkVersion: payload.sdkVersion,
         } as RuntimeEvent);
 
-        console.error(
+        safeLog.error(
           `[RuntimeScope] Session ${payload.sessionId} connected (${payload.appName} v${payload.sdkVersion})`
         );
 
@@ -922,7 +982,7 @@ export class CollectorServer {
             wal.append(accepted);
             wal.commit();
           } catch (err) {
-            console.error('[RuntimeScope] WAL append/commit failed:', (err as Error).message);
+            safeLog.error('[RuntimeScope] WAL append/commit failed:', (err as Error).message);
             this.counters.eventsDropped.inc(accepted.length, { reason: 'wal_backpressure' });
             // Continue — dropping an event is worse than proceeding without the
             // durability guarantee on this one batch.
@@ -938,7 +998,7 @@ export class CollectorServer {
           try {
             this.checkpointWal(clientInfo.projectName, wal);
           } catch (err) {
-            console.error('[RuntimeScope] WAL checkpoint failed:', (err as Error).message);
+            safeLog.error('[RuntimeScope] WAL checkpoint failed:', (err as Error).message);
           }
         }
         break;
@@ -1078,7 +1138,7 @@ export class CollectorServer {
         wal.close();
       } catch {
         // Non-fatal during shutdown — the next start will recover.
-        console.error(`[RuntimeScope] WAL close error for "${name}" (non-fatal)`);
+        safeLog.error(`[RuntimeScope] WAL close error for "${name}" (non-fatal)`);
       }
     }
     this.wals.clear();
@@ -1087,7 +1147,7 @@ export class CollectorServer {
     for (const [name, sqliteStore] of this.sqliteStores) {
       try {
         sqliteStore.close();
-        console.error(`[RuntimeScope] SQLite store closed for "${name}"`);
+        safeLog.error(`[RuntimeScope] SQLite store closed for "${name}"`);
       } catch {
         // Ignore close errors during shutdown
       }
@@ -1097,7 +1157,7 @@ export class CollectorServer {
     if (this.wss) {
       this.wss.close();
       this.wss = null;
-      console.error('[RuntimeScope] Collector stopped');
+      safeLog.error('[RuntimeScope] Collector stopped');
     }
 
     this.ready = false;

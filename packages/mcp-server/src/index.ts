@@ -22,6 +22,7 @@ import {
   ProjectDiscovery,
   getPidsOnPort,
   migrateProjectIds,
+  safeLog,
 } from '@runtimescope/collector';
 
 // --- Existing M1/M2 tool registrations ---
@@ -92,7 +93,7 @@ function killStaleProcess(port: number): void {
     const myPid = process.pid;
     for (const pid of pids) {
       if (pid !== myPid) {
-        console.error(`[RuntimeScope] Killing stale process ${pid} on port ${port}`);
+        safeLog.error(`[RuntimeScope] Killing stale process ${pid} on port ${port}`);
         try {
           process.kill(pid, 'SIGTERM');
         } catch {
@@ -153,37 +154,25 @@ async function main() {
   // ─────────────────────────────────────────────────────────────────────
   // Crash resilience
   //
-  // Every uncaught error is logged to stderr (never stdout — that's the
-  // JSON-RPC stream) and the process keeps running so a single bug in a
+  // Every uncaught error is logged via safeLog.error (never stdout — that's
+  // the JSON-RPC stream) and the process keeps running so a single bug in a
   // tool handler doesn't take down all 55 tools.
   //
-  // CRITICAL: stderr writes can themselves throw EPIPE if the parent died
-  // before we noticed. If we naively `console.error(...)` from inside the
-  // uncaughtException handler, that throw lands right back in the same
-  // handler, creating a tight error→log→error loop that burns CPU forever.
-  // safelyWriteStderr() guards every write — and if stderr is unusable we
-  // exit, because there's nothing left to log to anyway.
+  // safeLog is EPIPE-safe by construction (see packages/collector/src/log.ts):
+  // if stderr is unwritable it exits the process instead of looping. This is
+  // critical here because if we naively used console.error from inside the
+  // uncaughtException handler, an EPIPE from the write would re-trigger the
+  // handler, creating the tight error→log→error loop that pegged the CPU at
+  // 80%+ on 7 orphaned MCP processes in prod (the v0.10.8 incident).
   // ─────────────────────────────────────────────────────────────────────
-  const safelyWriteStderr = (message: string): void => {
-    try {
-      if (!process.stderr.writable) {
-        process.exit(1);
-        return;
-      }
-      process.stderr.write(message + '\n');
-    } catch {
-      // stderr broken (parent died, pipe closed). No way to surface this —
-      // just exit instead of looping forever.
-      process.exit(1);
-    }
-  };
   process.on('uncaughtException', (err) => {
-    safelyWriteStderr(
-      `[RuntimeScope] uncaughtException: ${err instanceof Error ? err.stack ?? err.message : String(err)}`,
+    safeLog.error(
+      `[RuntimeScope] uncaughtException:`,
+      err instanceof Error ? err.stack ?? err.message : String(err),
     );
   });
   process.on('unhandledRejection', (reason) => {
-    safelyWriteStderr(`[RuntimeScope] unhandledRejection: ${String(reason)}`);
+    safeLog.error(`[RuntimeScope] unhandledRejection:`, reason);
   });
 
   // 1. Initialize project management
@@ -214,13 +203,13 @@ async function main() {
     ?? globalConfig.corsOrigins;
 
   if (authManager.isEnabled()) {
-    console.error(`[RuntimeScope] Auth enabled (${globalConfig.auth?.apiKeys?.length ?? 0} API keys)`);
+    safeLog.error(`[RuntimeScope] Auth enabled (${globalConfig.auth?.apiKeys?.length ?? 0} API keys)`);
   }
   if (tlsConfig) {
-    console.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);
+    safeLog.error(`[RuntimeScope] TLS enabled (cert: ${tlsConfig.certPath})`);
   }
   if (redactor.isEnabled()) {
-    console.error('[RuntimeScope] Payload redaction enabled');
+    safeLog.error('[RuntimeScope] Payload redaction enabled');
   }
 
   // 2. Detect whether another RuntimeScope collector is already on our ports.
@@ -232,13 +221,13 @@ async function main() {
   //    or the standalone, depending on which they want to query.
   const existingHealthy = await detectExistingCollector(HTTP_PORT);
   if (existingHealthy) {
-    console.error(
+    safeLog.error(
       `[RuntimeScope] Another collector is already listening on :${HTTP_PORT}.`,
     );
-    console.error(
+    safeLog.error(
       '[RuntimeScope] Starting our own on alternate ports so MCP tools stay available.',
     );
-    console.error(
+    safeLog.error(
       '[RuntimeScope] Point SDK at the port logged below for MCP tools to see events.',
     );
   } else {
@@ -296,7 +285,7 @@ async function main() {
   collector.onDisconnect((sessionId, projectName) => {
     try {
       sessionManager.createSnapshot(sessionId, projectName, 'auto-disconnect');
-      console.error(`[RuntimeScope] Session ${sessionId} metrics saved to SQLite`);
+      safeLog.error(`[RuntimeScope] Session ${sessionId} metrics saved to SQLite`);
     } catch {
       // Non-fatal: snapshot failure shouldn't break anything
     }
@@ -319,6 +308,8 @@ async function main() {
       }
     }
   }, AUTO_SNAPSHOT_INTERVAL_MS);
+  // F2: background session-metrics snapshot — don't gate process exit on it.
+  autoSnapshotTimer.unref?.();
 
   // Retention policy: prune events older than N days on startup (requires SQLite).
   // When an existing healthy collector is already running, retention is its
@@ -335,7 +326,7 @@ async function main() {
           const tempStore = new SqliteStore({ dbPath });
           const deleted = tempStore.deleteOldEvents(cutoffMs);
           if (deleted > 0) {
-            console.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
+            safeLog.error(`[RuntimeScope] Pruned ${deleted} events older than ${RETENTION_DAYS}d from "${projectName}"`);
           }
           tempStore.close();
         } catch {
@@ -359,7 +350,7 @@ async function main() {
 
     // Run discovery in background (non-blocking)
     discovery.discoverAll().then((result) => {
-      console.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
+      safeLog.error(`[RuntimeScope] PM: ${result.projectsDiscovered} projects, ${result.sessionsDiscovered} sessions discovered`);
 
       // Rebuild app index after discovery completes
       projectManager.rebuildAppIndex(pmStore);
@@ -368,16 +359,16 @@ async function main() {
       try {
         const migrationResult = migrateProjectIds(projectManager, pmStore);
         if (migrationResult.unified > 0) {
-          console.error(`[RuntimeScope] Unified ${migrationResult.unified} project IDs`);
+          safeLog.error(`[RuntimeScope] Unified ${migrationResult.unified} project IDs`);
           for (const detail of migrationResult.details) {
-            console.error(`[RuntimeScope]   ${detail}`);
+            safeLog.error(`[RuntimeScope]   ${detail}`);
           }
           // Rebuild the app index after migration
           projectManager.rebuildAppIndex(pmStore);
         }
       } catch { /* non-fatal */ }
     }).catch((err) => {
-      console.error('[RuntimeScope] PM discovery error:', (err as Error).message);
+      safeLog.error('[RuntimeScope] PM discovery error:', (err as Error).message);
     });
   }
 
@@ -407,11 +398,11 @@ async function main() {
       await httpServer.start({ port: HTTP_PORT, tls: tlsConfig });
       actualHttpPort = httpServer.getPort() ?? HTTP_PORT;
     } catch (err) {
-      console.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
+      safeLog.error('[RuntimeScope] HTTP API failed to start:', (err as Error).message);
       httpServer = undefined;
     }
   } else {
-    console.error('[RuntimeScope] Skipping our own HTTP API — existing collector serves it.');
+    safeLog.error('[RuntimeScope] Skipping our own HTTP API — existing collector serves it.');
   }
 
   collector.onConnect((sessionId, projectName, projectId) => {
@@ -506,15 +497,15 @@ async function main() {
   const transport = new StdioServerTransport();
   await mcp.connect(transport);
 
-  console.error(`[RuntimeScope] MCP server running on stdio (55 tools)`);
-  console.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${actualHttpPort}/snippet`);
-  console.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${actualWsPort}`);
-  console.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${actualHttpPort}`);
+  safeLog.error(`[RuntimeScope] MCP server running on stdio (55 tools)`);
+  safeLog.error(`[RuntimeScope] SDK snippet at http://127.0.0.1:${actualHttpPort}/snippet`);
+  safeLog.error(`[RuntimeScope] SDK should connect to ws://127.0.0.1:${actualWsPort}`);
+  safeLog.error(`[RuntimeScope] HTTP API at http://127.0.0.1:${actualHttpPort}`);
   if (actualWsPort !== COLLECTOR_PORT || actualHttpPort !== HTTP_PORT) {
-    console.error(
+    safeLog.error(
       `[RuntimeScope] NOTE: bound to ${actualWsPort}/${actualHttpPort} because ${COLLECTOR_PORT}/${HTTP_PORT} were in use.`,
     );
-    console.error(
+    safeLog.error(
       `[RuntimeScope] SDK must target ws://127.0.0.1:${actualWsPort} for events to be visible to MCP tools.`,
     );
   }
@@ -528,7 +519,7 @@ async function main() {
 
     const safe = async (label: string, fn: () => unknown | Promise<unknown>) => {
       try { await fn(); } catch (err) {
-        console.error(`[RuntimeScope] shutdown:${label} error:`, (err as Error).message);
+        safeLog.error(`[RuntimeScope] shutdown:${label} error:`, (err as Error).message);
       }
     };
 
@@ -553,6 +544,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error('[RuntimeScope] Fatal error:', err);
+  safeLog.error('[RuntimeScope] Fatal error:', err);
   process.exit(1);
 });

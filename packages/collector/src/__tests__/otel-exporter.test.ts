@@ -282,17 +282,21 @@ describe('Phase 5: OtelExporter wire format', () => {
 
   it('survives a non-2xx response without throwing or crashing the collector', async () => {
     cap.setStatus(503);
-    const consoleSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    // safeLog.error writes to process.stderr (EPIPE-safe). Spy on the
+    // underlying stream so we verify the failure surfaces somewhere, even
+    // though the export logger no longer routes through console.error
+    // since the F1 audit fix (docs/audits/0001 §F1).
+    const stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     const exporter = new OtelExporter({ endpoint: cap.endpoint, flushIntervalMs: 1_000_000 });
     exporter.ingest(makeNetworkEvent({ duration: 1 }));
     await exporter.flush();
 
     expect(cap.captured).toHaveLength(1);
     // Failure logged but no exception escapes.
-    expect(consoleSpy).toHaveBeenCalled();
+    expect(stderrSpy).toHaveBeenCalled();
 
     await exporter.close();
-    consoleSpy.mockRestore();
+    stderrSpy.mockRestore();
   });
 
   it('skips event types it does not map (state/session/ui/dom_snapshot)', async () => {

@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import { TechnologyDatabase, detect } from '@runtimescope/extension';
 import type { TechDetectionResult, DetectionSignals } from '@runtimescope/extension';
 import type { RuntimeEvent } from '@runtimescope/collector';
+import { safeLog } from '@runtimescope/collector';
 import {
   collectDetectionSignals,
   extractJsGlobalPaths,
@@ -117,7 +118,7 @@ export class PlaywrightScanner {
     this.jsGlobalPaths = extractJsGlobalPaths(allTechs);
     this.domSelectors = extractDomSelectors(allTechs);
 
-    console.error(`[RuntimeScope] Scanner loaded: ${this.db.size} technologies, ${this.jsGlobalPaths.length} JS paths, ${this.domSelectors.length} DOM selectors`);
+    safeLog.error(`[RuntimeScope] Scanner loaded: ${this.db.size} technologies, ${this.jsGlobalPaths.length} JS paths, ${this.domSelectors.length} DOM selectors`);
 
     return this.db;
   }
@@ -137,7 +138,7 @@ export class PlaywrightScanner {
 
     if (!this.browser || !(this.browser as { isConnected(): boolean }).isConnected()) {
       this.browser = await pw.chromium.launch({ headless: true });
-      console.error('[RuntimeScope] Scanner: Chromium launched');
+      safeLog.error('[RuntimeScope] Scanner: Chromium launched');
     }
 
     // Set idle auto-close
@@ -332,7 +333,7 @@ export class PlaywrightScanner {
         // Already closed
       }
       this.browser = null;
-      console.error('[RuntimeScope] Scanner: Chromium closed');
+      safeLog.error('[RuntimeScope] Scanner: Chromium closed');
     }
   }
 }

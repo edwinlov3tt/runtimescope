@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": [
     "packages/*",
+    "packages/recon-sidecar",
     "playground"
   ],
   "scripts": {

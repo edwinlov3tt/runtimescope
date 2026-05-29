@@ -32,16 +32,18 @@ ADR-0002 budgets **~8 weeks**. In Claude-Code working-session terms that's **doz
 
 **Team?** No. These were judgment calls + spikes. **Done — proceed to M1.**
 
-## Milestone 1 — Spine: `collector-core` + one vertical slice (serial, ~1 wk)
+## Milestone 1 — Spine: `collector-core` + one vertical slice (serial, ~1 wk) — 🟡 IN PROGRESS
 
 The most important week of the phase. **One author. No fan-out.**
 
-- [ ] Workspace `Cargo.toml`, the 4 crate skeletons, CI wiring (`cargo build/clippy/test`).
-- [ ] `collector-core`: the serde event types (all 19), the `Store` trait + in-memory + rusqlite impls, ring buffer, WAL with fsync-before-commit.
-- [ ] **Prove ONE vertical slice green:** SDK handshake → ingest one network event → `GET /api/health` reflects it → one MCP tool (`get_network_requests`) reads it via the `Store` → the relevant conformance test passes.
-- [ ] Lock the patterns the ribs will copy: error enum, the `{summary,data,issues,metadata}` envelope helper, the tool-registration macro/trait, the route-handler signature, the logging convention.
+- [x] Workspace `Cargo.toml` + 4 crate skeletons (`collector-core`, `collector-server`, `mcp-server`, `cli`) + CI wiring (`.github/workflows/rust.yml`: `cargo build/clippy -D warnings/test` on macos-14). Built clean first try (axum 0.8.9, rmcp 1.7.0, tokio).
+- [x] **Vertical slice GREEN against the Rust binaries, via the same conformance harness that validates Node:**
+  - `collector-server`: `event-roundtrip` 2/2 — WS handshake → ingest → `/api/events/network` query → project_id isolation (`RUNTIMESCOPE_COLLECTOR_CMD=…/collector-server npx vitest … event-roundtrip`).
+  - `mcp-server`: the `get_network_requests` data round-trip — SDK → embedded in-process collector → MCP tool reads the shared `Store` (`RUNTIMESCOPE_MCP_CMD=…/mcp-server`). Proves the ADR-0008 embed-in-process topology.
+- [x] Patterns established by the slice: the `{summary,data,issues,metadata}` envelope, the rmcp `#[tool]` + schemars-arg pattern, the axum route-handler signature, and **the `Store` query seam both HTTP routes and MCP tools call** (`events_by_type`). `collector-core::serve()` is shared by both bins.
+- [ ] **Remaining M1:** the full 19 serde event types (slice keeps events as raw `Value`); the `Store` **trait** + the **rusqlite + WAL (fsync-before-commit)** persistence impl behind the dedicated-DB-owner thread (research 0001); auth (the handshake-4001 + HTTP-401 paths); a short written patterns doc.
 
-**Exit criterion:** a second engineer (or agent) could look at the slice and the patterns doc and write a new tool/route/engine without asking how. If that's not true, M1 isn't done.
+**Exit criterion:** a second engineer (or agent) could look at the slice + patterns doc and write a new tool/route/engine without asking how. The slice proves the shape; persistence + the type set complete it.
 
 **Team?** No — this is the convention-setting pass by definition.
 

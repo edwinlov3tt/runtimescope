@@ -1,0 +1,34 @@
+name: Rust
+
+# Build + lint + test the Rust collector workspace (Phase Rust-Collector).
+# Runs on macos-14 (arm64) to match the dev target + the rust-toolchain.toml
+# darwin targets. The Node conformance gate lives in publish.yml; once the Rust
+# binaries are the release artifact, this workflow gains the
+# RUNTIMESCOPE_COLLECTOR_CMD conformance run against them.
+on:
+  push:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
+      - '.github/workflows/rust.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+
+jobs:
+  build:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - name: Show toolchain (from rust-toolchain.toml)
+        run: rustup show && cargo --version
+      - name: Build
+        run: cargo build --workspace --locked
+      - name: Clippy
+        run: cargo clippy --workspace --locked -- -D warnings
+      - name: Test
+        run: cargo test --workspace --locked

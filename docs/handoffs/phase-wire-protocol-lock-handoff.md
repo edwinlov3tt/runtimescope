@@ -164,7 +164,7 @@ Lock the **column set and the index set** as invariants (the Rust collector must
 - Recovery tolerates a **torn tail**: replay stops at the last successfully-`fsync`'d line; anything after is treated as garbage ([`wal.ts:162,180`](../../packages/collector/src/wal.ts#L162)).
 - Sealed-file rotation: `fsync`, close, rename to `sealed-<ts>-<seq>.jsonl`.
 
-This `fsync`-before-`commit` ordering is the single most important durability invariant — write a conformance test that kills the collector mid-batch and asserts no torn-tail corruption on restart (the existing `crash-recovery` stress scenario is your starting point — see [`stress/scenarios/`](../../stress/)).
+This `fsync`-before-`commit` ordering is the single most important durability invariant — write a conformance test that kills the collector mid-batch and asserts no torn-tail corruption on restart. **The existing [`stress/scenarios/crash-recovery.ts`](../../stress/scenarios/crash-recovery.ts) already does exactly this**, and as of `2800c4e` it launches the collector through the same `RUNTIMESCOPE_COLLECTOR_CMD` seam (see the next section) — so it *already* runs against the Rust binary unchanged. Your conformance durability test can be a thin port of it, or you may simply fold the stress scenario into the conformance gate.
 
 ### D. Auth model (`packages/collector/src/auth.ts`)
 
@@ -187,18 +187,24 @@ docs/reports/phase-wire-protocol-lock-completion-report.md
 tests/conformance/                     NEW top-level test tree
 ├── README.md                          how to run against any collector binary
 ├── harness/
-│   ├── spawn-collector.ts             spawn a binary as subprocess, wait for /readyz
-│   ├── sdk-driver.ts                  drive the real @runtimescope/sdk
-│   └── mcp-driver.ts                  query the real @runtimescope/mcp-server
+│   ├── spawn-collector.ts             REUSE stress/utils/spawn-collector.ts (seam exists)
+│   ├── sdk-driver.ts                  REUSE stress/utils/sdk-driver.ts (exists)
+│   └── mcp-driver.ts                  ★ the only genuinely new harness piece — query @runtimescope/mcp-server
 └── specs/
     ├── handshake.conformance.test.ts  WS handshake, auth timeout, 4001
     ├── event-roundtrip.conformance.test.ts   send events → assert queryable
     ├── command-channel.conformance.test.ts   requestId correlation
     ├── http-contracts.conformance.test.ts    /api/* shapes + status codes
-    └── durability.conformance.test.ts        kill mid-batch → no torn tail
+    └── durability.conformance.test.ts        kill mid-batch → no torn tail (port crash-recovery.ts)
 ```
 
-The harness is the load-bearing design decision: it must take a **collector binary path** (env var, e.g. `RUNTIMESCOPE_COLLECTOR_BIN`) and default to the Node collector. That single seam is what lets the same suite run against the Rust binary in Phase Rust-Collector without edits.
+The harness is the load-bearing design decision — and **the seam already exists, built ahead of this phase (commit `2800c4e`).** Do NOT reinvent it:
+
+- [`stress/utils/spawn-collector.ts`](../../stress/utils/spawn-collector.ts) spawns the collector via **`RUNTIMESCOPE_COLLECTOR_CMD`** (defaults to the Node standalone; set the env var to any binary), waits for `/readyz`, isolates `$HOME`, tears down. It exports both `spawnCollector()` and `resolveCollectorCmd()`. **Reuse this** — either import it from `tests/conformance/`, or lift it into a shared `stress/utils` ↔ `tests/conformance/harness` module. Note the env var is `RUNTIMESCOPE_COLLECTOR_CMD` (a full command, may include args), not the `RUNTIMESCOPE_COLLECTOR_BIN` this doc originally guessed — match the one that exists.
+- [`stress/utils/sdk-driver.ts`](../../stress/utils/sdk-driver.ts) already drives the real `@runtimescope/sdk` over WS. Reuse for the SDK side; you only need to add an MCP-query driver.
+- A **performance** counterpart already exists too: [`bench/`](../../bench/) + [`stress/bench.ts`](../../stress/bench.ts) measure throughput, ingest latency, and memory-soak leak detection against the same seam, with a committed Node baseline at [`bench/baselines/node.json`](../../bench/baselines/node.json) and a `bench:compare` regression gate. The conformance suite is the *correctness* gate; the bench is the *performance* gate. Phase Rust-Collector runs both against the Rust binary with `RUNTIMESCOPE_COLLECTOR_CMD=./target/release/… npm run conformance && npm run bench:compare -- node <rust>`.
+
+So your real harness work is narrower than this doc's file tree implies: write `mcp-driver.ts` (the only missing piece), the five `*.conformance.test.ts` specs, and the wire-up — building on the existing `spawn-collector.ts` + `sdk-driver.ts` rather than from scratch.
 
 ## Files you will most likely TOUCH
 

@@ -67,38 +67,87 @@ pub struct ScanWebsiteArgs {
     wait_for: Option<String>,
 }
 
-/// SSRF guard for `scan_website` (audit #9): only http(s), and reject hosts that
-/// point at the local machine / private networks. Not exhaustive (no DNS
-/// resolution, so a public name resolving to a private IP can still slip — the
-/// sidecar should re-check post-resolution); blocks the obvious literal cases.
+/// True if an IP literal points at the local machine or a private/internal
+/// network — covers IPv4 (incl. CGNAT 100.64/10, broadcast, TEST-NETs), IPv6
+/// (loopback/ULA fc00::/7/link-local fe80::/10/multicast), and IPv4-mapped IPv6.
+fn ip_is_internal(ip: &std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip {
+        IpAddr::V4(v4) => {
+            let o = v4.octets();
+            v4.is_loopback()
+                || v4.is_private()
+                || v4.is_link_local()
+                || v4.is_unspecified()
+                || v4.is_broadcast()
+                || v4.is_documentation()
+                || (o[0] == 100 && (64..=127).contains(&o[1])) // CGNAT 100.64.0.0/10
+        }
+        IpAddr::V6(v6) => {
+            v6.is_loopback()
+                || v6.is_unspecified()
+                || v6.is_multicast()
+                || (v6.segments()[0] & 0xfe00) == 0xfc00 // unique-local fc00::/7
+                || (v6.segments()[0] & 0xffc0) == 0xfe80 // link-local fe80::/10
+                || v6.to_ipv4_mapped().is_some_and(|m| ip_is_internal(&IpAddr::V4(m)))
+        }
+    }
+}
+
+/// Resolve a URL host to an IP literal if it is one — handling the dotted/IPv6
+/// forms AND the alternate encodings browsers accept (bare decimal like
+/// `2130706433`, hex `0x7f000001`). Returns None for DNS names.
+fn host_as_ip(host: &str) -> Option<std::net::IpAddr> {
+    use std::net::{IpAddr, Ipv4Addr};
+    let h = host.trim_start_matches('[').trim_end_matches(']');
+    if let Ok(ip) = h.parse::<IpAddr>() {
+        return Some(ip);
+    }
+    if let Ok(n) = h.parse::<u32>() {
+        return Some(IpAddr::V4(Ipv4Addr::from(n))); // decimal IPv4 (SSRF classic)
+    }
+    if let Some(hex) = h.strip_prefix("0x").or_else(|| h.strip_prefix("0X")) {
+        if let Ok(n) = u32::from_str_radix(hex, 16) {
+            return Some(IpAddr::V4(Ipv4Addr::from(n)));
+        }
+    }
+    None
+}
+
+/// SSRF guard for `scan_website` (audit #9): http(s) only, and reject hosts that
+/// point at the local machine / private networks. IP literals (incl. decimal/
+/// hex/IPv6/mapped) are checked against [`ip_is_internal`]. For DNS NAMES this is
+/// **advisory** — it blocks localhost/.local/.internal but cannot stop a public
+/// name that resolves to a private IP, nor DNS rebinding. Post-resolution
+/// enforcement is the sidecar's job (it performs the actual navigation); tracked
+/// in audit 0002 #9.
 fn guard_scan_url(url: &str) -> Result<(), String> {
-    let lower = url.trim().to_ascii_lowercase();
-    let Some(end) = lower.find("://") else {
+    let trimmed = url.trim();
+    let Some(end) = trimmed.find("://") else {
         return Err("URL must start with http:// or https://".into());
     };
-    let scheme = &lower[..end];
+    let scheme = trimmed[..end].to_ascii_lowercase();
     if scheme != "http" && scheme != "https" {
         return Err(format!("scheme '{scheme}' is not allowed (http/https only)"));
     }
-    let authority = lower[end + 3..].split(['/', '?', '#']).next().unwrap_or("");
-    let host = authority.rsplit('@').next().unwrap_or(authority).split(':').next().unwrap_or("");
+    let authority = trimmed[end + 3..].split(['/', '?', '#']).next().unwrap_or("");
+    // host = authority minus userinfo; keep IPv6 brackets, drop the port.
+    let hostport = authority.rsplit('@').next().unwrap_or(authority);
+    let host = if let Some(rest) = hostport.strip_prefix('[') {
+        rest.split(']').next().unwrap_or(rest) // bracketed IPv6
+    } else {
+        hostport.split(':').next().unwrap_or(hostport)
+    };
     if host.is_empty() {
         return Err("URL has no host".into());
     }
-    let blocked = host == "localhost"
-        || host == "0.0.0.0"
-        || host == "::1"
-        || host == "[::1]"
-        || host.ends_with(".local")
-        || host.ends_with(".internal")
-        || host.starts_with("127.")
-        || host.starts_with("10.")
-        || host.starts_with("192.168.")
-        || host.starts_with("169.254.")
-        || host.split('.').nth(1).and_then(|o| o.parse::<u8>().ok())
-            .is_some_and(|o| host.starts_with("172.") && (16..=31).contains(&o));
-    if blocked {
-        return Err(format!("host '{host}' is private/internal and may not be scanned"));
+    let lower = host.to_ascii_lowercase();
+    if let Some(ip) = host_as_ip(&lower) {
+        if ip_is_internal(&ip) {
+            return Err(format!("host '{host}' resolves to a private/internal address"));
+        }
+    } else if lower == "localhost" || lower.ends_with(".local") || lower.ends_with(".internal") || lower.ends_with(".localhost") {
+        return Err(format!("host '{host}' is internal and may not be scanned"));
     }
     Ok(())
 }
@@ -397,7 +446,9 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
                     .unwrap_or_default();
                 let event_count = events.len();
                 if event_count > 0 {
-                    self.store.add_batch(project.clone(), events).await;
+                    if let Err(e) = self.store.add_batch(project.clone(), events).await {
+                        eprintln!("[RuntimeScope] scan_website: failed to store recon events: {e}");
+                    }
                 }
                 Ok(envelope(json!({
                     "summary": format!(

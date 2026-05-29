@@ -251,7 +251,9 @@ async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String
     }
     let accepted = accepted_events.len();
     if accepted > 0 {
-        s.store.add_batch(project, accepted_events).await;
+        if let Err(e) = s.store.add_batch(project, accepted_events).await {
+            eprintln!("[RuntimeScope] POST /api/events: durability error: {e}");
+        }
     }
     let status = if accepted > 0 { StatusCode::OK } else { StatusCode::TOO_MANY_REQUESTS };
     (status, Json(json!({ "accepted": accepted, "dropped": 0, "rejected": rejected, "sessionId": session_id }))).into_response()
@@ -372,7 +374,9 @@ async fn handle_socket(socket: WebSocket, s: AppState) {
                     serde_json::from_value::<EventBatch>(v.get("payload").cloned().unwrap_or(Value::Null)),
                     project.clone(),
                 ) {
-                    s.store.add_batch(proj, batch.events).await;
+                    if let Err(e) = s.store.add_batch(proj, batch.events).await {
+                        eprintln!("[RuntimeScope] WS ingest: durability error: {e}");
+                    }
                 }
             }
             "command_response" => {

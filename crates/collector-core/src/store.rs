@@ -45,7 +45,7 @@ pub struct SessionInfo {
 }
 
 enum Cmd {
-    AddBatch { project: String, events: Vec<Value>, reply: oneshot::Sender<()> },
+    AddBatch { project: String, events: Vec<Value>, reply: oneshot::Sender<Result<usize, String>> },
     RegisterSession { session_id: String, app_name: String, project: String },
     MarkDisconnected { session_id: String },
     Sessions { reply: oneshot::Sender<Vec<SessionInfo>> },
@@ -74,11 +74,14 @@ impl StoreHandle {
                 conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
                 conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
                 conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
-                let wal = Wal::open(&data_dir.join("wal")).map_err(|e| e.to_string())?;
+                let mut wal = Wal::open(&data_dir.join("wal")).map_err(|e| e.to_string())?;
                 // Recover: replay the JSONL WAL into SQLite (deduped by event_id).
                 for (project, ev) in Wal::recover(&data_dir.join("wal")) {
-                    insert_event(&conn, &project, &ev);
+                    let _ = insert_event(&conn, &project, &ev);
                 }
+                // Recovered events are now durable in SQLite — clear the redundant
+                // JSONL WAL so boot stays O(in-flight), not O(history) (audit #3).
+                let _ = wal.truncate();
                 Ok((conn, wal))
             })();
 
@@ -99,12 +102,31 @@ impl StoreHandle {
                 match cmd {
                     Cmd::AddBatch { project, events, reply } => {
                         // Durability: WAL append + fsync BEFORE the SQLite write.
-                        let _ = wal.append(&project, &events);
-                        let _ = wal.commit();
-                        for ev in &events {
-                            insert_event(&conn, &project, ev);
+                        // Errors are propagated, not swallowed (audit #5).
+                        let mut err: Option<String> = None;
+                        if let Err(e) = wal.append(&project, &events).and_then(|()| wal.commit()) {
+                            eprintln!("[RuntimeScope] durability: WAL write failed: {e}");
+                            err.get_or_insert(format!("WAL: {e}"));
                         }
-                        let _ = reply.send(());
+                        let mut stored = 0usize;
+                        for ev in &events {
+                            match insert_event(&conn, &project, ev) {
+                                Ok(_) => stored += 1,
+                                Err(e) => {
+                                    eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
+                                    err.get_or_insert(format!("SQLite: {e}"));
+                                }
+                            }
+                        }
+                        // The batch is now durable in SQLite (its own WAL) — close the
+                        // JSONL WAL window so it stays bounded (audit #3). Only when
+                        // every write succeeded; otherwise keep it for recovery.
+                        if err.is_none() {
+                            if let Err(e) = wal.truncate() {
+                                eprintln!("[RuntimeScope] WAL truncate failed: {e}");
+                            }
+                        }
+                        let _ = reply.send(err.map_or(Ok(stored), Err));
                     }
                     Cmd::RegisterSession { session_id, app_name, project } => {
                         if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
@@ -140,12 +162,15 @@ impl StoreHandle {
         Ok(StoreHandle { tx })
     }
 
-    /// Persist a batch durably and await the ack (WAL fsync + SQLite commit).
-    pub async fn add_batch(&self, project: String, events: Vec<Value>) {
+    /// Persist a batch durably and await the ack: `Ok(stored)` once the WAL is
+    /// fsync'd and SQLite committed, or `Err` if a write failed (so callers can
+    /// surface it rather than report a false success — audit #5).
+    pub async fn add_batch(&self, project: String, events: Vec<Value>) -> Result<usize, String> {
         let (reply, rx) = oneshot::channel();
-        if self.tx.send(Cmd::AddBatch { project, events, reply }).await.is_ok() {
-            let _ = rx.await;
+        if self.tx.send(Cmd::AddBatch { project, events, reply }).await.is_err() {
+            return Err("store channel closed".into());
         }
+        rx.await.unwrap_or_else(|_| Err("store dropped the durability ack".into()))
     }
 
     pub async fn register_session(&self, session_id: String, app_name: String, project: String) {
@@ -198,21 +223,25 @@ impl StoreHandle {
     }
 }
 
-/// INSERT OR IGNORE one raw event. Idempotent on `event_id` (so WAL replay is safe).
-fn insert_event(conn: &Connection, project: &str, ev: &Value) {
+/// INSERT OR IGNORE one raw event. Idempotent on `event_id` (so WAL replay is
+/// safe). Returns `Ok(true)` if a row was newly inserted, `Ok(false)` if it was
+/// a dedup/empty-id no-op, `Err` on a real SQLite error (surfaced, not swallowed
+/// — audit #5).
+fn insert_event(conn: &Connection, project: &str, ev: &Value) -> rusqlite::Result<bool> {
     let event_id = ev.get("eventId").and_then(Value::as_str).unwrap_or("");
     if event_id.is_empty() {
-        return;
+        return Ok(false);
     }
     let session_id = ev.get("sessionId").and_then(Value::as_str).unwrap_or("");
     let timestamp = ev.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
     let event_type = event_type_of(ev);
     let data = ev.to_string();
-    let _ = conn.execute(
+    let n = conn.execute(
         "INSERT OR IGNORE INTO events (event_id, session_id, project, event_type, timestamp, data)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![event_id, session_id, project, event_type, timestamp, data],
-    );
+    )?;
+    Ok(n > 0)
 }
 
 /// Timeline: all events for a project in insertion order (id ASC), optionally

@@ -21,18 +21,56 @@ pub struct Wal {
 }
 
 impl Wal {
-    /// Open (create) the active WAL under `dir`.
+    /// Open (create) the active WAL under `dir`. Heals a torn tail first: a crash
+    /// mid-append can leave a partial/garbage final line; we truncate the file to
+    /// its last complete, parseable, newline-terminated line BEFORE reopening for
+    /// append, so future writes land on clean data and a later recovery doesn't
+    /// stop early and skip them (audit #4).
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         create_dir_all(dir)?;
-        let active = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(Self::active_path(dir))?;
+        let path = Self::active_path(dir);
+        Self::heal_torn_tail(&path);
+        let active = OpenOptions::new().create(true).append(true).open(&path)?;
         Ok(Wal { active, seq: 0 })
     }
 
     fn active_path(dir: &Path) -> PathBuf {
         dir.join("active.jsonl")
+    }
+
+    /// Truncate the active file to its last good-line boundary (best-effort).
+    fn heal_torn_tail(path: &Path) {
+        let Ok(content) = std::fs::read_to_string(path) else { return };
+        if content.is_empty() {
+            return;
+        }
+        let mut valid_len = 0usize;
+        for line in content.split_inclusive('\n') {
+            if !line.ends_with('\n') {
+                break; // partial final line — never fsync'd, drop it
+            }
+            let trimmed = line.trim_end();
+            if !trimmed.is_empty() && serde_json::from_str::<Value>(trimmed).is_err() {
+                break; // unparseable line — torn; stop here
+            }
+            valid_len += line.len();
+        }
+        if valid_len < content.len() {
+            if let Ok(f) = OpenOptions::new().write(true).open(path) {
+                let _ = f.set_len(valid_len as u64);
+            }
+        }
+    }
+
+    /// Clear the active WAL. Safe to call once a batch's events are durably in
+    /// SQLite (SQLite's own WAL owns their durability then) — bounds WAL growth +
+    /// keeps recovery O(in-flight), not O(history) (audit #3). No fsync needed:
+    /// a crash before the truncate hits disk just replays already-stored events
+    /// (INSERT OR IGNORE dedups).
+    pub fn truncate(&mut self) -> std::io::Result<()> {
+        self.active.set_len(0)?;
+        self.seq = 0;
+        Ok(())
     }
 
     /// Append a batch as `{seq, project, event}` JSONL lines. The `project` is
@@ -124,6 +162,42 @@ mod tests {
         assert_eq!(recovered.len(), 2);
         assert_eq!(recovered[0].0, "proj_a");
         assert_eq!(recovered[0].1["eventId"], "e1");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn append_after_torn_tail_recovers_everything() {
+        // Audit #4: a torn tail must be HEALED on open, so events appended after
+        // it are not lost on a later recovery. Without truncation, recovery would
+        // stop at the torn line and skip the post-tear append.
+        let dir = std::env::temp_dir().join(format!("wal-heal-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = json!({ "seq": 1, "project": "p", "event": { "eventId": "e1" } }).to_string();
+        // good line + a torn (partial, unterminated) line
+        std::fs::write(dir.join("active.jsonl"), format!("{good}\n{{\"seq\":2,\"proj")).unwrap();
+
+        // open() heals the torn tail; then we append a fresh batch + commit.
+        let mut wal = Wal::open(&dir).unwrap();
+        wal.append("p", &[json!({ "eventId": "e2" })]).unwrap();
+        wal.commit().unwrap();
+
+        let recovered = Wal::recover(&dir);
+        assert_eq!(recovered.len(), 2, "post-tear append must survive recovery");
+        assert_eq!(recovered[0].1["eventId"], "e1");
+        assert_eq!(recovered[1].1["eventId"], "e2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn truncate_clears_the_active_wal() {
+        let dir = std::env::temp_dir().join(format!("wal-trunc-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let mut wal = Wal::open(&dir).unwrap();
+        wal.append("p", &[json!({ "eventId": "e1" })]).unwrap();
+        wal.commit().unwrap();
+        wal.truncate().unwrap();
+        assert_eq!(Wal::recover(&dir).len(), 0, "truncate empties the active WAL");
         std::fs::remove_dir_all(&dir).ok();
     }
 

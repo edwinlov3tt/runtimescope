@@ -77,12 +77,13 @@ The biggest LOC chunk and the most parallelizable — the agent fan-out is what 
 
 **Team?** **Yes — this is the textbook fan-out.** Batch tools across agents (e.g. 5–8 agents, ~8–12 tools each), each handed the patterns doc + the conformance spec for its family. Reconcile against `cargo clippy` + conformance, not by eyeball.
 
-## Milestone 4 — Engines + native recon (fan-out, ~1 wk)
+## Milestone 4 — Engines + recon (fan-out, ~1 wk) — 🟡 IN PROGRESS
 
-- [ ] `api-discovery`, `query-monitor`, `process-monitor`, `infra-connector` — mutually independent. Fan out, one agent per engine.
-- [ ] Non-browser recon (design tokens, layout from stored events, etc.) where it doesn't need Playwright.
+- [x] **`scan_website` REAL via the recon sidecar (ADR-0007 payoff).** mcp-server spawns the Node sidecar (`mcp-server/src/sidecar.rs`, one-shot newline-JSON over stdio) and proxies `scan_website` → verified end-to-end: a live scan of example.com returns 6 recon events (`recon_metadata/design_tokens/fonts/layout_tree/accessibility/asset_inventory`) through the Rust mcp-server. Sidecar launch command via `RUNTIMESCOPE_RECON_SIDECAR`. **Browser resolution + bundling is M6** (the smoke needed `PLAYWRIGHT_BROWSERS_PATH` at the installed Chromium; curl-install must ship/locate it).
+- [ ] Wire the browser-recon tools (`get_computed_styles`, `get_element_snapshot`, `get_layout_tree`, `get_style_diff`) to the same `call_sidecar(...)` client (the client is factored; each maps to a sidecar method — needs the tool↔URL semantics decided).
+- [ ] `api-discovery` (done as real in M3 over stored network events), `query-monitor`, `process-monitor`, `infra-connector` — deepen the stubs. process-monitor (OS) + infra-connector (external APIs) are independent → fan out, one agent per engine.
 
-**Team?** Yes — 4 independent engines map cleanly to 4 agents.
+**Team?** The remaining engine stubs map cleanly to per-engine agents (as M3 did for tools).
 
 ## Milestone 5 — `pm/` project-manager subsystem (own serial track, ~1.5 wk)
 

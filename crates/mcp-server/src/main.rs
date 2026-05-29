@@ -6,6 +6,7 @@
 //! The Milestone 3 fan-out adds family modules and one `+ Self::<family>_router()`
 //! line each — see `tools/mod.rs` for the pattern.
 
+mod sidecar;
 mod tools;
 
 use collector_core::{

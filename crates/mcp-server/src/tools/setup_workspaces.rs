@@ -12,7 +12,7 @@ use crate::tools::envelope;
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 
 /// HTTP API port (dashboard + SDK bundle + /api/events). Mirrors the TS default.
 fn http_port() -> u16 {
@@ -303,7 +303,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         })))
     }
 
-    // ---------------- scan_website (STUB — needs Playwright sidecar, ADR-0007) ----------------
+    // ---------------- scan_website (REAL — via the Playwright sidecar, ADR-0007) ----------------
 
     #[tool(
         description = "Visit a website with a headless browser and extract tech stack, design tokens, layout tree, accessibility structure, fonts, and asset inventory. After scanning, the recon tools return data from the scanned page."
@@ -312,16 +312,39 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<ScanWebsiteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let _ = (&args.viewport_width, &args.viewport_height, &args.wait_for);
-        Ok(envelope(json!({
-            "summary": format!(
-                "Deferred: scanning {} requires the Playwright Node sidecar (ADR-0007), which is not yet wired into the Rust collector.",
-                args.url
-            ),
-            "data": null,
-            "issues": ["scan_website is deferred — the Playwright headless-browser sidecar is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
-        })))
+        let mut params = json!({ "url": args.url });
+        if let Some(w) = args.viewport_width {
+            params["viewportWidth"] = json!(w);
+        }
+        if let Some(h) = args.viewport_height {
+            params["viewportHeight"] = json!(h);
+        }
+        if let Some(w) = &args.wait_for {
+            params["waitFor"] = json!(w);
+        }
+
+        match crate::sidecar::call_sidecar("scan_website", params).await {
+            Ok(result) => {
+                // The sidecar returns { events: [...], ... } ready to store.
+                let event_count = result
+                    .get("events")
+                    .and_then(Value::as_array)
+                    .map(|a| a.len())
+                    .unwrap_or(0);
+                Ok(envelope(json!({
+                    "summary": format!("Scanned {} — {event_count} recon event(s) captured.", args.url),
+                    "data": result,
+                    "issues": [],
+                    "metadata": { "eventCount": event_count, "projectId": null },
+                })))
+            }
+            Err(e) => Ok(envelope(json!({
+                "summary": format!("Failed to scan {}: {e}", args.url),
+                "data": null,
+                "issues": [e],
+                "metadata": { "eventCount": 0, "projectId": null },
+            }))),
+        }
     }
 
     // ---------------- create_workspace (STUB — needs pm/ subsystem) ----------------

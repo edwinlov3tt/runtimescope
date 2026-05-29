@@ -15,6 +15,9 @@
     "playground": "npm run dev -w playground",
     "stress": "tsx stress/cli.ts",
     "stress:quick": "tsx stress/cli.ts -- --quick",
+    "bench": "tsx stress/bench.ts",
+    "bench:quick": "tsx stress/bench.ts --quick",
+    "bench:compare": "tsx stress/bench.ts --compare",
     "prepush": "npm run build && npm test && npm run stress -- --quick"
   },
   "devDependencies": {

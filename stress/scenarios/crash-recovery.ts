@@ -17,7 +17,7 @@
  * this fails.
  */
 
-import { spawnCollector, type SpawnedCollector } from '../utils/spawn-collector.js';
+import { spawnCollector, resolveCollectorCmd, type SpawnedCollector } from '../utils/spawn-collector.js';
 import { SdkDriver, makeNetEvent } from '../utils/sdk-driver.js';
 import { CheckCollector } from '../utils/assert.js';
 import { spawn } from 'node:child_process';
@@ -137,17 +137,9 @@ async function spawnCollectorAt(
   wsPort: number,
   httpPort: number,
 ): Promise<SpawnedCollector> {
-  const distPath = join(
-    new URL('.', import.meta.url).pathname,
-    '..',
-    '..',
-    'packages',
-    'collector',
-    'dist',
-    'standalone.js',
-  );
+  const { cmd, args, label } = resolveCollectorCmd();
 
-  const proc = spawn('node', [distPath], {
+  const proc = spawn(cmd, args, {
     env: {
       ...process.env,
       HOME: rootDir,
@@ -170,6 +162,7 @@ async function spawnCollectorAt(
     httpPort,
     rootDir,
     proc,
+    label,
     ready: async () => {
       const deadline = Date.now() + 15_000;
       while (Date.now() < deadline) {

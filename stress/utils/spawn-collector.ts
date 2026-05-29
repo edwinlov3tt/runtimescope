@@ -20,10 +20,47 @@ export interface SpawnedCollector {
   rootDir: string;
   /** Child process running the standalone. */
   proc: ChildProcess;
+  /** Human label for the collector under test — "node" or the binary basename.
+   *  Used by the bench harness to key baselines per implementation. */
+  label: string;
   /** Wait until /readyz returns 200. Throws if it never does. */
   ready: () => Promise<void>;
   /** Kill the collector and remove its data directory. Idempotent. */
   stop: () => Promise<void>;
+}
+
+/**
+ * Resolve the command that launches the collector under test.
+ *
+ * Default: today's Node standalone (`node packages/collector/dist/standalone.js`).
+ * Override: set `RUNTIMESCOPE_COLLECTOR_CMD` to any executable — e.g. the Rust
+ * collector binary at `./target/release/runtimescope-collector`. The whole
+ * stress + bench suite then runs against that binary unchanged, which is how we
+ * prove the Rust port is behaviorally equivalent before trusting it (differential
+ * testing: identical suite, two implementations, identical observable results).
+ *
+ * The override may include space-separated args, e.g. "cargo run -q --bin coll".
+ * The launched process MUST honor RUNTIMESCOPE_PORT / RUNTIMESCOPE_HTTP_PORT /
+ * RUNTIMESCOPE_BUFFER_SIZE and serve /readyz — that's part of the locked contract.
+ */
+export function resolveCollectorCmd(): { cmd: string; args: string[]; label: string } {
+  const override = process.env.RUNTIMESCOPE_COLLECTOR_CMD?.trim();
+  if (override) {
+    const parts = override.split(/\s+/);
+    const cmd = parts[0];
+    const label = (cmd.split('/').pop() || cmd).replace(/\.[^.]+$/, '');
+    return { cmd, args: parts.slice(1), label };
+  }
+  const distPath = join(
+    new URL('.', import.meta.url).pathname,
+    '..',
+    '..',
+    'packages',
+    'collector',
+    'dist',
+    'standalone.js',
+  );
+  return { cmd: 'node', args: [distPath], label: 'node' };
 }
 
 let nextPort = 47000 + Math.floor(Math.random() * 1000);
@@ -69,17 +106,9 @@ export async function spawnCollector(
     env.RUNTIMESCOPE_SQLITE_SWEEP_MS = String(options.sqliteSweepMs);
   }
 
-  const distPath = join(
-    new URL('.', import.meta.url).pathname,
-    '..',
-    '..',
-    'packages',
-    'collector',
-    'dist',
-    'standalone.js',
-  );
+  const { cmd, args, label } = resolveCollectorCmd();
 
-  const proc = spawn('node', [distPath], {
+  const proc = spawn(cmd, args, {
     env,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -133,5 +162,5 @@ export async function spawnCollector(
     }
   };
 
-  return { wsPort, httpPort, rootDir, proc, ready, stop };
+  return { wsPort, httpPort, rootDir, proc, label, ready, stop };
 }

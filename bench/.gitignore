@@ -1,0 +1,6 @@
+# Timestamped per-run reports are local artifacts — keep them out of git.
+results/
+
+# Baselines ARE committed: they're the blessed numbers the Rust port is
+# measured against. Do not ignore bench/baselines/.
+!baselines/

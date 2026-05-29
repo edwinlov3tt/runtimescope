@@ -27,8 +27,17 @@ pub struct Mcp {
 
 impl Mcp {
     fn new(store: StoreHandle, hub: CommandHub) -> Self {
-        // Combine every family's router. M3 fan-out appends `+ Self::x_router()`.
-        let tool_router = Self::core_router() + Self::status_router();
+        // Combine every family's router (M3 fan-out).
+        let tool_router = Self::core_router()
+            + Self::status_router()
+            + Self::event_reads_router()
+            + Self::diagnostics_router()
+            + Self::api_discovery_router()
+            + Self::database_router()
+            + Self::process_infra_router()
+            + Self::sessions_history_router()
+            + Self::setup_workspaces_router()
+            + Self::recon_router();
         Self { store, hub, tool_router }
     }
 }

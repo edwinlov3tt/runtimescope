@@ -26,7 +26,15 @@
 //! ```
 //! Then add `pub mod <family>;` here and `+ Self::foo_router()` in `Mcp::new`.
 
+pub mod api_discovery;
 pub mod core_tools;
+pub mod database;
+pub mod diagnostics;
+pub mod event_reads;
+pub mod process_infra;
+pub mod recon;
+pub mod sessions_history;
+pub mod setup_workspaces;
 pub mod status_tools;
 
 use rmcp::model::{CallToolResult, Content};

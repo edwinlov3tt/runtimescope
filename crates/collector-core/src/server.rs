@@ -11,7 +11,7 @@ use crate::store::StoreHandle;
 use axum::{
     extract::{
         ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
-        Query, State,
+        Path, Query, State,
     },
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
@@ -56,7 +56,8 @@ pub async fn serve(
         .route("/metrics", get(metrics))
         // gated
         .route("/api/sessions", get(sessions))
-        .route("/api/events/network", get(events_network))
+        .route("/api/projects", get(projects))
+        .route("/api/events/{kind}", get(events_by_kind))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -133,16 +134,44 @@ async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
     Json(json!({ "data": list, "count": count })).into_response()
 }
 
-async fn events_network(
+/// Generic event read API: `/api/events/<kind>`, scoped by `?project_id=`.
+/// The store is type-agnostic, so one handler serves every family. The only
+/// route↔type quirk is `renders` → eventType `render` (matching the Node API).
+async fn events_by_kind(
     State(s): State<AppState>,
     headers: HeaderMap,
+    Path(kind): Path<String>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
+    let event_type = match kind.as_str() {
+        "renders" => "render",
+        other => other,
+    };
     let project = q.get("project_id").map(String::as_str);
-    let data = s.store.events_by_type("network", project).await;
+    let data = s.store.events_by_type(event_type, project).await;
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// Sessions grouped by app name (the dashboard's project list).
+async fn projects(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    use std::collections::BTreeMap;
+    let mut by_app: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+    for si in s.store.sessions().await {
+        let entry = by_app.entry(si.app_name.clone()).or_default();
+        entry.0.push(si.session_id);
+        entry.1 |= si.is_connected;
+    }
+    let data: Vec<Value> = by_app
+        .into_iter()
+        .map(|(app, (sessions, connected))| json!({ "appName": app, "sessions": sessions, "isConnected": connected }))
+        .collect();
     let count = data.len();
     Json(json!({ "data": data, "count": count })).into_response()
 }

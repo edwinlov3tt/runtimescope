@@ -50,13 +50,14 @@ The most important week of the phase. **One author. No fan-out.**
 
 **Team?** No — this is the convention-setting pass by definition.
 
-## Milestone 2 — `collector-server`: WS + HTTP (partial fan-out, ~1.5 wk)
+## Milestone 2 — `collector-server`: WS + HTTP (~1.5 wk) — 🟢 GATE MET
 
-> **Gate: turn `event-families.conformance.test.ts` green** (all 7 event families round-trip through `/api/events/*`). M1 already did `handshake` + `command-channel`-WS-half + `http-contracts`; M2 finishes the read API across every event type.
+> **Gate: `event-families.conformance.test.ts` green against the Rust collector — DONE.** The full read API across every event type passes (Rust 13/17 → 14/17).
 
-- [ ] WS: handshake (5s auth timeout, close 4001), event-batch ingest, `requestId` command channel. *(Conformance: `handshake`, `command-channel`.)* — **serial, it's stateful.** (handshake + ingest done in M1; the `requestId` command-channel send is the remaining piece, shared with M3.)
-- [ ] HTTP router skeleton + the public/auth gate + static dashboard serving. — done in M1 (skeleton/auth/metrics); dashboard serving remains.
-- [ ] The `/api/events/<type>` handlers for the remaining families (console/state/render/performance/database/custom/ui/timeline) + `/api/projects`, `/api/processes`, `/api/ports`. — **fan-out** once the `Store` query surface is generalized beyond `network`. *(Conformance: `event-families`, `http-contracts`.)*
+- [x] **Generic event read API** `/api/events/{kind}` (one handler — the M1 `Store.events_by_type` + the WS ingest were already type-agnostic, so per-type fan-out wasn't needed). `renders`→`render` route↔type quirk handled. Turns `event-families` green. Plus `/api/projects` (sessions grouped by app).
+- [x] WS handshake (5s auth timeout, close 4001) + event-batch ingest — done in M1.
+- [x] HTTP router skeleton + public/auth gate + `/metrics` — done in M1.
+- [ ] **Not gated by conformance, deferred:** the `requestId` command-channel *send* (shared with M3 — needed by `get_dom_snapshot`); `/api/events/timeline` (aggregate/merge, not a single-type filter); `/api/processes` + `/api/ports` (OS process logic — overlaps M4's process-monitor engine); static dashboard serving (M6, `include_bytes!`).
 
 **Team?** Partial — one author does the WS + router skeleton; route handlers fan out.
 

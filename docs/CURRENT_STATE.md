@@ -1,7 +1,9 @@
 # Current State
 
-**Snapshot date:** 2026-05-24 (post-Audit, post ADR-0002 + ADR-0003)
-**Snapshot commit:** `662969f` — *feat(audit): close audit 0001 — process lifetime + resource hygiene (v0.10.9)*
+**Snapshot date:** 2026-05-24 (post-Tauri-Tray)
+**Snapshot commit:** `538a399` — *fix(cli): bump readyz install poll 30s → 60s (v0.10.12)* + uncommitted Phase Tauri-Tray work (see [`reports/phase-tauri-tray-completion-report.md`](./reports/phase-tauri-tray-completion-report.md))
+
+**Active phase:** Phase Wire-Protocol-Lock (next up; not yet started — handoff doc not yet written).
 
 This file is updated when releases land or gates change. It is *not* a running log — for that, see [`CHANGELOG.md`](./CHANGELOG.md).
 
@@ -9,26 +11,31 @@ This file is updated when releases land or gates change. It is *not* a running l
 
 | Package | Version | Registry |
 |---|---|---|
-| `@runtimescope/sdk` | 0.10.9 | npm |
-| `@runtimescope/server-sdk` | 0.10.9 | npm |
-| `@runtimescope/workers-sdk` | 0.10.9 | npm |
-| `@runtimescope/collector` | 0.10.9 | npm |
-| `@runtimescope/mcp-server` | 0.10.9 | npm |
-| `runtimescope` (CLI) | 0.10.9 | npm |
-| `runtimescope` (Python) | 0.10.9 | PyPI |
-| Plugin (Claude marketplace) | 0.10.13 | edwinlov3tt/runtimescope marketplace |
+| `@runtimescope/sdk` | 0.10.12 | npm |
+| `@runtimescope/server-sdk` | 0.10.12 | npm |
+| `@runtimescope/workers-sdk` | 0.10.12 | npm |
+| `@runtimescope/collector` | 0.10.12 | npm |
+| `@runtimescope/mcp-server` | 0.10.12 | npm |
+| `runtimescope` (CLI) | 0.10.12 | npm |
+| `runtimescope` (Python) | 0.10.12 | PyPI |
+| `@runtimescope/tray` | 0.1.0 | **workspace-private** — manual `.dmg` distribution on GitHub Releases (auto-updater pending P1; see Phase Tauri-Tray completion report §4.1) |
+| Plugin (Claude marketplace) | 0.10.16 | edwinlov3tt/runtimescope marketplace |
 
 ## Gate status
 
 | Gate | Command | Status |
 |---|---|---|
-| Build | `npm run build` | ✅ clean across 13 workspace packages |
+| Build (existing packages + tray) | `npm run build` | ✅ all 13 existing packages + new `packages/tray` build clean. Pre-existing playground build-script issue persists at the inherited HEAD — see Tauri-Tray completion report §4.2 |
 | Unit tests | `npm test` | ✅ **586 / 0** |
 | Stress harness | `npm run stress` | ✅ **7 / 7** scenarios |
-| Smoke: published CLI | `runtimescope --version` | ✅ → `0.10.9` |
+| Tray Rust unit | `cd packages/tray/src-tauri && cargo test --lib` | ✅ **2 / 0** |
+| Tray release build | `cd packages/tray && cargo tauri build` | ✅ produces `RuntimeScope_0.1.0_aarch64.dmg` (2.6 MB), ad-hoc signed |
+| Smoke: published CLI | `runtimescope --version` | ✅ → `0.10.12` |
 | Smoke: npx MCP | `npx -y @runtimescope/mcp-server@latest` | ✅ boots, MCP transport ready in <20s with warm npx cache |
 | Smoke: parent-death exit | spawn `runtimescope-mcp` → close stdin | ✅ exits in 5ms with code 0 |
-| Smoke: launchd collector | `runtimescope status` | ✅ green, no SDKs connected |
+| Smoke: launchd collector | `runtimescope service status` | ✅ green, PID assigned, version 0.10.12 |
+| Smoke: `service stop` (new) | `runtimescope service stop` then `restart` | ✅ unloads plist, HTTP stops responding; `service restart` brings the daemon back through ~30s WAL replay |
+| Smoke: tray binary | launch `RuntimeScope.app` for 10s | ✅ 92 MB RSS, no crash, no stderr noise |
 
 ## What v0.10.8 fixed
 
@@ -50,16 +57,29 @@ This file is updated when releases land or gates change. It is *not* a running l
 - **F4** — Standalone collector parent-death watchdog, gated on `fstatSync(0).isSocket()` to avoid /dev/null EOF in launchd/systemd/stdio-ignore cases.
 - **F5** — `pendingCommands` timeout cleanup regression test (3 tests covering timeout, send-fail, response-clears-timer).
 
+## What Phase Tauri-Tray shipped (v0.1.0, this snapshot)
+
+[Completion report](./reports/phase-tauri-tray-completion-report.md) — full detail. Summary:
+
+- **`@runtimescope/tray@0.1.0`** — Tauri 2 + React menu-bar app for macOS (≥ 13.0), ad-hoc signed `.dmg` at `packages/tray/src-tauri/target/release/bundle/dmg/RuntimeScope_0.1.0_aarch64.dmg`.
+- **`runtimescope service stop`** added to the CLI (mirrors `restartLaunchd()` minus the load step). Unloads the launchd plist or systemd unit without removing it — the tray's "Quit Service" button shells out to this.
+- **`docs/specs/tray-api-surface.md`** — first file under `docs/specs/`; locks the HTTP endpoints the tray reads (`/api/health`, `/api/sessions`, npm-latest). Becomes input to Phase Wire-Protocol-Lock.
+- **`rust-toolchain.toml`** at the repo root pins Rust 1.95.0.
+
 ## Open deferrals
 
-None from Phase Audit. Next phase is **Phase Tauri-Tray** per the updated [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md) (re-ordered post-audit per [ADR-0002](./decisions/0002-rust-port-sequence-and-distribution.md)).
+- **D1 (Tauri-Tray):** Auto-updater wired but disabled — owner must complete P1 (signing keys + `gh secret set TAURI_SIGNING_PRIVATE_KEY`) to unblock. v0.1.0 ships as manual-download `.dmg`.
+- **D2 (Tauri-Tray):** Owner-side smoke check on the `.dmg`. Checklist in the completion report §6.
+- **Pre-existing (§4.2 of Tauri-Tray report):** `npm run build` fails on the `runtimescope-playground` workspace (missing `build` script). 13 existing + tray all build clean; the playground error is independent of this phase.
+
+Next phase is **Phase Wire-Protocol-Lock** per the updated [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md).
 
 ## Local environment (project owner's primary machine)
 
 | Surface | State |
 |---|---|
-| launchd collector | running, PID 23147 (re-installed after v0.10.8) — **still on v0.10.8**, needs `npm install -g runtimescope@latest && runtimescope service install` to deploy the v0.10.9 binary |
-| Tray app | not yet built (Phase Tauri-Tray) |
+| launchd collector | running, v0.10.12, port 6768. Smoke-tested through stop/restart during Phase Tauri-Tray. |
+| Tray app | **v0.1.0 built but not yet installed.** `.dmg` at `packages/tray/src-tauri/target/release/bundle/dmg/RuntimeScope_0.1.0_aarch64.dmg` |
 | Data | ~/.runtimescope/projects/ holds 44 projects of historical SQLite + WAL — will be wiped on Rust collector cutover (accepted per ADR-0002) |
 
 The Node daemon stays running through Phase Tauri-Tray (it's what the tray controls during the interim). The `launchctl unload` advice in the second instance's strategic proposal was rejected in favor of "tray-first, daemon stays running for tray's benefit" — see ADR-0002 §"What we are explicitly NOT doing."

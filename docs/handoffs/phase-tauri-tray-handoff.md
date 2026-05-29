@@ -1,29 +1,78 @@
 # Phase Tauri-Tray Handoff — macOS menu-bar app for RuntimeScope
 
 > **Audience:** the Claude Code instance running in this repo that picks up Phase Tauri-Tray.
-> **You inherit a green v0.10.10.** Read this whole file before touching code.
+> **You inherit a green v0.10.12.** Read this whole file before touching code.
+> **Before you begin:** confirm the *Pre-handoff prerequisites* section below — two of them require the project owner's hands, not yours.
 
 ---
 
-## Where Phase Audit (and the v0.10.10 install-blocker exception) ended
+## Where Phase Audit (and the v0.10.10–0.10.12 install-blocker exceptions) ended
 
-- **Last commit:** `656e37e` — *docs: ADR-0005 (Proposed) — prefer pnpm over npm for internal tooling*
-- **Last release commit:** `8d4baad` — *feat(v0.10.10): install-timeout fix + bundled dashboard + dashboard CLI*
+- **Last commit:** `538a399` — *fix(cli): bump readyz install poll 30s → 60s (v0.10.12)*
+- **Last release commit:** same. v0.10.11 and v0.10.12 are small follow-ons to v0.10.10's ADR-0004 exception (dashboard not bundled in v0.10.10 CI; readyz timeout message wrong; readyz timeout too short for 44-project machines). All three captured as same-exception-class releases.
 - **Published versions on npm:**
-  - `runtimescope` (CLI) → 0.10.10
-  - `@runtimescope/sdk` / `server-sdk` / `workers-sdk` / `collector` / `mcp-server` → 0.10.10
-  - `runtimescope` (Python, PyPI) → 0.10.10
-  - Plugin (Claude marketplace) → 0.10.14
+  - `runtimescope` (CLI) → 0.10.12
+  - `@runtimescope/sdk` / `server-sdk` / `workers-sdk` / `collector` / `mcp-server` → 0.10.12
+  - `runtimescope` (Python, PyPI) → 0.10.12
+  - Plugin (Claude marketplace) → 0.10.16
 - **Test status:** 586 / 0 unit, 7 / 7 stress.
 - **Gates green:** `npm run build` clean across 13 packages, `npm test` green, `npm run stress` green.
 - **Smoke checks all passing:**
-  - `runtimescope --version` → `0.10.10`
-  - `runtimescope service install` → completes within 30s on a 40+ project machine
-  - `runtimescope dashboard` → opens the now-bundled dashboard SPA in browser
+  - `runtimescope --version` → `0.10.12`
+  - `runtimescope service install` → completes within 60s even on a 44-project machine
+  - `runtimescope dashboard` → opens the bundled dashboard SPA in browser (v0.10.11+ ships the static bundle inside the collector npm package)
   - `runtimescope dashboard --network` → detects LAN IP, opens LAN URL (after `RUNTIMESCOPE_HOST=0.0.0.0 runtimescope service install`)
   - Parent-death exit: spawn `runtimescope-mcp` then close stdin → exits in **5ms** with code 0
-- **Toolchain:** Node 20+ for the collector. **Rust toolchain is NEW for this phase** — pin it in a new `rust-toolchain.toml` at the repo root.
+- **Toolchain:** Node 20+ for the collector. **Rust toolchain is NEW for this phase** — pin to **1.90.0** in a new `rust-toolchain.toml` at the repo root (1.83.0 was suggested in an earlier draft; bump to current stable that Tauri 2 supports). If newer stable exists at handoff time, prefer it — there's no reason to hold back.
+- **Canonical MCP tool count:** **63 tools across 34 files**, derived from `grep -c "server\.tool(" packages/mcp-server/src/tools/*.ts`. Project CLAUDE.md says "44" and the master phase plan says "55" — both stale. Use 63 if you cite a number; the source of truth is the grep.
 - **Outstanding deferrals from prior phases addressed by this phase:** none directly. This phase introduces NEW work — the tray app — that doesn't depend on prior deferrals.
+
+---
+
+## Pre-handoff prerequisites (the project owner must complete these before you begin)
+
+You — the receiving Claude Code instance — **cannot complete these yourself**: they require interactive commands that don't capture cleanly in a non-interactive shell, and they touch GitHub Actions secrets / Apple Developer accounts that aren't in your tool surface. If any of these aren't done when you start, stop and ask the project owner to complete them before going further.
+
+### P1 — Tauri update-signing keys generated and secret set
+
+The Tauri auto-updater requires a signing keypair so update artifacts can be verified by clients. The owner runs **once**:
+
+```bash
+cargo install tauri-cli --version "^2"
+tauri signer generate -w ~/.tauri/runtimescope.key
+# Outputs a public key (paste into tauri.conf.json's "pubkey" field) and a
+# private key file. DO NOT commit the private key.
+```
+
+Then sets the GitHub Actions secret:
+
+```bash
+gh secret set TAURI_SIGNING_PRIVATE_KEY < ~/.tauri/runtimescope.key
+```
+
+Without P1 done, the auto-updater requirement in the prompt is unreachable — fall back to "manual `.dmg` downloads from GitHub Releases" and call out the regression in the completion report.
+
+### P2 — Tray icon assets
+
+The default: **you (the implementing instance) generate a placeholder monochrome geometric icon** (16×16, 22×22, 32×32 alpha-only PNGs, `iconAsTemplate: true`) and ship it as the v1 icon. The owner replaces it in a v1.1 polish pass.
+
+If the owner has already provided icons at `packages/tray/src-tauri/icons/`, use those instead. Check that directory before drawing anything.
+
+### P3 — launchd collector is running and reachable
+
+Required state for any visual smoke test:
+
+```bash
+runtimescope service status
+# Expect: ✓ Service running (PID, version, uptime)
+# If not running, the owner needs to run:
+runtimescope service install
+# (60s wait is normal on machines with many historical projects.)
+curl -fsS http://127.0.0.1:6768/api/health
+# Expect: {"status":"ok","version":"0.10.12",...}
+```
+
+Without P3, you have nothing to render against during dev.
 
 For the audit context that produced the now-stable Node collector, read [`../reports/phase-audit-completion-report.md`](../reports/phase-audit-completion-report.md). The strategic frame that re-ordered everything post-audit is [`../decisions/0002-rust-port-sequence-and-distribution.md`](../decisions/0002-rust-port-sequence-and-distribution.md). The operating manual is [`../../CLAUDE.md`](../../CLAUDE.md).
 
@@ -64,8 +113,8 @@ For the audit context that produced the now-stable Node collector, read [`../rep
 >
 > **Hard rules**:
 > 1. **The tray reads from the HTTP API only.** No file system reads of `~/.runtimescope/`, no SQLite opens, no WebSocket subscription, no importing collector internals.
-> 2. **The HTTP API surface used by the tray must be documented.** Whatever endpoints you call become part of the locked wire protocol in Phase Wire-Protocol-Lock. Add them to a `docs/specs/tray-api-surface.md` (new file) so we know what to protect.
-> 3. **No version bump to the collector or any existing package.** This phase ships under its own version inside `packages/tray/package.json` (start at 0.1.0); the rest of the workspace stays at 0.10.10.
+> 2. **The HTTP API surface used by the tray must be documented.** Whatever endpoints you call become part of the locked wire protocol in Phase Wire-Protocol-Lock. Add them to a `docs/specs/tray-api-surface.md` (new file — this will be the **first file under `docs/specs/`**, so you're also establishing the convention for that directory). **Derive contents from [`packages/collector/src/http-server.ts`](../../packages/collector/src/http-server.ts) — the live route handlers are the source of truth, not the prose excerpts in §B of this handoff.** The §B table is a *starting* inventory; double-check shapes against the implementation as you go.
+> 3. **No version bump to the collector or any existing package.** This phase ships under its own version inside `packages/tray/package.json` (start at 0.1.0); the rest of the workspace stays at 0.10.12.
 > 4. **The tray app shells out to `runtimescope` for service lifecycle.** Don't reimplement `launchctl` calls inside the Rust code unless the CLI doesn't expose what you need — and if you have to, write the new CLI command first, then have the tray shell out to it. Keeps the surface area small.
 > 5. **Code-signing approach:** ad-hoc only for v1 (no Developer ID required). Document the codesign command in the completion report so a future Developer-ID-based release flow knows what to swap in.
 > 6. **Estimated effort: 5–7 days.** If anything feels like it's pushing past that, stop and write a SPEC QUESTION rather than absorbing scope.
@@ -119,7 +168,22 @@ In `src-tauri/src/main.rs`, set the app's activation policy to "Accessory" so it
 }
 ```
 
-For the dropdown UI, the simplest pattern: a `TrayIconBuilder` with an `on_tray_icon_event` that toggles the main window's visibility, positioned anchored to the tray icon. The `tauri-plugin-positioner` plugin handles anchoring properly across multi-display setups.
+For the dropdown UI, the simplest pattern: a `TrayIconBuilder` with an `on_tray_icon_event` that toggles the main window's visibility, positioned anchored to the tray icon. The `tauri-plugin-positioner` plugin handles anchoring properly across multi-display setups. **Pin a specific version** in `Cargo.toml` — use whatever's current at handoff time (was `2.0.0` family in early 2025; check `cargo search tauri-plugin-positioner` for the latest).
+
+`bundle.macOS.minimumSystemVersion: "13.0"` is intentional — RuntimeScope's launchd plist + the polling-friendly TimerCoalescing changes Apple made post-Ventura. Don't bump it.
+
+**Polling rules (specify both):**
+
+1. **Use `MissedTickBehavior::Delay`** on the `tokio::time::interval`. Otherwise after macOS sleep/wake the runtime fires a burst of catch-up ticks all at once, hammering the local HTTP API. The Delay behavior skips missed ticks and resumes cleanly:
+
+   ```rust
+   let mut interval = tokio::time::interval(Duration::from_secs(5));
+   interval.set_missed_tick_behavior(MissedTickBehavior::Delay);
+   ```
+
+2. **Pause polling when the dropdown window is hidden.** No one's looking; it's a battery-life decision. Listen for `WindowEvent::Focused(false)` (or `Visible(false)`) and pause the polling task via a `tokio::sync::Notify` or `CancellationToken`. Resume on focus. Status color in the tray icon itself doesn't update while hidden — that's correct; it refreshes on next show.
+
+These aren't optional polish — without them the tray will visibly misbehave after a multi-hour laptop sleep.
 
 ### B. HTTP endpoints the tray must call
 
@@ -142,9 +206,28 @@ let health: serde_json::Value = reqwest::Client::new()
     .json().await?;
 ```
 
-**Polling strategy**: 5s interval. Use `tokio::time::interval` with a cancellation token so the polling cleanly stops when the tray quits. **Do NOT keep the event loop alive forever** — the same `.unref()` discipline from Phase Audit applies here, just in tokio terms: tokio tasks should be tied to the app's lifetime, not orphaned.
+**Polling strategy**: 5s interval. Use `tokio::time::interval` with a cancellation token so the polling cleanly stops when the tray quits, plus the `MissedTickBehavior::Delay` from §A above. **Do NOT keep the event loop alive forever** — the same `.unref()` discipline from Phase Audit applies here, just in tokio terms: tokio tasks should be tied to the app's lifetime, not orphaned.
 
 **Error handling**: if `/api/health` 5xx's or times out, status goes red. If it succeeds but `authEnabled: true` and you don't have a token, you'll get 401 on `/api/sessions` — surface that as yellow ("authenticated endpoints unreachable") with a note about adding an API key.
+
+### B.1 The version-check URL transition at v0.12.0 (must be designed for now)
+
+The tray compares `/api/health.version` (running collector) against `registry.npmjs.org/runtimescope/latest` (npm latest CLI version). This works **today** because both numbers reference the same npm-published package.
+
+**At v0.12.0 (Phase Rust-Collector), this comparison breaks** — the Rust collector is no longer distributed via npm, so `registry.npmjs.org/runtimescope/latest` becomes irrelevant. Per [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) the new distribution channel is GitHub Releases + a manifest at `runtimescope.dev/manifest.json`.
+
+**What you do in v1 of the tray:** abstract the version-check source behind a single function. Today it reads npm; at v0.12.0 someone changes one call site to read the GitHub Releases manifest. Don't bake the npm URL into multiple places.
+
+```rust
+async fn latest_published_version() -> Result<Version> {
+    // v1 (Node era): npm registry
+    fetch_npm_latest("runtimescope").await
+    // v2 (Rust era — Phase Rust-Collector): GitHub Releases
+    // fetch_gh_releases_latest("edwinlov3tt/runtimescope").await
+}
+```
+
+Drop a `// TODO(v0.12.0): swap to GitHub Releases manifest` comment so the swap is obvious.
 
 ### C. Lifecycle commands — what the CLI already exposes vs. what you may need to add
 
@@ -162,6 +245,16 @@ Today's `runtimescope` CLI ([packages/cli/src/service.ts](../../packages/cli/src
 **Missing command you'll likely want**: `runtimescope service stop` — unloads the plist without deleting it, so the service is dormant but reinstall-free. Add this. It's a 10-line change to [`service.ts`](../../packages/cli/src/service.ts), then the tray's "Quit Service" shells out to it cleanly. If you DON'T add it, the tray would either invoke `launchctl unload` directly (breaking the "shell out for lifecycle" rule above) or use `service uninstall` (which removes the plist, requiring a full reinstall — wrong UX).
 
 Adding `service stop` is allowed scope for this phase. It's the same shape as the existing commands, just the unload-without-delete path.
+
+### C.1 "Update Now" and the ADR-0002 npm tension (must be acknowledged in code)
+
+`runtimescope service update` today shells out to `npm install -g runtimescope@latest && service install`. [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) says "No npm install for the CLI ever again" — that rule is forward-looking, the trigger for it is Phase Rust-Collector's curl-install channel at v0.12.0.
+
+**The reconciliation:** in the Node era (now → v0.12.0), the tray's "Update Now" uses the npm path because that's how the Node CLI updates. At v0.12.0, the same button shells out to the curl-install-driven `runtimescope service update` (which by then will fetch a signed binary from GitHub Releases, not invoke npm). The tray's UI doesn't change — only the underlying command's implementation changes inside the CLI.
+
+**What you do in v1 of the tray:** wire "Update Now" to `runtimescope service update` (no special-casing). Add a `// TODO(v0.12.0): the CLI's service update implementation flips from npm-install-g to curl-install; this button's contract is unchanged` comment on the button's handler. Document the same transition in the completion report.
+
+**What you do NOT do:** drop the "Update Now" button. The button is the right shape for v1; only the channel it pulls from is temporary.
 
 ### D. macOS code signing for v1 (ad-hoc only)
 
@@ -208,6 +301,8 @@ For Tauri's auto-updater, the update manifest at `https://github.com/edwinlov3tt
 | CLI help text gains "service stop" | [`../../packages/cli/src/cli.ts`](../../packages/cli/src/cli.ts) | One line in `printHelp()` |
 | Lift status icon, session list, version badge patterns | [`../../packages/dashboard/src/`](../../packages/dashboard/src/) | Read-only reference for React component shapes |
 | `npm install` adds new workspace | [`../../package.json`](../../package.json) — root | Add `"packages/tray"` to the workspaces array |
+| Phase completion bookkeeping | [`../CURRENT_STATE.md`](../CURRENT_STATE.md) | At phase end: bump "active phase" → Wire-Protocol-Lock; note Tray v0.1.0 shipped |
+| Phase completion bookkeeping | [`../HANDOFF.md`](../HANDOFF.md) | At phase end: replace the pointer-to-this-file with a pointer to the Wire-Protocol-Lock handoff |
 
 **Files you will CREATE:**
 
@@ -248,7 +343,7 @@ docs/specs/tray-api-surface.md       new file — documents every HTTP endpoint
 
 ## Reproducible commands you can rely on
 
-These all exit 0 today on the inherited HEAD (`656e37e`). They are the ground state your work must preserve.
+These all exit 0 today on the inherited HEAD (`538a399`). They are the ground state your work must preserve.
 
 ```bash
 cd /Users/edwinlovettiii/runtimescope
@@ -256,21 +351,23 @@ npm install                          # restores tree
 npm run build                        # all 13 workspace packages build clean
 npm test                             # 586 / 0
 npm run stress                       # 7 / 7 scenarios
-node packages/cli/dist/cli.js --version  # → 0.10.10
-runtimescope service status          # ✓ Service running (PID + version + uptime)
-curl -fsS http://127.0.0.1:6768/api/health  # the contract you'll consume
+node packages/cli/dist/cli.js --version  # → 0.10.12
+runtimescope service status          # ✓ Service running (PID + version + uptime) — requires P3
+curl -fsS http://127.0.0.1:6768/api/health  # the contract you'll consume — requires P3
 ```
+
+The last two commands depend on **P3 (launchd collector running)** from the Pre-handoff prerequisites section. If those fail, you're missing P3, not the build — go fix that first.
 
 Once you've started Phase Tauri-Tray, you'll also need:
 
 ```bash
-# Rust toolchain — pin to a known good version
-rustup toolchain install 1.83.0
-echo 'channel = "1.83.0"' > rust-toolchain.toml   # at repo root (or packages/tray/)
+# Rust toolchain — pin to current stable Tauri 2 supports
+rustup toolchain install 1.90.0
+echo 'channel = "1.90.0"' > rust-toolchain.toml   # at repo root (or packages/tray/)
 
 # Tauri 2 CLI (install once, used by every Tauri project)
 cargo install create-tauri-app
-cargo install tauri-cli --version "^2.0.0"
+cargo install tauri-cli --version "^2"
 
 # Inside packages/tray/:
 cd packages/tray
@@ -278,6 +375,8 @@ npm install                          # webview-side deps (React, Vite)
 cargo tauri dev                      # hot-reload dev mode — should show tray icon
 cargo tauri build                    # produces target/release/bundle/dmg/RuntimeScope_*.dmg
 ```
+
+**Disk-impact heads-up:** a fresh Rust toolchain plus Tauri's transitive Cargo deps will allocate **~3–5 GB** under `~/.cargo/` and `~/.rustup/`, and the first `cargo tauri build` produces another ~1 GB under `packages/tray/src-tauri/target/`. Make sure you've got the room before kicking off the install — interrupting the first build halfway through leaves a fragmented Cargo cache that's annoying to clean up.
 
 ---
 
@@ -301,12 +400,13 @@ cargo tauri build                    # produces target/release/bundle/dmg/Runtim
 If you are uncertain at any point, the resolution order is:
 
 1. The Phase Tauri-Tray prompt above.
-2. [`../reports/phase-audit-completion-report.md`](../reports/phase-audit-completion-report.md) — for what the v0.10.9/0.10.10 baseline contains.
+2. [`../reports/phase-audit-completion-report.md`](../reports/phase-audit-completion-report.md) — for what the v0.10.9/0.10.12 baseline contains.
 3. [`../decisions/0002-rust-port-sequence-and-distribution.md`](../decisions/0002-rust-port-sequence-and-distribution.md) — for the strategic frame.
-4. [`../decisions/0001-audit-then-rust.md`](../decisions/0001-audit-then-rust.md) — for the original rationale.
-5. [`../audits/0001-collector-process-lifetime.md`](../audits/0001-collector-process-lifetime.md) — for the lessons learned that informed the current Node collector's behavior.
-6. [`../../CLAUDE.md`](../../CLAUDE.md) operating manual.
-7. Anything else.
+4. [`../decisions/0004-v0-10-10-install-blocker-exception.md`](../decisions/0004-v0-10-10-install-blocker-exception.md) — for the exception-class rule that governs v0.10.10–0.10.12 and tells you when an "install blocker" justifies bypassing version-bump conservatism. Read this before you ship any patch outside `packages/tray/`.
+5. [`../decisions/0001-audit-then-rust.md`](../decisions/0001-audit-then-rust.md) — for the original rationale.
+6. [`../audits/0001-collector-process-lifetime.md`](../audits/0001-collector-process-lifetime.md) — for the lessons learned that informed the current Node collector's behavior.
+7. [`../../CLAUDE.md`](../../CLAUDE.md) operating manual.
+8. Anything else.
 
 If those still don't resolve it: stop, write a SPEC QUESTION in the chat, and wait. Do not guess at scope, do not absorb requirements that aren't in the prompt, and do not ship "while I'm here" cleanup that touches files outside `packages/tray/` and `packages/cli/src/service.ts` (for the `service stop` addition).
 

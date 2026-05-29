@@ -517,6 +517,23 @@ function restartLaunchd(): void {
   success('Service restarted');
 }
 
+// Stop without uninstalling: unload the plist so the daemon exits, but leave
+// the file in place so `service install` isn't needed to bring it back —
+// `service restart` (or a relogin) reloads it. Mirrors `restartLaunchd` minus
+// the load step.
+function stopLaunchd(): void {
+  if (!existsSync(LAUNCHD_PLIST)) {
+    err('Service not installed. Run: runtimescope service install');
+    return;
+  }
+  try {
+    execFileSync('launchctl', ['unload', LAUNCHD_PLIST], { stdio: 'ignore' });
+    success('Service stopped (plist preserved — run `service restart` to start again)');
+  } catch {
+    info('Service was not running.');
+  }
+}
+
 // ---------- systemd (Linux user service) ----------
 
 function buildSystemdUnit(nodePath: string, collectorPath: string): string {
@@ -636,6 +653,19 @@ function restartSystemd(): void {
   }
   execFileSync('systemctl', ['--user', 'restart', 'runtimescope.service']);
   success('Service restarted');
+}
+
+function stopSystemd(): void {
+  if (!existsSync(SYSTEMD_UNIT)) {
+    err('Service not installed. Run: runtimescope service install');
+    return;
+  }
+  try {
+    execFileSync('systemctl', ['--user', 'stop', 'runtimescope.service']);
+    success('Service stopped (unit preserved — run `service restart` to start again)');
+  } catch {
+    info('Service was not running.');
+  }
 }
 
 // ---------- Version info + update ----------
@@ -863,6 +893,13 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       log('');
       break;
     }
+    case 'stop': {
+      log('');
+      if (os === 'darwin') stopLaunchd();
+      else stopSystemd();
+      log('');
+      break;
+    }
     case 'update': {
       await updateService();
       break;
@@ -888,6 +925,7 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
       log(`    ${BOLD}status${RESET}      Show current service status (+ version check)`);
       log(`    ${BOLD}update${RESET}      Update the collector to the latest version and restart`);
       log(`    ${BOLD}restart${RESET}     Restart the service`);
+      log(`    ${BOLD}stop${RESET}        Stop the service (preserves plist/unit so restart works)`);
       log(`    ${BOLD}logs${RESET}        Show recent logs (last 50 lines)`);
       log('');
       log(`  ${DIM}On macOS, uses launchd (~/Library/LaunchAgents/${LAUNCHD_LABEL}.plist).${RESET}`);
@@ -897,7 +935,7 @@ export async function serviceCommand(subcmd: string | undefined): Promise<void> 
     }
     default: {
       err(`Unknown subcommand: ${subcmd}`);
-      info('Valid: install, uninstall, status, update, restart, logs');
+      info('Valid: install, uninstall, status, update, restart, stop, logs');
       process.exit(1);
     }
   }

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!--
+    LSUIElement = true: launch as a menu-bar-only app, no Dock icon and no
+    main menu bar. macOS reads this BEFORE any of our Rust code runs, so
+    the dock-icon-flashes-then-disappears effect we'd see from calling
+    set_activation_policy(Accessory) at runtime is avoided entirely.
+  -->
+  <key>LSUIElement</key>
+  <true/>
+</dict>
+</plist>

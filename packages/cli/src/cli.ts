@@ -839,7 +839,7 @@ function printHelp() {
   log(`    ${BOLD}stop${RESET}          Stop any running collector on :6767/:6768`);
   log(`    ${BOLD}status${RESET}        Show collector health and connected projects`);
   log(`    ${BOLD}doctor${RESET}        Diagnose common problems and suggest fixes`);
-  log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/logs)`);
+  log(`    ${BOLD}service${RESET} <sub> Manage the background service (install/uninstall/status/restart/stop/update/logs)`);
   log(`    ${BOLD}dashboard${RESET}     Open the dashboard in your browser (use ${DIM}--network${RESET} for LAN URL)`);
   log(`    ${BOLD}mcp doctor${RESET}    Diagnose why Claude Code can't connect to the runtimescope MCP`);
   log(`    ${BOLD}--version${RESET}     Print the installed CLI version and exit`);

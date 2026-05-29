@@ -1,0 +1,67 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "RuntimeScope",
+  "version": "0.1.0",
+  "identifier": "dev.runtimescope.tray",
+  "build": {
+    "beforeDevCommand": "npm --workspace @runtimescope/tray run dev",
+    "devUrl": "http://127.0.0.1:1420",
+    "beforeBuildCommand": "npm --workspace @runtimescope/tray run build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "macOSPrivateApi": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "RuntimeScope",
+        "url": "index.html",
+        "width": 360,
+        "height": 540,
+        "minWidth": 360,
+        "minHeight": 360,
+        "maxWidth": 420,
+        "maxHeight": 720,
+        "resizable": false,
+        "decorations": false,
+        "transparent": true,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "visible": false,
+        "focus": false,
+        "shadow": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "icon": [
+      "icons/icon.png"
+    ],
+    "category": "DeveloperTool",
+    "copyright": "© 2026 Edwin Lovett",
+    "shortDescription": "RuntimeScope menu-bar app",
+    "longDescription": "Native menu-bar visibility for the RuntimeScope launchd collector.",
+    "macOS": {
+      "minimumSystemVersion": "13.0",
+      "signingIdentity": "-",
+      "providerShortName": null,
+      "entitlements": null,
+      "exceptionDomain": "127.0.0.1"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "active": false,
+      "endpoints": [
+        "https://github.com/edwinlov3tt/runtimescope/releases/latest/download/latest.json"
+      ],
+      "dialog": true,
+      "pubkey": ""
+    }
+  }
+}

@@ -1,0 +1,45 @@
+[package]
+name = "runtimescope-tray"
+version = "0.1.0"
+description = "RuntimeScope menu-bar app (macOS)."
+authors = ["Edwin Lovett"]
+edition = "2021"
+rust-version = "1.77"
+
+[lib]
+name = "runtimescope_tray_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["macos-private-api", "tray-icon"] }
+tauri-plugin-shell = "2"
+tauri-plugin-updater = "2"
+tauri-plugin-positioner = "2"
+tokio = { version = "1", features = ["full"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+thiserror = "1"
+
+[features]
+# Bundled default; opt out only for debug iteration where you want
+# the macOS default webview without process-level privileges.
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+# panic = "abort" was here, but it makes Rust panics call abort() directly
+# with no opportunity to log a backtrace — and the OS-level crash report
+# only gives hex offsets in a stripped binary. "unwind" keeps panics
+# recoverable, lets std write to stderr / our panic hook capture them,
+# and a small debug-info budget makes the stack readable.
+panic = "unwind"
+codegen-units = 1
+lto = true
+opt-level = "s"
+strip = "debuginfo"
+debug = 1

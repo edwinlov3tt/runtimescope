@@ -45,13 +45,20 @@ impl Mcp {
     }
 }
 
+/// Extract the raw numeric `timestamp` (epoch ms) from a stored event. Recon
+/// tools surface `metadata.timeRange` as `{from: ts, to: ts}` using the raw
+/// number (matching the TS source — these are not ISO-formatted).
+fn event_ts(event: &Value) -> i64 {
+    event.get("timestamp").and_then(|v| v.as_i64()).unwrap_or(0)
+}
+
 /// The "no data" envelope shared by every recon read tool.
 fn no_data(summary: &str, missing_type: &str, project_id: Option<String>) -> CallToolResult {
     envelope(json!({
         "summary": summary,
         "data": null,
         "issues": [format!("No {missing_type} events found in the event store")],
-        "metadata": { "eventCount": 0, "sessionId": null, "projectId": project_id },
+        "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": 0, "sessionId": null, "projectId": project_id },
     }))
 }
 
@@ -172,6 +179,7 @@ impl Mcp {
         let stylesheets = event.get("externalStylesheets").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
         let scripts = event.get("externalScripts").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
 
         let mut issues: Vec<String> = Vec::new();
         let has_viewport = event
@@ -196,7 +204,7 @@ impl Mcp {
                 "preloads": event.get("preloads"),
             },
             "issues": issues,
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -222,6 +230,7 @@ impl Mcp {
 
         let category = args.category.as_deref().unwrap_or("all");
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
 
         let arr_len = |key: &str| event.get(key).and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
         let custom_props = arr_len("customProperties");
@@ -268,7 +277,7 @@ impl Mcp {
             "summary": format!("{custom_props} CSS variables, {colors} colors, {typography} type combos, {spacing} spacing values, CSS architecture: {css_arch}."),
             "data": data,
             "issues": issues,
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -293,14 +302,19 @@ impl Mcp {
         };
 
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
         let total_elements = event.get("totalElements").and_then(|v| v.as_u64()).unwrap_or(0);
         let max_depth = event.get("maxDepth").and_then(|v| v.as_u64()).unwrap_or(0);
         let vw = event.get("viewport").and_then(|v| v.get("width")).and_then(|v| v.as_u64()).unwrap_or(0);
         let vh = event.get("viewport").and_then(|v| v.get("height")).and_then(|v| v.as_u64()).unwrap_or(0);
         let scoped = args.selector.as_ref().map(|s| format!(" Scoped to: {s}.")).unwrap_or_default();
 
+        let tree = event.get("tree").cloned().unwrap_or(Value::Null);
+        let flex_count = count_by_display(&tree, "flex");
+        let grid_count = count_by_display(&tree, "grid");
+
         Ok(envelope(json!({
-            "summary": format!("Layout tree: {total_elements} elements, max depth {max_depth}. Viewport: {vw}x{vh}.{scoped}"),
+            "summary": format!("Layout tree: {total_elements} elements, max depth {max_depth}. {flex_count} flex containers, {grid_count} grid containers. Viewport: {vw}x{vh}.{scoped}"),
             "data": {
                 "viewport": event.get("viewport"),
                 "scrollHeight": event.get("scrollHeight"),
@@ -310,7 +324,7 @@ impl Mcp {
                 "maxDepth": max_depth,
             },
             "issues": [],
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -329,6 +343,7 @@ impl Mcp {
         };
 
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
         let font_faces = event.get("fontFaces").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let fonts_used = event.get("fontsUsed").and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let icon_fonts = event.get("iconFonts").and_then(|v| v.as_array()).map(|a| a.len()).unwrap_or(0);
@@ -366,7 +381,7 @@ impl Mcp {
                 "loadingStrategy": event.get("loadingStrategy"),
             },
             "issues": issues,
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -385,6 +400,7 @@ impl Mcp {
         };
 
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
         let arr = |key: &str| event.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let headings = arr("headings");
         let landmarks = arr("landmarks");
@@ -459,7 +475,7 @@ impl Mcp {
                 "images": event.get("images"),
             },
             "issues": issues,
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -632,6 +648,7 @@ impl Mcp {
 
         let category = args.category.as_deref().unwrap_or("all");
         let session_id = event.get("sessionId").cloned().unwrap_or(Value::Null);
+        let ts = event_ts(&event);
         let arr = |key: &str| event.get(key).and_then(|v| v.as_array()).cloned().unwrap_or_default();
         let images = arr("images");
         let inline_svgs = arr("inlineSVGs");
@@ -736,7 +753,7 @@ impl Mcp {
             "summary": format!("{}.", summary_parts.join(", ")),
             "data": data,
             "issues": issues,
-            "metadata": { "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": ts, "to": ts }, "eventCount": 1, "sessionId": session_id, "projectId": args.project_id },
         })))
     }
 
@@ -750,9 +767,28 @@ impl Mcp {
             "summary": "get_style_diff is deferred in the Rust collector port — no stored computed-style events to diff yet.",
             "data": null,
             "issues": ["Deferred: style-diff capability not yet implemented in the Rust collector"],
-            "metadata": { "eventCount": 0, "sessionId": null, "projectId": args.project_id },
+            "metadata": { "deferred": true, "eventCount": 0, "sessionId": null, "projectId": args.project_id },
         })))
     }
+}
+
+/// Recursively count nodes whose `display` value contains `display_type` (matches
+/// the TS `countByDisplay` helper: `node.display?.includes(displayType)`).
+fn count_by_display(node: &Value, display_type: &str) -> usize {
+    if node.is_null() {
+        return 0;
+    }
+    let mut count = node
+        .get("display")
+        .and_then(|v| v.as_str())
+        .map(|d| if d.contains(display_type) { 1 } else { 0 })
+        .unwrap_or(0);
+    if let Some(children) = node.get("children").and_then(|v| v.as_array()) {
+        for child in children {
+            count += count_by_display(child, display_type);
+        }
+    }
+    count
 }
 
 /// Map a property-group name to its concrete CSS property list, or `None` for "all".

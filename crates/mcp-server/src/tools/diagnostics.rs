@@ -2,11 +2,12 @@
 //! and the (deferred) buffer-clear. Ported from the TS tools in
 //! `packages/mcp-server/src/tools/{issues,qa-check,har,session}.ts`.
 
-use crate::tools::envelope;
+use crate::tools::{envelope, iso_ms, now_ms};
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::collections::BTreeSet;
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DetectIssuesArgs {
@@ -210,6 +211,78 @@ fn detect_issues(network: &[Value], console: &[Value]) -> Vec<Issue> {
     issues
 }
 
+/// HAR reason-phrase for a status code (ports har.ts `statusText`).
+fn status_text(status: i64) -> &'static str {
+    match status {
+        200 => "OK",
+        201 => "Created",
+        204 => "No Content",
+        301 => "Moved Permanently",
+        302 => "Found",
+        304 => "Not Modified",
+        400 => "Bad Request",
+        401 => "Unauthorized",
+        403 => "Forbidden",
+        404 => "Not Found",
+        405 => "Method Not Allowed",
+        409 => "Conflict",
+        422 => "Unprocessable Entity",
+        429 => "Too Many Requests",
+        500 => "Internal Server Error",
+        502 => "Bad Gateway",
+        503 => "Service Unavailable",
+        504 => "Gateway Timeout",
+        _ => "",
+    }
+}
+
+/// A headers object → HAR `[{name, value}]` pairs.
+fn headers_to_pairs(h: Option<&Value>) -> Vec<Value> {
+    h.and_then(Value::as_object)
+        .map(|m| {
+            m.iter()
+                .map(|(name, value)| json!({ "name": name, "value": value.as_str().unwrap_or("") }))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Parse a URL's query string into HAR `[{name, value}]` pairs. Mirrors
+/// `new URL(url).searchParams` — returns `[]` on an unparseable URL.
+fn parse_query_string(url: &str) -> Vec<Value> {
+    let Some(q) = url.split_once('?').map(|(_, q)| q) else {
+        return Vec::new();
+    };
+    let q = q.split('#').next().unwrap_or(q);
+    q.split('&')
+        .filter(|p| !p.is_empty())
+        .map(|pair| {
+            let (name, value) = pair.split_once('=').unwrap_or((pair, ""));
+            json!({ "name": url_decode(name), "value": url_decode(value) })
+        })
+        .collect()
+}
+
+/// Minimal percent-decoding (+ → space) for query-string keys/values.
+fn url_decode(s: &str) -> String {
+    let bytes = s.replace('+', " ");
+    let bytes = bytes.as_bytes();
+    let mut out = String::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
+                out.push(b as char);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i] as char);
+        i += 1;
+    }
+    out
+}
+
 fn issue_to_json(i: &Issue) -> Value {
     json!({
         "severity": i.severity.to_uppercase(),
@@ -284,21 +357,103 @@ impl Mcp {
         Parameters(args): Parameters<QaCheckArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let pid = args.project_id.as_deref();
-        let network = self.store.events_by_type("network", pid).await;
-        let console = self.store.events_by_type("console", pid).await;
-        let render = self.store.events_by_type("render", pid).await;
-        let state = self.store.events_by_type("state", pid).await;
-        let performance = self.store.events_by_type("performance", pid).await;
-        let database = self.store.events_by_type("database", pid).await;
 
+        // Resolve the session for this project (Node resolveSessionContext: first
+        // session whose projectId matches, or the first session overall).
+        let sessions = self.store.sessions().await;
+        let session = sessions
+            .iter()
+            .find(|s| pid.is_none_or(|p| s.project_id.as_deref() == Some(p)));
+        let Some(session) = session else {
+            return Ok(envelope(json!({
+                "summary": "No active session found. Connect an SDK first.",
+                "data": null,
+                "issues": ["No active sessions — connect an SDK with RuntimeScope.init()"],
+                "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": 0, "sessionId": null, "projectId": args.project_id },
+            })));
+        };
+        let session_id = session.session_id.clone();
+        let app_name = session.app_name.clone();
+
+        // All events for this session, by type (scoped to the project key).
+        let by = |events: Vec<Value>| -> Vec<Value> {
+            events
+                .into_iter()
+                .filter(|e| e.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str()))
+                .collect()
+        };
+        let network = by(self.store.events_by_type("network", pid).await);
+        let console = by(self.store.events_by_type("console", pid).await);
+        let render = by(self.store.events_by_type("render", pid).await);
+        let state = by(self.store.events_by_type("state", pid).await);
+        let performance = by(self.store.events_by_type("performance", pid).await);
+        let database = by(self.store.events_by_type("database", pid).await);
+        let session_events = by(self.store.events_by_type("session", pid).await);
+
+        // Issue detection runs over the project's events (matches detect_issues).
         let issues = detect_issues(&network, &console);
-        let error_count = console.iter().filter(|e| str_field(e, "level") == "error").count();
+
+        // Metrics (Node SessionMetrics): totalEvents counts the synthetic session
+        // connect event too; errorCount = console errors + network 4xx/5xx;
+        // queryCount = distinct normalized DB patterns; componentCount = distinct
+        // render components; webVitals from web-vital performance entries.
         let total_events = network.len()
             + console.len()
             + render.len()
             + state.len()
             + performance.len()
-            + database.len();
+            + database.len()
+            + session_events.len();
+        let error_count = console.iter().filter(|e| str_field(e, "level") == "error").count()
+            + network.iter().filter(|e| num_field(e, "status") >= 400.0).count();
+        let queries: BTreeSet<String> = database
+            .iter()
+            .map(|e| {
+                let q = e.get("normalizedQuery").or_else(|| e.get("query")).and_then(Value::as_str).unwrap_or("");
+                q.to_string()
+            })
+            .collect();
+        let components: BTreeSet<String> = render
+            .iter()
+            .filter_map(|e| {
+                e.get("componentName")
+                    .or_else(|| e.get("component"))
+                    .and_then(Value::as_str)
+                    .map(String::from)
+            })
+            .collect();
+        let endpoints: BTreeSet<String> = network
+            .iter()
+            .map(|e| format!("{} {}", str_field(e, "method"), str_field(e, "url")))
+            .collect();
+        let mut web_vitals = serde_json::Map::new();
+        for e in &performance {
+            if str_field(e, "metricType") == "web-vital" || e.get("rating").is_some() {
+                if let Some(name) = e.get("name").and_then(Value::as_str) {
+                    web_vitals.insert(
+                        name.to_string(),
+                        json!({ "value": e.get("value").cloned().unwrap_or(Value::Null), "rating": e.get("rating").cloned().unwrap_or(Value::Null) }),
+                    );
+                }
+            }
+        }
+
+        let created_at = now_ms();
+        let label = args.label.clone().unwrap_or_else(|| "qa-check".to_string());
+        let metrics = json!({
+            "totalEvents": total_events,
+            "errorCount": error_count,
+            "endpointCount": endpoints.len(),
+            "componentCount": components.len(),
+            "webVitals": Value::Object(web_vitals.clone()),
+            "queryCount": queries.len(),
+        });
+
+        // Persist the snapshot so get_session_history / compare can read it back.
+        let snapshot_id = self
+            .store
+            .save_snapshot(session_id.clone(), app_name.clone(), Some(label.clone()), created_at, metrics.clone())
+            .await;
 
         let high = issues.iter().filter(|i| i.severity == "high").count();
         let medium = issues.iter().filter(|i| i.severity == "medium").count();
@@ -308,33 +463,29 @@ impl Mcp {
         } else {
             format!("{} issue(s): {high} high, {medium} medium, {low} low.", issues.len())
         };
-
-        let label = args.label.clone().unwrap_or_else(|| "qa-check".to_string());
+        let metrics_summary = format!(
+            "{total_events} events, {error_count} errors, {} endpoints, {} components",
+            endpoints.len(),
+            components.len()
+        );
         let summary = format!(
-            "QA Check complete. Snapshot \"{label}\". {total_events} events, {error_count} errors. {issues_summary}"
+            "QA Check complete. Snapshot saved as \"{label}\". {metrics_summary}. {issues_summary}"
         );
 
         let data = json!({
             "snapshot": {
+                "id": snapshot_id,
+                "sessionId": session_id,
+                "project": app_name,
                 "label": label,
-                "metrics": {
-                    "totalEvents": total_events,
-                    "errorCount": error_count,
-                    "counts": {
-                        "network": network.len(),
-                        "console": console.len(),
-                        "render": render.len(),
-                        "state": state.len(),
-                        "performance": performance.len(),
-                        "database": database.len(),
-                    },
-                },
+                "createdAt": iso_ms(created_at),
+                "metrics": metrics,
             },
             "issues": issues.iter().map(issue_to_json).collect::<Vec<_>>(),
             "nextSteps": if issues.is_empty() {
                 "All clear! Use compare_sessions later to track regressions."
             } else {
-                "Fix the issues above, then run runtime_qa_check again to compare."
+                "Fix the issues above, then run runtime_qa_check again to compare. Use compare_sessions with the snapshot ID to see what changed."
             },
         });
 
@@ -347,7 +498,12 @@ impl Mcp {
             "summary": summary,
             "data": data,
             "issues": issue_lines,
-            "metadata": { "eventCount": total_events, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": session.connected_at, "to": created_at },
+                "eventCount": total_events,
+                "sessionId": session_id,
+                "projectId": args.project_id,
+            },
         })))
     }
 
@@ -366,28 +522,48 @@ impl Mcp {
             .map(|e| {
                 let duration = num_field(e, "duration");
                 let ttfb = num_field(e, "ttfb");
+                let url = str_field(e, "url");
+                let status = num_field(e, "status") as i64;
+                let content_type = e
+                    .get("responseHeaders")
+                    .and_then(|h| h.get("content-type"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("application/octet-stream");
+                let mut request = json!({
+                    "method": str_field(e, "method"),
+                    "url": url,
+                    "httpVersion": "HTTP/1.1",
+                    "headers": headers_to_pairs(e.get("requestHeaders")),
+                    "queryString": parse_query_string(url),
+                    "headersSize": -1,
+                    "bodySize": num_field(e, "requestBodySize") as i64,
+                });
+                // Optional postData (only when a request body was captured).
+                if let Some(body) = e.get("requestBody").and_then(Value::as_str) {
+                    let mime = e
+                        .get("requestHeaders")
+                        .and_then(|h| h.get("content-type"))
+                        .and_then(Value::as_str)
+                        .unwrap_or("application/octet-stream");
+                    request["postData"] = json!({ "mimeType": mime, "text": body });
+                }
+                let mut content = json!({
+                    "size": num_field(e, "responseBodySize") as i64,
+                    "mimeType": content_type,
+                });
+                if let Some(body) = e.get("responseBody").and_then(Value::as_str) {
+                    content["text"] = json!(body);
+                }
                 json!({
+                    "startedDateTime": iso_ms(num_field(e, "timestamp") as i64),
                     "time": duration.round() as i64,
-                    "request": {
-                        "method": str_field(e, "method"),
-                        "url": str_field(e, "url"),
-                        "httpVersion": "HTTP/1.1",
-                        "headers": e.get("requestHeaders").cloned().unwrap_or(json!({})),
-                        "queryString": [],
-                        "headersSize": -1,
-                        "bodySize": num_field(e, "requestBodySize") as i64,
-                    },
+                    "request": request,
                     "response": {
-                        "status": num_field(e, "status") as i64,
+                        "status": status,
+                        "statusText": status_text(status),
                         "httpVersion": "HTTP/1.1",
-                        "headers": e.get("responseHeaders").cloned().unwrap_or(json!({})),
-                        "content": {
-                            "size": num_field(e, "responseBodySize") as i64,
-                            "mimeType": e.get("responseHeaders")
-                                .and_then(|h| h.get("content-type"))
-                                .and_then(Value::as_str)
-                                .unwrap_or("application/octet-stream"),
-                        },
+                        "headers": headers_to_pairs(e.get("responseHeaders")),
+                        "content": content,
                         "headersSize": -1,
                         "bodySize": num_field(e, "responseBodySize") as i64,
                     },
@@ -422,14 +598,30 @@ impl Mcp {
             )
         };
 
+        let ts = |e: &Value| num_field(e, "timestamp") as i64;
+        let time_range = if events.is_empty() {
+            json!({ "from": 0, "to": 0 })
+        } else {
+            json!({ "from": ts(events[0]), "to": ts(events[events.len() - 1]) })
+        };
+        let session_id = self
+            .store
+            .sessions()
+            .await
+            .into_iter()
+            .find(|s| args.project_id.as_deref().is_none_or(|p| s.project_id.as_deref() == Some(p)))
+            .map(|s| s.session_id);
+
         Ok(envelope(json!({
             "summary": summary,
             "data": har,
             "issues": [],
             "metadata": {
+                "timeRange": time_range,
                 "eventCount": events.len(),
                 "totalCount": all.len(),
                 "truncated": truncated,
+                "sessionId": session_id,
                 "projectId": args.project_id,
             },
         })))
@@ -506,7 +698,7 @@ impl Mcp {
             "summary": "clear_events is deferred in the Rust collector — the persistent SQLite-backed store has no clear operation yet. No events were removed.",
             "data": null,
             "issues": ["clear_events not implemented in the Rust collector (deferred)"],
-            "metadata": { "eventCount": 0, "projectId": args.project_id },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": args.project_id },
         })))
     }
 }

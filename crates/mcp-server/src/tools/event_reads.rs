@@ -10,7 +10,7 @@
 //! best-effort over the stored events; capabilities the Rust collector lacks
 //! (dev-server source fetch) are noted in the summary rather than performed.
 
-use crate::tools::envelope;
+use crate::tools::{envelope, iso_ms, now_ms};
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
@@ -109,6 +109,8 @@ pub struct BreadcrumbArgs {
     since_seconds: Option<f64>,
     /// Filter to a specific session.
     session_id: Option<String>,
+    /// Minimum breadcrumb level to include (debug, info, warning, error).
+    level: Option<String>,
     /// Max breadcrumbs to return (default/max: 200).
     limit: Option<usize>,
 }
@@ -217,6 +219,35 @@ impl Mcp {
         let truncated = total > max_limit;
         events.truncate(max_limit);
 
+        // Detect store thrashing (>=10 updates with 10+ inside any 1-second window).
+        let mut issues: Vec<String> = Vec::new();
+        let mut store_updates: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+        for e in &events {
+            if e.get("phase").and_then(Value::as_str) != Some("update") {
+                continue;
+            }
+            let sid = e.get("storeId").and_then(Value::as_str).unwrap_or("").to_string();
+            let ts = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+            store_updates.entry(sid).or_default().push(ts);
+        }
+        for (store_id, timestamps) in &store_updates {
+            if timestamps.len() < 10 {
+                continue;
+            }
+            for i in 0..=(timestamps.len() - 10) {
+                if timestamps[i + 9] - timestamps[i] < 1000 {
+                    issues.push(format!(
+                        "Store thrashing: \"{store_id}\" had {} updates, 10+ in a 1-second window",
+                        timestamps.len()
+                    ));
+                    break;
+                }
+            }
+        }
+
+        let time_from = events.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = events.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+
         let data: Vec<Value> = events
             .iter()
             .map(|e| {
@@ -225,10 +256,10 @@ impl Mcp {
                     "library": e.get("library"),
                     "phase": e.get("phase"),
                     "state": e.get("state"),
-                    "previousState": e.get("previousState"),
-                    "diff": e.get("diff"),
-                    "action": e.get("action"),
-                    "timestamp": e.get("timestamp"),
+                    "previousState": e.get("previousState").cloned().unwrap_or(Value::Null),
+                    "diff": e.get("diff").cloned().unwrap_or(Value::Null),
+                    "action": e.get("action").cloned().unwrap_or(Value::Null),
+                    "timestamp": iso_ms(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0)),
                 })
             })
             .collect();
@@ -236,13 +267,17 @@ impl Mcp {
         let count = data.len();
         Ok(envelope(json!({
             "summary": format!(
-                "Found {count} state event(s){}{}.",
+                "Found {count} state event(s){}{}{}.",
                 if truncated { format!(" (showing {max_limit} of {total})") } else { String::new() },
+                args.since_seconds.map(|s| format!(" in the last {s}s")).unwrap_or_default(),
                 args.store_name.as_ref().map(|s| format!(" for store \"{s}\"")).unwrap_or_default(),
             ),
             "data": data,
-            "issues": [],
-            "metadata": { "eventCount": count, "totalCount": total, "truncated": truncated, "projectId": args.project_id },
+            "issues": issues,
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": count, "totalCount": total, "truncated": truncated, "projectId": args.project_id,
+            },
         })))
     }
 
@@ -388,6 +423,26 @@ impl Mcp {
         if !needs.is_empty() {
             issues.push(format!("{} metric(s) need improvement: {}", needs.len(), needs.join(", ")));
         }
+        let high_memory = events
+            .iter()
+            .filter(|e| {
+                e.get("metricName").and_then(Value::as_str) == Some("memory.heapUsed")
+                    && e.get("value").and_then(Value::as_f64).is_some_and(|v| v > 500.0 * 1024.0 * 1024.0)
+            })
+            .count();
+        if high_memory > 0 {
+            issues.push(format!("Heap usage exceeded 500MB in {high_memory} sample(s)"));
+        }
+        let high_event_loop = events
+            .iter()
+            .filter(|e| {
+                e.get("metricName").and_then(Value::as_str) == Some("eventloop.lag.p99")
+                    && e.get("value").and_then(Value::as_f64).is_some_and(|v| v > 100.0)
+            })
+            .count();
+        if high_event_loop > 0 {
+            issues.push(format!("Event loop p99 lag exceeded 100ms in {high_event_loop} sample(s)"));
+        }
 
         // Latest value per metric name (events are newest-first, so first wins).
         let mut latest: Map<String, Value> = Map::new();
@@ -397,20 +452,21 @@ impl Mcp {
             }
         }
 
-        let format_metric = |e: &Value| -> Value {
+        let unit_of = |e: &Value| -> String {
             let name = e.get("metricName").and_then(Value::as_str).unwrap_or("");
-            let unit = e
-                .get("unit")
+            e.get("unit")
                 .and_then(Value::as_str)
                 .map(String::from)
-                .unwrap_or_else(|| if name == "CLS" { "score".into() } else { "ms".into() });
+                .unwrap_or_else(|| if name == "CLS" { "score".into() } else { "ms".into() })
+        };
+        let format_metric = |e: &Value| -> Value {
             json!({
                 "metricName": e.get("metricName"),
                 "value": e.get("value"),
-                "unit": unit,
-                "rating": e.get("rating"),
-                "element": e.get("element"),
-                "timestamp": e.get("timestamp"),
+                "unit": unit_of(e),
+                "rating": e.get("rating").cloned().unwrap_or(Value::Null),
+                "element": e.get("element").cloned().unwrap_or(Value::Null),
+                "timestamp": iso_ms(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0)),
             })
         };
 
@@ -425,14 +481,34 @@ impl Mcp {
             .map(&format_metric)
             .collect();
 
+        let all_events: Vec<Value> = events
+            .iter()
+            .map(|e| {
+                json!({
+                    "metricName": e.get("metricName"),
+                    "value": e.get("value"),
+                    "unit": unit_of(e),
+                    "rating": e.get("rating").cloned().unwrap_or(Value::Null),
+                    "timestamp": iso_ms(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0)),
+                })
+            })
+            .collect();
+
+        let time_from = events.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = events.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+
         Ok(envelope(json!({
             "summary": format!(
                 "{} unique metric(s) captured ({} browser, {} server). {} poor, {} needs improvement.",
                 latest.len(), browser.len(), server.len(), poor.len(), needs.len(),
             ),
             "data": { "browser": browser, "server": server },
+            "allEvents": all_events,
             "issues": issues,
-            "metadata": { "eventCount": events.len(), "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": events.len(), "projectId": args.project_id,
+            },
         })))
     }
 
@@ -479,6 +555,9 @@ impl Mcp {
             .collect::<Vec<_>>()
             .join(", ");
 
+        let time_from = trimmed.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = trimmed.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+
         let data: Vec<Value> = trimmed.iter().map(format_timeline_event).collect();
         let count = data.len();
         Ok(envelope(json!({
@@ -489,7 +568,10 @@ impl Mcp {
             ),
             "data": data,
             "issues": [],
-            "metadata": { "eventCount": count, "totalInWindow": total_in_window, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": count, "totalInWindow": total_in_window, "projectId": args.project_id,
+            },
         })))
     }
 
@@ -525,7 +607,7 @@ impl Mcp {
                     .unwrap_or_default();
                 json!({
                     "message": e.get("message"),
-                    "timestamp": e.get("timestamp"),
+                    "timestamp": iso_ms(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0)),
                     "frames": frames,
                 })
             })
@@ -536,16 +618,23 @@ impl Mcp {
             issues.push(format!("Showing 50 of {total} errors"));
         }
 
+        let time_from = events.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = events.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+
         let count = data.len();
         Ok(envelope(json!({
             "summary": format!(
-                "{count} error(s), {} unique. {}",
+                "{count} error(s){}, {} unique. {}",
+                args.since_seconds.map(|s| format!(" in the last {s}s")).unwrap_or_default(),
                 unique.len(),
-                if should_fetch { "Source context unavailable in the Rust collector." } else { "Source context disabled." },
+                if should_fetch { "Source context included." } else { "Source context disabled." },
             ),
             "data": data,
             "issues": issues,
-            "metadata": { "eventCount": count, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": count, "projectId": args.project_id,
+            },
         })))
     }
 
@@ -575,7 +664,7 @@ impl Mcp {
             .last()
             .and_then(|e| e.get("timestamp"))
             .and_then(Value::as_i64)
-            .unwrap_or(0);
+            .unwrap_or_else(now_ms);
 
         let mut breadcrumbs: Vec<Value> = Vec::new();
         for e in &merged {
@@ -583,6 +672,22 @@ impl Mcp {
                 breadcrumbs.push(bc);
             }
         }
+
+        // Apply minimum-level filter.
+        if let Some(level) = &args.level {
+            let order = |l: &str| match l {
+                "debug" => 0,
+                "info" => 1,
+                "warning" => 2,
+                "error" => 3,
+                _ => 1,
+            };
+            let min = order(level);
+            breadcrumbs.retain(|bc| {
+                order(bc.get("level").and_then(Value::as_str).unwrap_or("info")) >= min
+            });
+        }
+
         if breadcrumbs.len() > max_items {
             breadcrumbs = breadcrumbs[breadcrumbs.len() - max_items..].to_vec();
         }
@@ -594,6 +699,18 @@ impl Mcp {
             .and_then(|bc| bc.get("message").and_then(Value::as_str))
             .map(|m| m.chars().take(80).collect::<String>());
 
+        // Per-category counts.
+        let mut category_counts: Map<String, Value> = Map::new();
+        for bc in &breadcrumbs {
+            if let Some(c) = bc.get("category").and_then(Value::as_str) {
+                let n = category_counts.get(c).and_then(Value::as_u64).unwrap_or(0) + 1;
+                category_counts.insert(c.to_string(), json!(n));
+            }
+        }
+
+        let time_from = breadcrumbs.first().and_then(|bc| bc.get("relativeMs")).cloned().unwrap_or(json!(0));
+        let time_to = breadcrumbs.last().and_then(|bc| bc.get("relativeMs")).cloned().unwrap_or(json!(0));
+
         let count = breadcrumbs.len();
         Ok(envelope(json!({
             "summary": format!(
@@ -601,8 +718,13 @@ impl Mcp {
                 last_error.map(|m| format!(" — last error: \"{m}\"")).unwrap_or_default(),
             ),
             "data": breadcrumbs,
-            "issues": [],
-            "metadata": { "eventCount": count, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": count,
+                "projectId": args.project_id,
+                "anchor": iso_ms(anchor),
+                "categoryCounts": category_counts,
+            },
         })))
     }
 
@@ -652,7 +774,7 @@ impl Mcp {
                 json!({
                     "name": name,
                     "count": info.count,
-                    "lastSeen": info.last_seen,
+                    "lastSeen": iso_ms(info.last_seen),
                     "sampleProperties": info.sample,
                 })
             })
@@ -664,12 +786,16 @@ impl Mcp {
             .map(|e| {
                 json!({
                     "name": e.get("name"),
-                    "timestamp": e.get("timestamp"),
+                    "timestamp": iso_ms(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0)),
                     "properties": e.get("properties"),
                     "sessionId": e.get("sessionId"),
                 })
             })
             .collect();
+
+        // timeRange: events are newest-first => from=oldest(last), to=newest(first).
+        let time_from = events.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = events.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
 
         let count = events.len();
         Ok(envelope(json!({
@@ -680,7 +806,10 @@ impl Mcp {
             ),
             "data": { "catalog": catalog_json, "recentEvents": recent },
             "issues": [],
-            "metadata": { "eventCount": count, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": count, "projectId": args.project_id,
+            },
         })))
     }
 
@@ -708,12 +837,96 @@ impl Mcp {
             evs.sort_by_key(|e| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0));
         }
 
+        // Correlation telemetry (filtered to error conditions).
+        let session_filter = |e: &Value| {
+            args.session_id
+                .as_deref()
+                .is_none_or(|sid| e.get("sessionId").and_then(Value::as_str) == Some(sid))
+        };
+        let network_errors: Vec<Value> = within_window(
+            self.store.events_by_type("network", args.project_id.as_deref()).await,
+            Some(since_seconds),
+        )
+        .into_iter()
+        .filter(&session_filter)
+        .filter(|e| {
+            e.get("status").and_then(Value::as_i64).is_some_and(|s| s >= 400)
+                || e.get("errorPhase").is_some_and(|v| !v.is_null())
+        })
+        .collect();
+        let console_errors: Vec<Value> = within_window(
+            self.store.events_by_type("console", args.project_id.as_deref()).await,
+            Some(since_seconds),
+        )
+        .into_iter()
+        .filter(&session_filter)
+        .filter(|e| e.get("level").and_then(Value::as_str) == Some("error"))
+        .collect();
+        let db_errors: Vec<Value> = within_window(
+            self.store.events_by_type("database", args.project_id.as_deref()).await,
+            Some(since_seconds),
+        )
+        .into_iter()
+        .filter(&session_filter)
+        .filter(|e| e.get("error").is_some_and(|v| !v.is_null()))
+        .collect();
+
         let total_sessions = by_session.len();
         let steps = &args.steps;
-        let mut reached: Vec<u64> = vec![0; steps.len()];
-        let mut completed_flows = 0u64;
+        let n = steps.len();
 
-        for evs in by_session.values() {
+        // Per-step accumulators.
+        let mut reached: Vec<u64> = vec![0; n];
+        let mut avg_time: Vec<Option<f64>> = vec![None; n];
+        let mut net_corr: Vec<Vec<Value>> = vec![Vec::new(); n];
+        let mut con_corr: Vec<Vec<Value>> = vec![Vec::new(); n];
+        let mut db_corr: Vec<Vec<Value>> = vec![Vec::new(); n];
+        let mut completed_flows: Vec<i64> = Vec::new();
+
+        let collect_errors =
+            |sid: &str, from_ts: i64, to_ts: i64, net: &mut Vec<Value>, con: &mut Vec<Value>, db: &mut Vec<Value>| {
+                for e in &network_errors {
+                    let ets = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                    if e.get("sessionId").and_then(Value::as_str) == Some(sid) && ets >= from_ts && ets <= to_ts {
+                        net.push(json!({
+                            "url": e.get("url").cloned().unwrap_or(Value::Null),
+                            "status": e.get("status").cloned().unwrap_or(Value::Null),
+                            "method": e.get("method").cloned().unwrap_or(Value::Null),
+                            "timestamp": iso_ms(ets),
+                        }));
+                    }
+                }
+                for e in &console_errors {
+                    let ets = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                    if e.get("sessionId").and_then(Value::as_str) == Some(sid) && ets >= from_ts && ets <= to_ts {
+                        let msg = e.get("message").and_then(Value::as_str).unwrap_or("");
+                        let msg = if msg.chars().count() > 200 {
+                            format!("{}...", msg.chars().take(200).collect::<String>())
+                        } else {
+                            msg.to_string()
+                        };
+                        con.push(json!({ "message": msg, "timestamp": iso_ms(ets) }));
+                    }
+                }
+                for e in &db_errors {
+                    let ets = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                    if e.get("sessionId").and_then(Value::as_str) == Some(sid) && ets >= from_ts && ets <= to_ts {
+                        let q = e.get("query").and_then(Value::as_str).unwrap_or("");
+                        let q = if q.chars().count() > 150 {
+                            format!("{}...", q.chars().take(150).collect::<String>())
+                        } else {
+                            q.to_string()
+                        };
+                        db.push(json!({
+                            "query": q,
+                            "error": e.get("error").cloned().unwrap_or(Value::Null),
+                            "timestamp": iso_ms(ets),
+                        }));
+                    }
+                }
+            };
+
+        for (sid, evs) in &by_session {
             let mut prev_time: Option<i64> = None;
             let mut completed_all = true;
             for (i, step) in steps.iter().enumerate() {
@@ -722,25 +935,66 @@ impl Mcp {
                         && prev_time.is_none_or(|pt| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= pt)
                 });
                 match occ {
-                    Some(e) => {
-                        reached[i] += 1;
-                        prev_time = e.get("timestamp").and_then(Value::as_i64);
-                    }
                     None => {
                         completed_all = false;
+                        if let Some(pt) = prev_time {
+                            let gap_end = evs
+                                .last()
+                                .and_then(|e| e.get("timestamp"))
+                                .and_then(Value::as_i64)
+                                .unwrap_or_else(now_ms);
+                            collect_errors(sid, pt, gap_end, &mut net_corr[i], &mut con_corr[i], &mut db_corr[i]);
+                        }
                         break;
+                    }
+                    Some(e) => {
+                        reached[i] += 1;
+                        let ots = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                        if let Some(pt) = prev_time {
+                            let delta = (ots - pt) as f64;
+                            avg_time[i] = Some(match avg_time[i] {
+                                None => delta,
+                                Some(prev) => (prev * (reached[i] - 1) as f64 + delta) / reached[i] as f64,
+                            });
+                            collect_errors(sid, pt, ots, &mut net_corr[i], &mut con_corr[i], &mut db_corr[i]);
+                        }
+                        prev_time = Some(ots);
                     }
                 }
             }
             if completed_all {
-                completed_flows += 1;
+                if let Some(pt) = prev_time {
+                    if let Some(first) = evs.iter().find(|e| e.get("name").and_then(Value::as_str) == Some(steps[0].as_str())) {
+                        let ft = first.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                        completed_flows.push(pt - ft);
+                    }
+                }
             }
         }
 
-        let funnel: Vec<Value> = steps
-            .iter()
-            .enumerate()
-            .map(|(i, step)| {
+        // Deduplicate correlated errors (limit 5 per category per step).
+        let dedup = |arr: &[Value]| -> Vec<Value> {
+            let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+            let mut out: Vec<Value> = Vec::new();
+            for item in arr {
+                let key = item.to_string();
+                if seen.insert(key) {
+                    out.push(item.clone());
+                    if out.len() >= 5 {
+                        break;
+                    }
+                }
+            }
+            out
+        };
+        for i in 0..n {
+            net_corr[i] = dedup(&net_corr[i]);
+            con_corr[i] = dedup(&con_corr[i]);
+            db_corr[i] = dedup(&db_corr[i]);
+        }
+
+        let funnel: Vec<Value> = (0..n)
+            .map(|i| {
                 let curr = reached[i];
                 let rate = if i == 0 {
                     if total_sessions > 0 {
@@ -753,12 +1007,37 @@ impl Mcp {
                 } else {
                     "0%".to_string()
                 };
-                json!({ "step": step, "reached": curr, "conversionRate": rate })
+                let avg_from_prev = avg_time[i]
+                    .map(|v| Value::String(format!("{}ms", v.round() as i64)))
+                    .unwrap_or(Value::Null);
+                json!({
+                    "step": steps[i],
+                    "reached": curr,
+                    "conversionRate": rate,
+                    "avgTimeFromPrev": avg_from_prev,
+                    "errorsBetweenSteps": {
+                        "network": net_corr[i].len(),
+                        "console": con_corr[i].len(),
+                        "database": db_corr[i].len(),
+                    },
+                    "correlatedErrors": {
+                        "networkErrors": net_corr[i],
+                        "consoleErrors": con_corr[i],
+                        "dbErrors": db_corr[i],
+                    },
+                })
             })
             .collect();
 
+        let avg_completion: Value = if completed_flows.is_empty() {
+            Value::Null
+        } else {
+            let sum: i64 = completed_flows.iter().sum();
+            json!((sum as f64 / completed_flows.len() as f64).round() as i64)
+        };
+
         let mut issues: Vec<String> = Vec::new();
-        for i in 1..steps.len() {
+        for i in 1..n {
             let prev = reached[i - 1];
             let curr = reached[i];
             if prev > 0 && (curr as f64 / prev as f64) < 0.5 {
@@ -767,16 +1046,39 @@ impl Mcp {
                     steps[i], (curr as f64 / prev as f64) * 100.0, steps[i - 1],
                 ));
             }
+            let total_errors = net_corr[i].len() + con_corr[i].len() + db_corr[i].len();
+            if total_errors > 0 {
+                issues.push(format!(
+                    "{total_errors} error(s) detected between \"{}\" and \"{}\"",
+                    steps[i - 1], steps[i],
+                ));
+            }
         }
+
+        let completed_count = completed_flows.len();
+        let avg_summary = if avg_completion.is_null() {
+            String::new()
+        } else {
+            format!(" Avg completion: {}ms.", avg_completion)
+        };
+        let time_from = all.last().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
+        let time_to = all.first().and_then(|e| e.get("timestamp")).and_then(Value::as_i64).unwrap_or(0);
 
         Ok(envelope(json!({
             "summary": format!(
-                "Flow analysis: {} steps, {total_sessions} session(s), {completed_flows} completed the full flow.",
-                steps.len(),
+                "Flow analysis: {n} steps, {total_sessions} session(s), {completed_count} completed the full flow.{avg_summary}",
             ),
-            "data": { "totalSessions": total_sessions, "completedFlows": completed_flows, "funnel": funnel },
+            "data": {
+                "totalSessions": total_sessions,
+                "completedFlows": completed_count,
+                "avgCompletionTimeMs": avg_completion,
+                "funnel": funnel,
+            },
             "issues": issues,
-            "metadata": { "eventCount": all.len(), "projectId": args.project_id },
+            "metadata": {
+                "timeRange": { "from": time_from, "to": time_to },
+                "eventCount": all.len(), "projectId": args.project_id,
+            },
         })))
     }
 }
@@ -797,31 +1099,80 @@ pub(crate) fn event_type_str(e: &Value) -> String {
 /// Shape a single timeline event for output, per event type.
 fn format_timeline_event(e: &Value) -> Value {
     let t = event_type_str(e);
-    let base = json!({ "type": t, "timestamp": e.get("timestamp") });
+    let ts = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+    let base = json!({ "type": t, "timestamp": iso_ms(ts), "relativeMs": 0 });
     let mut obj = base.as_object().unwrap().clone();
     match t.as_str() {
         "network" => {
+            let duration = e.get("duration").and_then(Value::as_f64).unwrap_or(0.0);
+            let graphql = e
+                .get("graphqlOperation")
+                .and_then(Value::as_object)
+                .map(|g| {
+                    format!(
+                        "{} {}",
+                        g.get("type").and_then(Value::as_str).unwrap_or(""),
+                        g.get("name").and_then(Value::as_str).unwrap_or(""),
+                    )
+                });
             obj.insert("method".into(), e.get("method").cloned().unwrap_or(Value::Null));
             obj.insert("url".into(), e.get("url").cloned().unwrap_or(Value::Null));
             obj.insert("status".into(), e.get("status").cloned().unwrap_or(Value::Null));
-            obj.insert("duration".into(), e.get("duration").cloned().unwrap_or(Value::Null));
+            obj.insert("duration".into(), json!(format!("{:.0}ms", duration)));
+            obj.insert("graphql".into(), graphql.map(Value::String).unwrap_or(Value::Null));
         }
         "console" => {
             let msg = e.get("message").and_then(Value::as_str).unwrap_or("");
-            let msg: String = if msg.len() > 200 { format!("{}...", &msg[..200]) } else { msg.to_string() };
+            let msg: String = if msg.chars().count() > 200 {
+                format!("{}...", msg.chars().take(200).collect::<String>())
+            } else {
+                msg.to_string()
+            };
             obj.insert("level".into(), e.get("level").cloned().unwrap_or(Value::Null));
             obj.insert("message".into(), json!(msg));
             obj.insert("hasStack".into(), json!(e.get("stackTrace").is_some_and(|v| !v.is_null())));
         }
+        "session" => {
+            obj.insert("note".into(), json!("SDK session connected"));
+        }
         "state" => {
+            let action = e
+                .get("action")
+                .and_then(Value::as_object)
+                .and_then(|a| a.get("type").cloned())
+                .unwrap_or(Value::Null);
+            let changed_keys = e
+                .get("diff")
+                .and_then(Value::as_object)
+                .map(|m| Value::String(m.keys().cloned().collect::<Vec<_>>().join(", ")))
+                .unwrap_or(Value::Null);
             obj.insert("storeId".into(), e.get("storeId").cloned().unwrap_or(Value::Null));
             obj.insert("library".into(), e.get("library").cloned().unwrap_or(Value::Null));
             obj.insert("phase".into(), e.get("phase").cloned().unwrap_or(Value::Null));
+            obj.insert("action".into(), action);
+            obj.insert("changedKeys".into(), changed_keys);
+        }
+        "render" => {
+            let profiles_len = e.get("profiles").and_then(Value::as_array).map(|a| a.len()).unwrap_or(0);
+            let suspicious = e
+                .get("suspiciousComponents")
+                .and_then(Value::as_array)
+                .filter(|a| !a.is_empty())
+                .map(|a| {
+                    Value::String(
+                        a.iter().filter_map(Value::as_str).collect::<Vec<_>>().join(", "),
+                    )
+                })
+                .unwrap_or(Value::Null);
+            obj.insert("totalRenders".into(), e.get("totalRenders").cloned().unwrap_or(Value::Null));
+            obj.insert("componentCount".into(), json!(profiles_len));
+            obj.insert("suspicious".into(), suspicious);
         }
         "performance" => {
             obj.insert("metric".into(), e.get("metricName").cloned().unwrap_or(Value::Null));
             obj.insert("value".into(), e.get("value").cloned().unwrap_or(Value::Null));
             obj.insert("rating".into(), e.get("rating").cloned().unwrap_or(Value::Null));
+            obj.insert("element".into(), e.get("element").cloned().unwrap_or(Value::Null));
         }
         "custom" => {
             obj.insert("name".into(), e.get("name").cloned().unwrap_or(Value::Null));
@@ -835,6 +1186,7 @@ fn format_timeline_event(e: &Value) -> Value {
 /// Convert a stored event into a breadcrumb, or `None` to skip it.
 fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
     let ts = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+    let iso = iso_ms(ts);
     let relative = ts - anchor;
     let t = event_type_str(e);
     match t.as_str() {
@@ -842,8 +1194,9 @@ fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
             let to = e.get("to").and_then(Value::as_str).unwrap_or("");
             let trigger = e.get("trigger").and_then(Value::as_str).unwrap_or("navigate");
             Some(json!({
-                "timestamp": ts, "relativeMs": relative, "category": "navigation",
+                "timestamp": iso, "relativeMs": relative, "category": "navigation",
                 "level": "info", "message": format!("{trigger}: {to}"),
+                "data": { "from": e.get("from").cloned().unwrap_or(Value::Null) },
             }))
         }
         "ui" => {
@@ -852,14 +1205,19 @@ fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
             let target = e.get("target").and_then(Value::as_str).unwrap_or("");
             if action == "click" {
                 Some(json!({
-                    "timestamp": ts, "relativeMs": relative, "category": "ui.click",
+                    "timestamp": iso, "relativeMs": relative, "category": "ui.click",
                     "level": "info", "message": text.map(|x| format!("Click: {x}")).unwrap_or_else(|| format!("Click: {target}")),
+                    "data": { "target": e.get("target").cloned().unwrap_or(Value::Null) },
                 }))
             } else {
-                Some(json!({
-                    "timestamp": ts, "relativeMs": relative, "category": "breadcrumb",
+                let mut bc = json!({
+                    "timestamp": iso, "relativeMs": relative, "category": "breadcrumb",
                     "level": "info", "message": text.unwrap_or(target),
-                }))
+                });
+                if let Some(d) = e.get("data") {
+                    bc.as_object_mut().unwrap().insert("data".into(), d.clone());
+                }
+                Some(bc)
             }
         }
         "console" => {
@@ -872,10 +1230,14 @@ fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
             };
             let msg = e.get("message").and_then(Value::as_str).unwrap_or("");
             let msg: String = msg.chars().take(200).collect();
-            Some(json!({
-                "timestamp": ts, "relativeMs": relative, "category": format!("console.{raw}"),
+            let mut bc = json!({
+                "timestamp": iso, "relativeMs": relative, "category": format!("console.{raw}"),
                 "level": level, "message": msg,
-            }))
+            });
+            if e.get("stackTrace").is_some_and(|v| !v.is_null()) {
+                bc.as_object_mut().unwrap().insert("data".into(), json!({ "hasStack": true }));
+            }
+            Some(bc)
         }
         "network" => {
             let status = e.get("status").and_then(Value::as_i64).unwrap_or(0);
@@ -888,15 +1250,20 @@ fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
                 "info"
             };
             let method = e.get("method").and_then(Value::as_str).unwrap_or("");
-            let url = e.get("url").and_then(Value::as_str).unwrap_or("");
+            let raw_url = e.get("url").and_then(Value::as_str).unwrap_or("");
+            let path = url_pathname(raw_url);
             let outcome = if status != 0 {
                 status.to_string()
             } else {
                 error_phase.unwrap_or("pending").to_string()
             };
             Some(json!({
-                "timestamp": ts, "relativeMs": relative, "category": "http",
-                "level": level, "message": format!("{method} {url} → {outcome}"),
+                "timestamp": iso, "relativeMs": relative, "category": "http",
+                "level": level, "message": format!("{method} {path} → {outcome}"),
+                "data": {
+                    "duration": e.get("duration").cloned().unwrap_or(Value::Null),
+                    "status": e.get("status").cloned().unwrap_or(Value::Null),
+                },
             }))
         }
         "state" => {
@@ -911,19 +1278,49 @@ fn event_to_breadcrumb(e: &Value, anchor: i64) -> Option<Value> {
                 .map(|m| m.keys().cloned().collect::<Vec<_>>().join(", "))
                 .unwrap_or_else(|| "unknown".to_string());
             Some(json!({
-                "timestamp": ts, "relativeMs": relative, "category": "state",
+                "timestamp": iso, "relativeMs": relative, "category": "state",
                 "level": "debug", "message": format!("{store_id}: {changed_keys}"),
+                "data": { "library": e.get("library").cloned().unwrap_or(Value::Null) },
             }))
         }
         "custom" => {
             let name = e.get("name").and_then(Value::as_str).unwrap_or("");
-            Some(json!({
-                "timestamp": ts, "relativeMs": relative, "category": format!("custom.{name}"),
+            let mut bc = json!({
+                "timestamp": iso, "relativeMs": relative, "category": format!("custom.{name}"),
                 "level": "info", "message": name,
-            }))
+            });
+            if let Some(props) = e.get("properties").filter(|p| !p.is_null()) {
+                bc.as_object_mut().unwrap().insert("data".into(), props.clone());
+            }
+            Some(bc)
         }
         _ => None,
     }
+}
+
+/// Extract the pathname from a URL the way `new URL(url, 'http://localhost').pathname` does.
+fn url_pathname(url: &str) -> String {
+    // Strip scheme://host if present, keep from the first '/' of the path.
+    let after_scheme = url.split_once("://").map(|(_, rest)| rest).unwrap_or(url);
+    if url.contains("://") {
+        // absolute: path is after the host
+        match after_scheme.find('/') {
+            Some(idx) => {
+                let p = &after_scheme[idx..];
+                strip_query_fragment(p)
+            }
+            None => "/".to_string(),
+        }
+    } else {
+        // relative: prefix with '/' if needed
+        let p = if url.starts_with('/') { url.to_string() } else { format!("/{url}") };
+        strip_query_fragment(&p)
+    }
+}
+
+fn strip_query_fragment(p: &str) -> String {
+    let end = p.find(['?', '#']).unwrap_or(p.len());
+    p[..end].to_string()
 }
 
 /// Parse Chrome/V8 and Firefox stack traces into frame objects.

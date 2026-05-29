@@ -170,7 +170,7 @@ impl Mcp {
                     "rowsAffected": e.get("rowsAffected").cloned().unwrap_or(Value::Null),
                     "error": e.get("error").cloned().unwrap_or(Value::Null),
                     "label": e.get("label").cloned().unwrap_or(Value::Null),
-                    "timestamp": e.get("timestamp"),
+                    "timestamp": crate::tools::iso_ms(num(e, "timestamp") as i64),
                 })
             })
             .collect();
@@ -366,7 +366,7 @@ impl Mcp {
             "summary": "Schema introspection is deferred to a later milestone (DB introspection).",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -379,7 +379,7 @@ impl Mcp {
             "summary": "Table data reads are deferred to a later milestone (DB introspection).",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -392,7 +392,7 @@ impl Mcp {
             "summary": "Table data modification is deferred to a later milestone (DB introspection).",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -405,7 +405,7 @@ impl Mcp {
             "summary": "Database connection listing is deferred to a later milestone (DB introspection).",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -418,7 +418,7 @@ impl Mcp {
             "summary": "Index suggestions are deferred to a later milestone (DB introspection).",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 }

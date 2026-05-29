@@ -99,7 +99,7 @@ impl Mcp {
             "summary": "compare_sessions is deferred: session snapshots are not yet implemented in the Rust collector.",
             "data": null,
             "issues": ["Snapshot comparison requires the SessionManager facility, not yet ported to Rust."],
-            "metadata": { "eventCount": 0, "projectId": args.project_id },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": args.project_id },
         })))
     }
 
@@ -113,7 +113,7 @@ impl Mcp {
             "summary": "create_session_snapshot is deferred: session snapshots are not yet implemented in the Rust collector.",
             "data": null,
             "issues": ["Snapshot capture requires the SessionManager facility, not yet ported to Rust."],
-            "metadata": { "eventCount": 0, "projectId": args.project_id },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": args.project_id },
         })))
     }
 
@@ -127,7 +127,7 @@ impl Mcp {
             "summary": "get_session_snapshots is deferred: session snapshots are not yet implemented in the Rust collector.",
             "data": null,
             "issues": ["Snapshot listing requires the SessionManager facility, not yet ported to Rust."],
-            "metadata": { "eventCount": 0, "projectId": args.project_id },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": args.project_id },
         })))
     }
 
@@ -137,32 +137,51 @@ impl Mcp {
         Parameters(args): Parameters<SessionHistoryArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(20);
-        let sessions = self.store.sessions().await;
-        let data: Vec<Value> = sessions
+        // History is addressed by appName (Node: getSessionHistory(project)).
+        // Resolve a project_id arg to its appName via the session registry.
+        let project = match (&args.project, &args.project_id) {
+            (Some(p), _) => p.clone(),
+            (None, Some(pid)) => self
+                .store
+                .sessions()
+                .await
+                .iter()
+                .find(|s| s.project_id.as_deref() == Some(pid.as_str()))
+                .map(|s| s.app_name.clone())
+                .unwrap_or_else(|| "default".to_string()),
+            _ => "default".to_string(),
+        };
+
+        let history = self.store.session_history(&project, limit).await;
+        let m = |snap: &collector_core::store::SnapshotRow, key: &str| -> i64 {
+            snap.metrics.get(key).and_then(Value::as_i64).unwrap_or(0)
+        };
+        let data: Vec<Value> = history
             .iter()
-            .filter(|s| args.project.as_ref().is_none_or(|p| s.project_key() == p))
-            .filter(|s| args.project_id.as_ref().is_none_or(|p| s.project_key() == p))
-            .take(limit)
             .map(|s| {
                 json!({
                     "sessionId": s.session_id,
-                    "projectId": s.project_id,
-                    "appName": s.app_name,
-                    "isConnected": s.is_connected,
+                    "project": s.project,
+                    "createdAt": crate::tools::iso_ms(s.created_at),
+                    "totalEvents": m(s, "totalEvents"),
+                    "errorCount": m(s, "errorCount"),
+                    "endpointCount": m(s, "endpointCount"),
+                    "componentCount": m(s, "componentCount"),
+                    "buildMeta": Value::Null,
                 })
             })
             .collect();
         let count = data.len();
-        let scope = args
-            .project
-            .clone()
-            .or_else(|| args.project_id.clone())
-            .unwrap_or_else(|| "all".to_string());
+        let time_range = if history.is_empty() {
+            json!({ "from": 0, "to": 0 })
+        } else {
+            json!({ "from": history[history.len() - 1].created_at, "to": history[0].created_at })
+        };
         Ok(envelope(json!({
-            "summary": format!("{count} session(s) in history for \"{scope}\"."),
+            "summary": format!("{count} session(s) in history for project \"{project}\"."),
             "data": data,
             "issues": [],
-            "metadata": { "eventCount": count, "projectId": args.project_id },
+            "metadata": { "timeRange": time_range, "eventCount": count, "sessionId": null },
         })))
     }
 
@@ -189,7 +208,23 @@ impl Mcp {
             _ => default_types.iter().map(|s| s.to_string()).collect(),
         };
 
-        let project_filter = args.project_id.as_deref().or(args.project.as_deref());
+        // Resolve the event-scoping key. Events are stored under
+        // projectId-when-present-else-appName; history is addressed by appName
+        // (Node's per-app SQLite store), so map appName → its session's scope key.
+        let project_filter: Option<String> = if let Some(pid) = &args.project_id {
+            Some(pid.clone())
+        } else if let Some(app) = &args.project {
+            self.store
+                .sessions()
+                .await
+                .iter()
+                .find(|s| &s.app_name == app)
+                .map(|s| s.project_key().to_string())
+                .or_else(|| Some(app.clone()))
+        } else {
+            None
+        };
+        let project_filter = project_filter.as_deref();
 
         let mut collected: Vec<Value> = Vec::new();
         for ty in &requested {
@@ -221,6 +256,12 @@ impl Mcp {
             .collect::<Vec<_>>()
             .join(", ");
         let has_more = offset + capped_limit < total;
+        let ts = |e: &Value| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+        let time_range = if page.is_empty() {
+            json!({ "from": 0, "to": 0 })
+        } else {
+            json!({ "from": ts(&page[0]), "to": ts(&page[page.len() - 1]) })
+        };
 
         Ok(envelope(json!({
             "summary": format!(
@@ -238,7 +279,11 @@ impl Mcp {
                 },
             },
             "issues": [],
-            "metadata": { "eventCount": returned, "projectId": args.project_id },
+            "metadata": {
+                "timeRange": time_range,
+                "eventCount": returned,
+                "sessionId": args.session_id,
+            },
         })))
     }
 
@@ -249,51 +294,54 @@ impl Mcp {
     ) -> Result<CallToolResult, ErrorData> {
         let sessions = self.store.sessions().await;
 
-        // Aggregate sessions into distinct projects.
+        // Aggregate by APP NAME (Node keys projects by appName / per-app SQLite
+        // store), tracking the event-scoping key so we can count persisted events.
         struct Agg {
             session_count: usize,
             active_sessions: usize,
-            apps: std::collections::BTreeSet<String>,
+            scope: String,
+            project_id: Option<String>,
         }
-        let mut by_project: BTreeMap<String, Agg> = BTreeMap::new();
+        let mut by_app: BTreeMap<String, Agg> = BTreeMap::new();
         for s in &sessions {
             if let Some(p) = &args.project_id {
                 if s.project_key() != p {
                     continue;
                 }
             }
-            let entry = by_project.entry(s.project_key().to_string()).or_insert(Agg {
+            let entry = by_app.entry(s.app_name.clone()).or_insert(Agg {
                 session_count: 0,
                 active_sessions: 0,
-                apps: std::collections::BTreeSet::new(),
+                scope: s.project_key().to_string(),
+                project_id: s.project_id.clone(),
             });
             entry.session_count += 1;
             if s.is_connected {
                 entry.active_sessions += 1;
             }
-            entry.apps.insert(s.app_name.clone());
         }
 
-        let data: Vec<Value> = by_project
-            .iter()
-            .map(|(name, agg)| {
-                json!({
-                    "name": name,
-                    "apps": agg.apps.iter().cloned().collect::<Vec<_>>(),
-                    "sessionCount": agg.session_count,
-                    "activeSessions": agg.active_sessions,
-                    "isConnected": agg.active_sessions > 0,
-                })
-            })
-            .collect();
+        let mut data: Vec<Value> = Vec::with_capacity(by_app.len());
+        for (name, agg) in &by_app {
+            let event_count = self.store.event_count(Some(&agg.scope)).await;
+            data.push(json!({
+                "name": name,
+                "projectId": agg.project_id,
+                "eventCount": event_count,
+                "sessionCount": agg.session_count,
+                "activeSessions": agg.active_sessions,
+                "isConnected": agg.active_sessions > 0,
+            }));
+        }
 
         let project_count = data.len();
+        let total_events: u64 = data.iter().map(|p| p["eventCount"].as_u64().unwrap_or(0)).sum();
         let connected_count = data.iter().filter(|p| p["isConnected"] == json!(true)).count();
         Ok(envelope(json!({
-            "summary": format!("{project_count} project(s), {connected_count} currently connected."),
+            "summary": format!("{project_count} project(s), {total_events} total events, {connected_count} currently connected."),
             "data": data,
             "issues": [],
-            "metadata": { "eventCount": project_count, "projectId": args.project_id },
+            "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": project_count, "sessionId": null },
         })))
     }
 }

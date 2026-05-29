@@ -220,7 +220,7 @@ impl Mcp {
             "summary": "kill_process deferred (OS/infra engine): OS process control is not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -233,7 +233,7 @@ impl Mcp {
             "summary": "purge_caches deferred (OS/infra engine): filesystem cache purging is not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -246,7 +246,7 @@ impl Mcp {
             "summary": "restart_dev_server deferred (OS/infra engine): OS process control and spawning are not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -259,7 +259,7 @@ impl Mcp {
             "summary": "get_deploy_logs deferred (OS/infra engine): infra-platform connectors are not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -272,7 +272,7 @@ impl Mcp {
             "summary": "get_runtime_logs deferred (OS/infra engine): infra-platform connectors are not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -285,7 +285,7 @@ impl Mcp {
             "summary": "get_build_status deferred (OS/infra engine): infra-platform connectors are not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 
@@ -298,7 +298,7 @@ impl Mcp {
             "summary": "get_infra_overview deferred (OS/infra engine): infra-platform connectors are not yet available in the Rust collector.",
             "data": null,
             "issues": [],
-            "metadata": {},
+            "metadata": { "deferred": true },
         })))
     }
 }

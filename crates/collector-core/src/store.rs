@@ -47,7 +47,31 @@ CREATE TABLE IF NOT EXISTS sessions (
   connected_at INTEGER NOT NULL,
   is_connected INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  session_id TEXT NOT NULL,
+  project TEXT NOT NULL,
+  label TEXT,
+  created_at INTEGER NOT NULL,
+  metrics TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_snapshots_project ON snapshots(project);
 ";
+
+/// A persisted session snapshot (point-in-time metrics), mirroring Node's
+/// SessionManager snapshots. `metrics` is the same JSON object the MCP tools
+/// surface (totalEvents/errorCount/endpointCount/componentCount/webVitals/queryCount).
+#[derive(Clone)]
+pub struct SnapshotRow {
+    pub id: i64,
+    pub session_id: String,
+    /// The app/project display name the snapshot was taken under.
+    pub project: String,
+    pub label: Option<String>,
+    pub created_at: i64,
+    pub metrics: Value,
+}
 
 #[derive(Clone)]
 pub struct SessionInfo {
@@ -76,6 +100,16 @@ enum Cmd {
     ConnectedCount { reply: oneshot::Sender<usize> },
     EventsByType { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
     Timeline { project: Option<String>, types: Option<Vec<String>>, reply: oneshot::Sender<Vec<Value>> },
+    EventCount { project: Option<String>, reply: oneshot::Sender<usize> },
+    SaveSnapshot {
+        session_id: String,
+        project: String,
+        label: Option<String>,
+        created_at: i64,
+        metrics: Value,
+        reply: oneshot::Sender<i64>,
+    },
+    SessionHistory { project: String, limit: usize, reply: oneshot::Sender<Vec<SnapshotRow>> },
 }
 
 /// Cloneable async handle to the store. Cheap to clone (just the channel sender).
@@ -179,6 +213,22 @@ impl StoreHandle {
                              ON CONFLICT(session_id) DO UPDATE SET app_name=?2, project_id=?3, is_connected=1",
                             rusqlite::params![session_id, app_name, project_id, connected_at],
                         );
+                        // Record a queryable `session` connect event (Node parity:
+                        // server.ts addEvent on handshake) so it counts in the
+                        // history/QA metrics. Idempotent on eventId — reconnects of
+                        // the same session don't double-count. Stored under the
+                        // event-scoping key (projectId when present, else appName).
+                        let scope = project_id.clone().unwrap_or_else(|| app_name.clone());
+                        let session_event = serde_json::json!({
+                            "eventId": format!("session-{session_id}"),
+                            "sessionId": session_id,
+                            "timestamp": connected_at,
+                            "eventType": "session",
+                            "appName": app_name,
+                            "projectId": project_id,
+                            "connectedAt": connected_at,
+                        });
+                        let _ = insert_event(&conn, &scope, &session_event);
                     }
                     Cmd::MarkDisconnected { session_id } => {
                         if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
@@ -200,6 +250,23 @@ impl StoreHandle {
                     }
                     Cmd::Timeline { project, types, reply } => {
                         let _ = reply.send(query_timeline(&conn, project.as_deref(), types.as_deref()));
+                    }
+                    Cmd::EventCount { project, reply } => {
+                        let _ = reply.send(count_events(&conn, project.as_deref()));
+                    }
+                    Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply } => {
+                        let id = conn
+                            .execute(
+                                "INSERT INTO snapshots (session_id, project, label, created_at, metrics)
+                                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                                rusqlite::params![session_id, project, label, created_at, metrics.to_string()],
+                            )
+                            .map(|_| conn.last_insert_rowid())
+                            .unwrap_or(0);
+                        let _ = reply.send(id);
+                    }
+                    Cmd::SessionHistory { project, limit, reply } => {
+                        let _ = reply.send(query_session_history(&conn, &project, limit));
                     }
                 }
             }
@@ -251,6 +318,45 @@ impl StoreHandle {
             project: project.map(String::from),
             reply,
         };
+        if self.tx.send(cmd).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Count all stored events for a project scope (or every event when `None`).
+    /// Matches Node's `sqliteStore.getEventCount({ project })`.
+    pub async fn event_count(&self, project: Option<&str>) -> usize {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::EventCount { project: project.map(String::from), reply };
+        if self.tx.send(cmd).await.is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
+
+    /// Persist a session snapshot and return its row id.
+    pub async fn save_snapshot(
+        &self,
+        session_id: String,
+        project: String,
+        label: Option<String>,
+        created_at: i64,
+        metrics: Value,
+    ) -> i64 {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply };
+        if self.tx.send(cmd).await.is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
+
+    /// The latest snapshot per session for a project, newest-first (`limit` rows).
+    /// Matches Node's `sessionManager.getSessionHistory(project, limit)`.
+    pub async fn session_history(&self, project: &str, limit: usize) -> Vec<SnapshotRow> {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::SessionHistory { project: project.to_string(), limit, reply };
         if self.tx.send(cmd).await.is_err() {
             return Vec::new();
         }
@@ -338,6 +444,44 @@ fn query_timeline(conn: &Connection, project: Option<&str>, types: Option<&[Stri
         }
     }
     out
+}
+
+/// COUNT(*) of stored events for a project scope (or all events when `None`).
+fn count_events(conn: &Connection, project: Option<&str>) -> usize {
+    conn.query_row(
+        "SELECT COUNT(*) FROM events WHERE (?1 IS NULL OR project = ?1)",
+        rusqlite::params![project],
+        |r| r.get::<_, i64>(0),
+    )
+    .unwrap_or(0) as usize
+}
+
+/// Latest snapshot per session for a project, newest-first, capped at `limit`.
+fn query_session_history(conn: &Connection, project: &str, limit: usize) -> Vec<SnapshotRow> {
+    // Latest row per session (MAX(id)), newest snapshot first.
+    let mut stmt = match conn.prepare(
+        "SELECT s.id, s.session_id, s.project, s.label, s.created_at, s.metrics
+         FROM snapshots s
+         JOIN (SELECT session_id, MAX(id) AS mid FROM snapshots WHERE project = ?1 GROUP BY session_id) latest
+           ON s.id = latest.mid
+         ORDER BY s.created_at DESC
+         LIMIT ?2",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(rusqlite::params![project, limit as i64], |r| {
+        let metrics_json: String = r.get(5)?;
+        Ok(SnapshotRow {
+            id: r.get(0)?,
+            session_id: r.get(1)?,
+            project: r.get(2)?,
+            label: r.get(3)?,
+            created_at: r.get(4)?,
+            metrics: serde_json::from_str(&metrics_json).unwrap_or(Value::Null),
+        })
+    });
+    rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
 /// Query events of a type, optionally project-scoped, newest-first.

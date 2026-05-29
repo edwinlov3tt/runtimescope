@@ -1,9 +1,9 @@
 # Current State
 
-**Snapshot date:** 2026-05-24 (post-Tauri-Tray)
-**Snapshot commit:** `538a399` — *fix(cli): bump readyz install poll 30s → 60s (v0.10.12)* + uncommitted Phase Tauri-Tray work (see [`reports/phase-tauri-tray-completion-report.md`](./reports/phase-tauri-tray-completion-report.md))
+**Snapshot date:** 2026-05-29 (post-Wire-Protocol-Lock)
+**Snapshot commit:** Phase Tauri-Tray committed (`c9dfe33`); bench/seam (`2800c4e`); Wire-Protocol-Lock conformance suite + specs + ADR-0006 (this snapshot). See [`reports/phase-wire-protocol-lock-completion-report.md`](./reports/phase-wire-protocol-lock-completion-report.md).
 
-**Active phase:** Phase Wire-Protocol-Lock (next up; not yet started — handoff doc not yet written).
+**Active phase:** Phase Rust-Collector (next; plan written — [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) + [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md)). Wire-Protocol-Lock is substantively complete; **v0.11.0 tag/publish pending owner approval** (completion report §6).
 
 This file is updated when releases land or gates change. It is *not* a running log — for that, see [`CHANGELOG.md`](./CHANGELOG.md).
 
@@ -11,15 +11,17 @@ This file is updated when releases land or gates change. It is *not* a running l
 
 | Package | Version | Registry |
 |---|---|---|
-| `@runtimescope/sdk` | 0.10.12 | npm |
-| `@runtimescope/server-sdk` | 0.10.12 | npm |
-| `@runtimescope/workers-sdk` | 0.10.12 | npm |
-| `@runtimescope/collector` | 0.10.12 | npm |
-| `@runtimescope/mcp-server` | 0.10.12 | npm |
-| `runtimescope` (CLI) | 0.10.12 | npm |
+| `@runtimescope/sdk` | 0.11.0 (in-tree; published 0.10.12) | npm |
+| `@runtimescope/server-sdk` | 0.11.0 (in-tree; published 0.10.12) | npm |
+| `@runtimescope/workers-sdk` | 0.11.0 (in-tree; published 0.10.12) | npm |
+| `@runtimescope/collector` | 0.11.0 (in-tree; published 0.10.12) | npm |
+| `@runtimescope/mcp-server` | 0.11.0 (in-tree; published 0.10.12) | npm |
+| `runtimescope` (CLI) | 0.11.0 (in-tree; published 0.10.12) | npm |
 | `runtimescope` (Python) | 0.10.12 | PyPI |
 | `@runtimescope/tray` | 0.1.0 | **workspace-private** — manual `.dmg` distribution on GitHub Releases (auto-updater pending P1; see Phase Tauri-Tray completion report §4.1) |
 | Plugin (Claude marketplace) | 0.10.16 | edwinlov3tt/runtimescope marketplace |
+
+> **v0.11.0 is bumped in the tree but not yet published.** `git tag v0.11.0 && git push --tags` triggers the publish workflow (which now runs the conformance gate). Until then, npm still serves 0.10.12.
 
 ## Gate status
 
@@ -28,6 +30,8 @@ This file is updated when releases land or gates change. It is *not* a running l
 | Build (existing packages + tray) | `npm run build` | ✅ all 13 existing packages + new `packages/tray` build clean. Pre-existing playground build-script issue persists at the inherited HEAD — see Tauri-Tray completion report §4.2 |
 | Unit tests | `npm test` | ✅ **586 / 0** |
 | Stress harness | `npm run stress` | ✅ **7 / 7** scenarios |
+| Wire-protocol conformance | `npm run conformance` | ✅ **15 / 15** (5 specs) — the Rust port's acceptance gate (ADR-0006) |
+| Benchmark | `npm run bench` | ✅ Node baseline at `bench/baselines/node.json` (~59k evt/s, p99 ~7ms, no leak) |
 | Tray Rust unit | `cd packages/tray/src-tauri && cargo test --lib` | ✅ **2 / 0** |
 | Tray release build | `cd packages/tray && cargo tauri build` | ✅ produces `RuntimeScope_0.1.0_aarch64.dmg` (2.6 MB), ad-hoc signed |
 | Smoke: published CLI | `runtimescope --version` | ✅ → `0.10.12` |

@@ -18,6 +18,7 @@
     "bench": "tsx stress/bench.ts",
     "bench:quick": "tsx stress/bench.ts --quick",
     "bench:compare": "tsx stress/bench.ts --compare",
+    "conformance": "vitest run --config tests/conformance/vitest.config.ts",
     "prepush": "npm run build && npm test && npm run stress -- --quick"
   },
   "devDependencies": {

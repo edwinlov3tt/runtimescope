@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/nextjs",
-  "version": "0.10.12",
+  "version": "0.11.0",
   "description": "RuntimeScope for Next.js — one install, works in client, server, and edge runtimes",
   "type": "module",
   "main": "./dist/index.js",

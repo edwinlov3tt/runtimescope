@@ -12,9 +12,11 @@ A runtime monitoring system for Claude Code. Long-running TypeScript collector d
 
 ## Where the active work is
 
-**Phase: Wire-Protocol-Lock (next up — [handoff doc ready](./handoffs/phase-wire-protocol-lock-handoff.md)).**
+**Phase: Rust-Collector (next — [handoff ready](./handoffs/phase-rust-collector-handoff.md) + [milestones](./roadmap/rust-collector-milestones.md)).**
 
-Trigger: Phase Tauri-Tray shipped v0.1.0 of `@runtimescope/tray` ([completion report](./reports/phase-tauri-tray-completion-report.md)). The tray locks three HTTP endpoints as its contract (documented in [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md)) — the next phase consolidates that surface + adds a conformance test suite that the Rust collector must pass. The self-contained brief for the receiving instance is [`handoffs/phase-wire-protocol-lock-handoff.md`](./handoffs/phase-wire-protocol-lock-handoff.md).
+Trigger: Phase Wire-Protocol-Lock is substantively complete ([completion report](./reports/phase-wire-protocol-lock-completion-report.md)). The wire contract is now **executable**: `npm run conformance` (15 tests / 5 specs) passes against the Node collector and becomes the Rust port's acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD` (ADR-0006). Specs: [`wire-protocol.md`](./specs/wire-protocol.md), [`mcp-tool-surface.md`](./specs/mcp-tool-surface.md). **v0.11.0 is bumped in-tree but not yet published** — `git tag v0.11.0 && git push --tags` when ready.
+
+One open question handed forward (must be decided before Rust Milestone 2): the server→SDK command channel is triggered in-process today; ADR-0002 splits collector and mcp-server into separate Rust bins, so that mechanism needs a design. Flagged in `wire-protocol.md` §5.
 
 **Phase plan:** [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md)
 **Decisions driving sequencing:**
@@ -39,13 +41,13 @@ Open deferrals (see CURRENT_STATE.md and the Tauri-Tray completion report for de
 Per the master phase plan:
 
 1. **Phase Tauri-Tray** (**SHIPPED v0.1.0** — see [completion report](./reports/phase-tauri-tray-completion-report.md)).
-2. **Phase Wire-Protocol-Lock (current next)** — thin spec + conformance test suite. The Rust port's acceptance gate. Inherits the tray as a concrete client. Targeted at v0.11.0 of the workspace surface. ~2-3d.
+2. **Phase Wire-Protocol-Lock** (**COMPLETE — v0.11.0 in-tree, publish pending** — see [completion report](./reports/phase-wire-protocol-lock-completion-report.md)). Conformance suite + specs + ADR-0006 landed; 15/15 green.
 3. **Phase Rust-Collector** (v0.12.0) — 4 Rust crates, dashboard embedded, curl-install, fresh data on cutover (no migration). ~8 weeks. Plan written ahead of time: [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) (contract + module→crate map + hard spots) and [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md) (milestones + agent-team fan-out strategy).
 4. **Phase SDK-Channel-Migration** (v0.13.0) — `cdn.runtimescope.dev` + `runtimescope sdk install` + npm-with-provenance. ~2 weeks.
 
 ## Resolution order when uncertain
 
-1. The active phase brief — [`handoffs/phase-wire-protocol-lock-handoff.md`](./handoffs/phase-wire-protocol-lock-handoff.md). It is self-contained and cites the live wire surface; the [Tauri-Tray completion report](./reports/phase-tauri-tray-completion-report.md) + [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md) are supporting inputs.
+1. The active phase brief — [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) + [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md). The executable contract is [`tests/conformance/`](../tests/conformance/) (run `npm run conformance`); the spec docs ([`wire-protocol.md`](./specs/wire-protocol.md), [`mcp-tool-surface.md`](./specs/mcp-tool-surface.md)) mirror it — **if a doc and a green test disagree, the test wins** (ADR-0006).
 2. The audit findings in [`audits/`](./audits/).
 3. ADRs in [`decisions/`](./decisions/).
 4. [`../CLAUDE.md`](../CLAUDE.md) operating manual.

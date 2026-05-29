@@ -37,6 +37,11 @@ jobs:
       - run: npm run build -w packages/collector -w packages/mcp-server
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite
       - run: npm test
+      # Wire-protocol conformance gate (ADR-0006): the executable contract the
+      # collector must honor. Runs against the Node collector built above; the
+      # Rust port (Phase Rust-Collector) runs the same suite via
+      # RUNTIMESCOPE_COLLECTOR_CMD before it's allowed to ship.
+      - run: npm run conformance
 
       # Publish in dependency order (|| true skips already-published versions)
       - run: npm publish -w packages/sdk --access public || true

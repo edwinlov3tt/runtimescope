@@ -86,6 +86,9 @@ export async function spawnCollector(
      *  instead of the 5-minute production default. */
     sqliteIdleMs?: number;
     sqliteSweepMs?: number;
+    /** Boot the collector with auth enabled (sets RUNTIMESCOPE_AUTH_TOKEN).
+     *  Used by the handshake conformance test to exercise the 4001 path. */
+    authToken?: string;
   } = {},
 ): Promise<SpawnedCollector> {
   const [wsPort, httpPort] = await nextFreePair();
@@ -104,6 +107,9 @@ export async function spawnCollector(
   }
   if (options.sqliteSweepMs !== undefined) {
     env.RUNTIMESCOPE_SQLITE_SWEEP_MS = String(options.sqliteSweepMs);
+  }
+  if (options.authToken !== undefined) {
+    env.RUNTIMESCOPE_AUTH_TOKEN = options.authToken;
   }
 
   const { cmd, args, label } = resolveCollectorCmd();

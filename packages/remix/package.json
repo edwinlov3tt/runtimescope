@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/remix",
-  "version": "0.10.12",
+  "version": "0.11.0",
   "description": "RuntimeScope for Remix — one install, works in entry.client.tsx and entry.server.tsx",
   "type": "module",
   "main": "./dist/index.js",

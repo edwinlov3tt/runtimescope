@@ -20,6 +20,14 @@ export interface DriverConfig {
   projectId: string;
   sessionId?: string;
   authToken?: string;
+  /**
+   * Server→SDK command handler. When the collector sends a `command` frame
+   * (e.g. capture_dom_snapshot), this is called and its return value is sent
+   * back as the `command_response` payload, correlated by the same requestId.
+   * Used by the command-channel conformance test. If unset, incoming commands
+   * are ignored (the stress scenarios' behavior — unchanged).
+   */
+  onCommand?: (cmd: { command: string; requestId: string; params?: Record<string, unknown> }) => unknown;
 }
 
 export class SdkDriver {
@@ -55,6 +63,32 @@ export class SdkDriver {
           }),
         );
         this.ws = ws;
+
+        // Server→SDK command channel. Only acts when a handler is provided;
+        // otherwise incoming frames are ignored (stress scenarios' behavior).
+        if (this.config.onCommand) {
+          ws.on('message', (data) => {
+            let msg: { type?: string; payload?: unknown };
+            try {
+              msg = JSON.parse(data.toString());
+            } catch {
+              return;
+            }
+            if (msg.type !== 'command') return;
+            const cmd = msg.payload as { command: string; requestId: string; params?: Record<string, unknown> };
+            const payload = this.config.onCommand!(cmd);
+            ws.send(
+              JSON.stringify({
+                type: 'command_response',
+                requestId: cmd.requestId,
+                command: cmd.command,
+                payload,
+                timestamp: Date.now(),
+                sessionId: this.sessionId,
+              }),
+            );
+          });
+        }
         resolve();
       });
 

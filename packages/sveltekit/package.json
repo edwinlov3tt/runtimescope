@@ -1,6 +1,6 @@
 {
   "name": "@runtimescope/sveltekit",
-  "version": "0.10.12",
+  "version": "0.11.0",
   "description": "RuntimeScope for SvelteKit — one install, works in hooks.client.ts and hooks.server.ts",
   "type": "module",
   "main": "./dist/index.js",

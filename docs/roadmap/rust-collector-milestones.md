@@ -43,7 +43,7 @@ The most important week of the phase. **One author. No fan-out.**
 - [x] Patterns established by the slice: the `{summary,data,issues,metadata}` envelope, the rmcp `#[tool]` + schemars-arg pattern, the axum route-handler signature, and **the `Store` query seam both HTTP routes and MCP tools call** (`events_by_type`). `collector-core::serve()` is shared by both bins.
 - [x] **Persistence + durability** (rusqlite WAL-mode + a JSONL WAL with fsync-before-commit, behind the dedicated-DB-owner thread fed via mpsc/oneshot — research 0001 / ADR-0008). The `durability` conformance test passes against `collector-server`. 2 WAL unit tests (roundtrip + torn-tail). The store API went async; HTTP handlers + the MCP tool `await` it.
 - [x] **Auth** (`RUNTIMESCOPE_AUTH_TOKEN`): WS handshake gate (no/invalid token → close **4001** within 5s; valid token accepted), HTTP `Authorization: Bearer` gate (gated routes → **401**), the public-route set (health/readyz/metrics) reachable without auth, `/api/health.authEnabled`, and a minimal `/metrics`. Makes the `handshake` + `http-contracts` specs fully green.
-- [x] **Conformance tally against the Rust binaries: 13/15 — 4 of 5 spec files fully green** (`handshake` 3/3, `event-roundtrip` 2/2, `http-contracts` 6/6, `durability` 1/1; `mcp-tools` 1/3). The 2 failures are the expected M3 gaps: tool catalog ≥60 (only `get_network_requests` exists) and the command channel (`get_dom_snapshot`) — both land in Milestone 3.
+- [x] **Conformance gate broadened to 17 tests / 7 specs** (all green vs the Node source-of-truth) so "green" is a real done-signal, not a network-only shape-check. Added `event-families` (every event type → `/api/events/*`, gates M2) + `mcp-tool-families` (get_console_messages/get_session_info/detect_issues read the store, gates M3). **Rust binaries: 13/17** — `handshake` 3/3, `event-roundtrip` 2/2, `http-contracts` 6/6, `durability` 1/1, `mcp-tools` data-roundtrip. The 4 gaps are the roadmap: `event-families`→M2; `mcp-tool-families` + `mcp-tools` catalog/command-channel→M3.
 - [ ] **Remaining M1:** the full 19 serde event types (slice persists events as raw `Value` JSON in the `data` column — fine for storage, but typed access is needed for issue-detection etc.); WAL sealed-file rotation + bounded truncation (`wal.ts` `rotate`/`deleteSealed` — not exercised by the one-restart durability test); a short written patterns doc. Then M1 is done and M3's fan-out can begin.
 
 **Exit criterion:** a second engineer (or agent) could look at the slice + patterns doc and write a new tool/route/engine without asking how. The slice proves the shape; persistence + the type set complete it.
@@ -52,13 +52,17 @@ The most important week of the phase. **One author. No fan-out.**
 
 ## Milestone 2 — `collector-server`: WS + HTTP (partial fan-out, ~1.5 wk)
 
-- [ ] WS: handshake (5s auth timeout, close 4001), event-batch ingest, `requestId` command channel. *(Conformance: `handshake`, `command-channel`.)* — **serial, it's stateful.**
-- [ ] HTTP router skeleton + the public/auth gate + static dashboard serving. — **serial** (skeleton), then
-- [ ] The `/api/*` route handlers. — **fan-out** once the skeleton + `Store` exist; each handler is independent. *(Conformance: `http-contracts`.)*
+> **Gate: turn `event-families.conformance.test.ts` green** (all 7 event families round-trip through `/api/events/*`). M1 already did `handshake` + `command-channel`-WS-half + `http-contracts`; M2 finishes the read API across every event type.
+
+- [ ] WS: handshake (5s auth timeout, close 4001), event-batch ingest, `requestId` command channel. *(Conformance: `handshake`, `command-channel`.)* — **serial, it's stateful.** (handshake + ingest done in M1; the `requestId` command-channel send is the remaining piece, shared with M3.)
+- [ ] HTTP router skeleton + the public/auth gate + static dashboard serving. — done in M1 (skeleton/auth/metrics); dashboard serving remains.
+- [ ] The `/api/events/<type>` handlers for the remaining families (console/state/render/performance/database/custom/ui/timeline) + `/api/projects`, `/api/processes`, `/api/ports`. — **fan-out** once the `Store` query surface is generalized beyond `network`. *(Conformance: `event-families`, `http-contracts`.)*
 
 **Team?** Partial — one author does the WS + router skeleton; route handlers fan out.
 
 ## Milestone 3 — `mcp-server`: the 63 tools (heavy fan-out, ~1.5 wk)
+
+> **Gate: turn `mcp-tool-families.conformance.test.ts` + the `mcp-tools` catalog (≥60) + command-channel tests green.** Registering 63 tools satisfies the catalog count; `mcp-tool-families` ensures they actually read the store (not empty stubs). Broaden `mcp-tool-families` with more representative tools as families land, so the gate keeps pace with the fan-out.
 
 The biggest LOC chunk and the most parallelizable.
 

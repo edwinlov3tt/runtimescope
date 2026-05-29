@@ -27,11 +27,15 @@ RUNTIMESCOPE_MCP_CMD=./target/release/mcp-server \
 | Spec | Locks |
 |---|---|
 | `handshake.conformance.test.ts` | WS handshake → session registered; auth-on → 4001 close within 5s; authed handshake accepted |
-| `event-roundtrip.conformance.test.ts` | events sent over WS are queryable over HTTP with fields intact; project isolation |
+| `event-roundtrip.conformance.test.ts` | network events sent over WS are queryable over HTTP with fields intact; project isolation |
+| `event-families.conformance.test.ts` | **every** event family (console/state/render/performance/database/custom/ui) round-trips via its `/api/events/<route>` endpoint — gates the full read API (Milestone 2) |
 | `command-channel` (in `mcp-tools`) | server→SDK `capture_dom_snapshot` round-trips by `requestId` |
 | `http-contracts.conformance.test.ts` | `/api/health`, `/readyz`, `/metrics`, `/api/sessions`, 404 shape, public/auth gate (401) |
 | `durability.conformance.test.ts` | committed events survive SIGKILL + restart (fsync-before-commit) |
-| `mcp-tools.conformance.test.ts` | MCP stdio JSON-RPC: tool catalog (≥60), data round-trip, envelope shape |
+| `mcp-tools.conformance.test.ts` | MCP stdio JSON-RPC: tool catalog (≥60), get_network_requests round-trip, envelope shape |
+| `mcp-tool-families.conformance.test.ts` | representative tools across families (get_console_messages / get_session_info / detect_issues) read the store — gates the tool fan-out (Milestone 3) |
+
+**Coverage note:** `event-families` and `mcp-tool-families` were added to make "conformance green" a real done-signal rather than a network-only shape-check. The Node collector passes the full suite (17/17); a from-scratch port should not be considered done until it does too. As the Rust port lands milestones, its score climbs (M1 spine: 13/17 → M2 read API: +event-families → M3 tools: +mcp-tool-families + the mcp-tools catalog/command-channel).
 
 Invariants are documented (with `file:line` citations) in [`docs/specs/wire-protocol.md`](../../docs/specs/wire-protocol.md) and [`docs/specs/mcp-tool-surface.md`](../../docs/specs/mcp-tool-surface.md). **If a doc and a green test disagree, the test wins.**
 

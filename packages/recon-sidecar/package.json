@@ -1,0 +1,37 @@
+{
+  "name": "@runtimescope/recon-sidecar",
+  "version": "0.11.0",
+  "private": true,
+  "description": "Playwright browser sidecar for the RuntimeScope Rust collector — scan_website + browser-recon captures over a stdio JSON line protocol",
+  "type": "module",
+  "main": "./dist/index.js",
+  "bin": {
+    "runtimescope-recon-sidecar": "./dist/index.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "keywords": [
+    "runtimescope",
+    "playwright",
+    "sidecar",
+    "recon",
+    "scanner"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "clean": "rm -rf dist",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "dependencies": {
+    "@runtimescope/extension": "*",
+    "playwright": "^1.49.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0"
+  }
+}

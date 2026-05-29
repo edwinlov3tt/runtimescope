@@ -22,6 +22,16 @@ use tokio::process::Command;
 
 fn sidecar_command() -> Option<(String, Vec<String>)> {
     let raw = std::env::var("RUNTIMESCOPE_RECON_SIDECAR").ok()?;
+    let raw = raw.trim();
+    // Preferred: a JSON argv array (handles paths with spaces) —
+    // e.g. `["node","/Users/a b/recon-sidecar/dist/index.js"]`.
+    if raw.starts_with('[') {
+        if let Ok(argv) = serde_json::from_str::<Vec<String>>(raw) {
+            let (cmd, args) = argv.split_first()?;
+            return Some((cmd.clone(), args.to_vec()));
+        }
+    }
+    // Back-compat: whitespace-split (breaks on spaces in paths — use JSON form).
     let parts: Vec<String> = raw.split_whitespace().map(String::from).collect();
     let (cmd, args) = parts.split_first()?;
     Some((cmd.clone(), args.to_vec()))

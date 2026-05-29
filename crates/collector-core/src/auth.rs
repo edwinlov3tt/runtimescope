@@ -21,11 +21,19 @@ impl AuthManager {
     }
 
     /// True if the presented token is acceptable. When auth is off, everything
-    /// is authorized; when on, the token must match exactly.
+    /// is authorized; when on, the token must match — **in constant time**, so a
+    /// timing side-channel can't recover the token byte-by-byte (audit #6).
     pub fn authorized(&self, presented: Option<&str>) -> bool {
+        use subtle::ConstantTimeEq;
         match &self.token {
             None => true,
-            Some(expected) => presented == Some(expected.as_str()),
+            Some(expected) => {
+                // ct_eq is constant-time over the byte content for equal-length
+                // slices; an unequal length short-circuits (length isn't secret).
+                presented
+                    .map(|p| bool::from(p.as_bytes().ct_eq(expected.as_bytes())))
+                    .unwrap_or(false)
+            }
         }
     }
 

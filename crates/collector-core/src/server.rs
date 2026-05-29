@@ -14,7 +14,7 @@ use crate::event::{
 use crate::store::StoreHandle;
 use axum::{
     extract::{
-        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
         Path, Query, State,
     },
     http::{header, HeaderMap, StatusCode, Uri},
@@ -307,25 +307,42 @@ async fn handle_socket(socket: WebSocket, s: AppState) {
     let mut project: Option<String> = None;
 
     // Auth gate: when enabled, the first frame must be a valid authenticated
-    // handshake within 5s, else close with WS code 4001 (wire-protocol §3).
+    // handshake within 5s. Two distinct rejections, each with an `error` frame
+    // BEFORE the 4001 close (wire-protocol §3, audit #6) — the server SDK keys
+    // off the code: AUTH_FAILED (bad/missing token) = permanent, don't retry;
+    // AUTH_TIMEOUT (no handshake in time) = transient.
     if s.auth.enabled() {
-        let authed = match tokio::time::timeout(Duration::from_secs(5), ws_stream.next()).await {
-            Ok(Some(Ok(Message::Text(text)))) => parse_authed_handshake(&s, text.as_str()),
-            _ => None,
+        enum Gate { Ok(HandshakePayload), Failed, Timeout, Closed }
+        let outcome = match tokio::time::timeout(Duration::from_secs(5), ws_stream.next()).await {
+            Ok(Some(Ok(Message::Text(text)))) => match parse_authed_handshake(&s, text.as_str()) {
+                Some(h) => Gate::Ok(h),
+                None => Gate::Failed, // a frame arrived but didn't authenticate
+            },
+            Ok(Some(Ok(_))) => Gate::Failed, // a non-text frame arrived first
+            Ok(Some(Err(_))) | Ok(None) => Gate::Closed, // socket closed/errored
+            Err(_) => Gate::Timeout, // 5s elapsed with no frame
         };
-        match authed {
-            Some(h) => {
+        match outcome {
+            Gate::Ok(h) => {
                 let proj = project_of(&h);
                 session_id = Some(h.session_id.clone());
                 project = Some(proj.clone());
                 s.store.register_session(h.session_id.clone(), h.app_name, proj).await;
                 s.hub.register(h.session_id, out_tx.clone());
             }
-            None => {
-                let _ = out_tx.send(Message::Close(Some(CloseFrame {
-                    code: 4001,
-                    reason: "Authentication timeout".into(),
-                })));
+            Gate::Closed => {
+                drop(out_tx);
+                let _ = writer.await;
+                return;
+            }
+            rejected => {
+                let (code, message, reason) = match rejected {
+                    Gate::Timeout => ("AUTH_TIMEOUT", "Handshake timeout", "Authentication timeout"),
+                    _ => ("AUTH_FAILED", "Invalid or missing API key", "Authentication failed"),
+                };
+                let frame = json!({ "type": "error", "payload": { "code": code, "message": message }, "timestamp": 0 });
+                let _ = out_tx.send(Message::Text(Utf8Bytes::from(frame.to_string())));
+                let _ = out_tx.send(Message::Close(Some(CloseFrame { code: 4001, reason: reason.into() })));
                 drop(out_tx);
                 let _ = writer.await;
                 return;

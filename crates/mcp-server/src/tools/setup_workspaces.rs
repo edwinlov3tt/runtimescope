@@ -67,6 +67,42 @@ pub struct ScanWebsiteArgs {
     wait_for: Option<String>,
 }
 
+/// SSRF guard for `scan_website` (audit #9): only http(s), and reject hosts that
+/// point at the local machine / private networks. Not exhaustive (no DNS
+/// resolution, so a public name resolving to a private IP can still slip — the
+/// sidecar should re-check post-resolution); blocks the obvious literal cases.
+fn guard_scan_url(url: &str) -> Result<(), String> {
+    let lower = url.trim().to_ascii_lowercase();
+    let Some(end) = lower.find("://") else {
+        return Err("URL must start with http:// or https://".into());
+    };
+    let scheme = &lower[..end];
+    if scheme != "http" && scheme != "https" {
+        return Err(format!("scheme '{scheme}' is not allowed (http/https only)"));
+    }
+    let authority = lower[end + 3..].split(['/', '?', '#']).next().unwrap_or("");
+    let host = authority.rsplit('@').next().unwrap_or(authority).split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return Err("URL has no host".into());
+    }
+    let blocked = host == "localhost"
+        || host == "0.0.0.0"
+        || host == "::1"
+        || host == "[::1]"
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+        || host.starts_with("127.")
+        || host.starts_with("10.")
+        || host.starts_with("192.168.")
+        || host.starts_with("169.254.")
+        || host.split('.').nth(1).and_then(|o| o.parse::<u8>().ok())
+            .is_some_and(|o| host.starts_with("172.") && (16..=31).contains(&o));
+    if blocked {
+        return Err(format!("host '{host}' is private/internal and may not be scanned"));
+    }
+    Ok(())
+}
+
 /// Derive a project name from a URL's host (fallback "scan").
 fn host_of(url: &str) -> String {
     url.split("://")
@@ -327,6 +363,15 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<ScanWebsiteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        if let Err(reason) = guard_scan_url(&args.url) {
+            return Ok(envelope(json!({
+                "summary": format!("Refused to scan {}: {reason}", args.url),
+                "data": null,
+                "issues": [reason],
+                "metadata": { "eventCount": 0, "projectId": null },
+            })));
+        }
+
         let mut params = json!({ "url": args.url });
         if let Some(w) = args.viewport_width {
             params["viewportWidth"] = json!(w);

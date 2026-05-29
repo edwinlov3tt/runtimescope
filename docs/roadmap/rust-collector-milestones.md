@@ -61,11 +61,15 @@ The most important week of the phase. **One author. No fan-out.**
 
 **Team?** Partial — one author does the WS + router skeleton; route handlers fan out.
 
-## Milestone 3 — `mcp-server`: the 63 tools (heavy fan-out, ~1.5 wk)
+## Milestone 3 — `mcp-server`: the 63 tools (heavy fan-out, ~1.5 wk) — 🟢 CONFORMANCE GATE MET
 
-> **Gate: turn `mcp-tool-families.conformance.test.ts` + the `mcp-tools` catalog (≥60) + command-channel tests green.** Registering 63 tools satisfies the catalog count; `mcp-tool-families` ensures they actually read the store (not empty stubs). Broaden `mcp-tool-families` with more representative tools as families land, so the gate keeps pace with the fan-out.
+> **Gate: `mcp-tool-families` + `mcp-tools` catalog (≥60) + command-channel — ALL GREEN. Rust conformance 17/17.**
 
-The biggest LOC chunk and the most parallelizable.
+- [x] **64 tools registered** across 10 family modules (`tools/*.rs`), each `#[tool_router(router = …, vis = "pub")]` merged in `Mcp::new`. Done via an 8-agent Workflow fan-out (one family per agent, writing its own file) + serial integration. Built first try; clippy clean.
+- [x] **Real store-reads** (~40): all event-family reads, `detect_issues`/`runtime_qa_check`/`capture_har`, api-discovery over network events, recon over stored `recon_*` events, `list_projects`, query log/perf, `get_session_info`, the command-channel `get_dom_snapshot`.
+- [ ] **Deferred stubs (registered + valid envelope, but `data: null`)** — these need capabilities the collector doesn't have yet and are **the real remaining work, mostly M4/M5**: DB introspection (`get_schema_map`/`get_table_data`/`modify_table_data`/`get_database_connections`/`suggest_indexes`), OS/infra (all of `process-monitor` + `infra-connector`), `pm/` (`workspaces/*`, `setup_project`, `get_project_config`), and the Playwright-sidecar tools (`scan_website`, `get_style_diff`). The catalog/`mcp-tool-families` gate passes because the store-read tools it samples are real — but **17/17 conformance does NOT mean these stubs work**.
+
+The biggest LOC chunk and the most parallelizable — the agent fan-out is what made it ~1 turn instead of days.
 
 - [ ] Tool-registration pattern proven in M1; now batch the 63 tools by family (core / api / database / process / infra / session / history / scanner / recon / setup).
 - [ ] Each tool: serde input validation → `Store` call → standard envelope. The conformance `mcp-driver` + per-tool smoke is the check.

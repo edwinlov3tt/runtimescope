@@ -316,7 +316,7 @@ async fn session_id_for(mcp: &Mcp, project_id: Option<&str>) -> Option<String> {
         .sessions()
         .await
         .into_iter()
-        .find(|s| project_id.is_none_or(|p| s.project == p))
+        .find(|s| project_id.is_none_or(|p| s.project_key() == p))
         .map(|s| s.session_id)
 }
 

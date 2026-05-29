@@ -140,13 +140,13 @@ impl Mcp {
         let sessions = self.store.sessions().await;
         let data: Vec<Value> = sessions
             .iter()
-            .filter(|s| args.project.as_ref().is_none_or(|p| &s.project == p))
-            .filter(|s| args.project_id.as_ref().is_none_or(|p| &s.project == p))
+            .filter(|s| args.project.as_ref().is_none_or(|p| s.project_key() == p))
+            .filter(|s| args.project_id.as_ref().is_none_or(|p| s.project_key() == p))
             .take(limit)
             .map(|s| {
                 json!({
                     "sessionId": s.session_id,
-                    "project": s.project,
+                    "projectId": s.project_id,
                     "appName": s.app_name,
                     "isConnected": s.is_connected,
                 })
@@ -258,11 +258,11 @@ impl Mcp {
         let mut by_project: BTreeMap<String, Agg> = BTreeMap::new();
         for s in &sessions {
             if let Some(p) = &args.project_id {
-                if &s.project != p {
+                if s.project_key() != p {
                     continue;
                 }
             }
-            let entry = by_project.entry(s.project.clone()).or_insert(Agg {
+            let entry = by_project.entry(s.project_key().to_string()).or_insert(Agg {
                 session_count: 0,
                 active_sessions: 0,
                 apps: std::collections::BTreeSet::new(),

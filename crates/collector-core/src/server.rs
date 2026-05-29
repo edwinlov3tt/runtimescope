@@ -135,7 +135,9 @@ async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
             json!({
                 "sessionId": si.session_id,
                 "appName": si.app_name,
-                "projectName": si.project,
+                "projectId": si.project_id,
+                "connectedAt": si.connected_at,
+                "eventCount": 0,
                 "isConnected": si.is_connected,
             })
         })
@@ -230,14 +232,13 @@ async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String
 
     let session_id = payload.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
     let app_name = payload.get("appName").and_then(Value::as_str).unwrap_or("unknown").to_string();
-    let project = payload
-        .get("projectId")
-        .and_then(Value::as_str)
-        .map(String::from)
-        .unwrap_or_else(|| app_name.clone());
+    let project_id = payload.get("projectId").and_then(Value::as_str).map(String::from);
+    // Event-scoping key (events.project, used by ?project_id= read filtering):
+    // the projectId when present, else the appName.
+    let project = project_id.clone().unwrap_or_else(|| app_name.clone());
 
     if !session_id.is_empty() {
-        s.store.register_session(session_id.clone(), app_name, project.clone()).await;
+        s.store.register_session(session_id.clone(), app_name, project_id).await;
     }
 
     let mut accepted_events: Vec<Value> = Vec::new();
@@ -265,15 +266,21 @@ async fn projects(State(s): State<AppState>, headers: HeaderMap) -> Response {
         return unauthorized();
     }
     use std::collections::BTreeMap;
-    let mut by_app: BTreeMap<String, (Vec<String>, bool)> = BTreeMap::new();
+    // (sessions, anyConnected, projectId)
+    let mut by_app: BTreeMap<String, (Vec<String>, bool, Option<String>)> = BTreeMap::new();
     for si in s.store.sessions().await {
         let entry = by_app.entry(si.app_name.clone()).or_default();
         entry.0.push(si.session_id);
         entry.1 |= si.is_connected;
+        if entry.2.is_none() {
+            entry.2 = si.project_id;
+        }
     }
     let data: Vec<Value> = by_app
         .into_iter()
-        .map(|(app, (sessions, connected))| json!({ "appName": app, "sessions": sessions, "isConnected": connected }))
+        .map(|(app, (sessions, connected, project_id))| {
+            json!({ "appName": app, "sessions": sessions, "isConnected": connected, "projectId": project_id })
+        })
         .collect();
     let count = data.len();
     Json(json!({ "data": data, "count": count })).into_response()
@@ -328,8 +335,8 @@ async fn handle_socket(socket: WebSocket, s: AppState) {
             Gate::Ok(h) => {
                 let proj = project_of(&h);
                 session_id = Some(h.session_id.clone());
-                project = Some(proj.clone());
-                s.store.register_session(h.session_id.clone(), h.app_name, proj).await;
+                project = Some(proj);
+                s.store.register_session(h.session_id.clone(), h.app_name, h.project_id).await;
                 s.hub.register(h.session_id, out_tx.clone());
             }
             Gate::Closed => {
@@ -364,8 +371,8 @@ async fn handle_socket(socket: WebSocket, s: AppState) {
                 ) {
                     let proj = project_of(&h);
                     session_id = Some(h.session_id.clone());
-                    project = Some(proj.clone());
-                    s.store.register_session(h.session_id.clone(), h.app_name, proj).await;
+                    project = Some(proj);
+                    s.store.register_session(h.session_id.clone(), h.app_name, h.project_id).await;
                     s.hub.register(h.session_id, out_tx.clone());
                 }
             }

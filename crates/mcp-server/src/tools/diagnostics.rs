@@ -443,7 +443,7 @@ impl Mcp {
         let sessions = self.store.sessions().await;
         let filtered: Vec<_> = sessions
             .iter()
-            .filter(|s| args.project_id.as_ref().is_none_or(|p| &s.project == p))
+            .filter(|s| args.project_id.as_deref().is_none_or(|p| s.project_key() == p))
             .collect();
         let connected: Vec<_> = filtered.iter().filter(|s| s.is_connected).collect();
 
@@ -481,7 +481,7 @@ impl Mcp {
             "firstSession": first.map(|s| json!({
                 "sessionId": s.session_id,
                 "appName": s.app_name,
-                "projectName": s.project,
+                "projectId": s.project_id,
             })),
         });
 

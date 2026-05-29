@@ -19,7 +19,12 @@ use crate::wal::Wal;
 use rusqlite::Connection;
 use serde_json::Value;
 use std::path::PathBuf;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tokio::sync::{mpsc, oneshot};
+
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
 
 const SCHEMA: &str = "
 CREATE TABLE IF NOT EXISTS events (
@@ -34,19 +39,38 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE INDEX IF NOT EXISTS idx_events_type ON events(event_type);
 CREATE INDEX IF NOT EXISTS idx_events_project ON events(project);
 CREATE INDEX IF NOT EXISTS idx_events_type_project ON events(event_type, project);
+
+CREATE TABLE IF NOT EXISTS sessions (
+  session_id TEXT PRIMARY KEY,
+  app_name TEXT NOT NULL,
+  project_id TEXT,
+  connected_at INTEGER NOT NULL,
+  is_connected INTEGER NOT NULL DEFAULT 0
+);
 ";
 
 #[derive(Clone)]
 pub struct SessionInfo {
     pub session_id: String,
+    /// The app/project display name (NOT the runtime projectId — audit #7).
     pub app_name: String,
-    pub project: String,
+    /// The runtime projectId (proj_xxx), separate from `app_name`.
+    pub project_id: Option<String>,
+    pub connected_at: i64,
     pub is_connected: bool,
+}
+
+impl SessionInfo {
+    /// The effective project-scoping key (projectId when present, else appName) —
+    /// for filtering/grouping. Display uses `app_name` + `project_id` distinctly.
+    pub fn project_key(&self) -> &str {
+        self.project_id.as_deref().unwrap_or(&self.app_name)
+    }
 }
 
 enum Cmd {
     AddBatch { project: String, events: Vec<Value>, reply: oneshot::Sender<Result<usize, String>> },
-    RegisterSession { session_id: String, app_name: String, project: String },
+    RegisterSession { session_id: String, app_name: String, project_id: Option<String> },
     MarkDisconnected { session_id: String },
     Sessions { reply: oneshot::Sender<Vec<SessionInfo>> },
     ConnectedCount { reply: oneshot::Sender<usize> },
@@ -96,7 +120,10 @@ impl StoreHandle {
                 }
             };
 
-            let mut sessions: Vec<SessionInfo> = Vec::new();
+            // Rehydrate sessions from SQLite as DISCONNECTED — there are no live
+            // WS connections after a restart; a reconnect flips is_connected back
+            // (audit #7, matching Node's warmFromSqlite).
+            let mut sessions: Vec<SessionInfo> = load_sessions(&conn);
 
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
@@ -128,19 +155,39 @@ impl StoreHandle {
                         }
                         let _ = reply.send(err.map_or(Ok(stored), Err));
                     }
-                    Cmd::RegisterSession { session_id, app_name, project } => {
-                        if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
+                    Cmd::RegisterSession { session_id, app_name, project_id } => {
+                        let connected_at = if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
                             s.is_connected = true;
-                            s.app_name = app_name;
-                            s.project = project;
+                            s.app_name = app_name.clone();
+                            s.project_id = project_id.clone();
+                            s.connected_at
                         } else {
-                            sessions.push(SessionInfo { session_id, app_name, project, is_connected: true });
-                        }
+                            let connected_at = now_ms();
+                            sessions.push(SessionInfo {
+                                session_id: session_id.clone(),
+                                app_name: app_name.clone(),
+                                project_id: project_id.clone(),
+                                connected_at,
+                                is_connected: true,
+                            });
+                            connected_at
+                        };
+                        // Persist (audit #7) so the session survives a restart.
+                        let _ = conn.execute(
+                            "INSERT INTO sessions (session_id, app_name, project_id, connected_at, is_connected)
+                             VALUES (?1, ?2, ?3, ?4, 1)
+                             ON CONFLICT(session_id) DO UPDATE SET app_name=?2, project_id=?3, is_connected=1",
+                            rusqlite::params![session_id, app_name, project_id, connected_at],
+                        );
                     }
                     Cmd::MarkDisconnected { session_id } => {
                         if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
                             s.is_connected = false;
                         }
+                        let _ = conn.execute(
+                            "UPDATE sessions SET is_connected = 0 WHERE session_id = ?1",
+                            rusqlite::params![session_id],
+                        );
                     }
                     Cmd::Sessions { reply } => {
                         let _ = reply.send(sessions.clone());
@@ -173,8 +220,8 @@ impl StoreHandle {
         rx.await.unwrap_or_else(|_| Err("store dropped the durability ack".into()))
     }
 
-    pub async fn register_session(&self, session_id: String, app_name: String, project: String) {
-        let _ = self.tx.send(Cmd::RegisterSession { session_id, app_name, project }).await;
+    pub async fn register_session(&self, session_id: String, app_name: String, project_id: Option<String>) {
+        let _ = self.tx.send(Cmd::RegisterSession { session_id, app_name, project_id }).await;
     }
 
     pub async fn mark_disconnected(&self, session_id: String) {
@@ -221,6 +268,27 @@ impl StoreHandle {
         }
         rx.await.unwrap_or_default()
     }
+}
+
+/// Load persisted sessions, forced to `is_connected = false` (no live WS exists
+/// right after a restart; a reconnect flips it back). Audit #7.
+fn load_sessions(conn: &Connection) -> Vec<SessionInfo> {
+    let mut stmt = match conn.prepare(
+        "SELECT session_id, app_name, project_id, connected_at FROM sessions",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(SessionInfo {
+            session_id: r.get(0)?,
+            app_name: r.get(1)?,
+            project_id: r.get(2)?,
+            connected_at: r.get(3)?,
+            is_connected: false,
+        })
+    });
+    rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
 /// INSERT OR IGNORE one raw event. Idempotent on `event_id` (so WAL replay is

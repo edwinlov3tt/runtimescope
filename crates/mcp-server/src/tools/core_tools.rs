@@ -161,7 +161,7 @@ impl Mcp {
             .sessions()
             .await
             .into_iter()
-            .find(|s| s.is_connected && args.project_id.as_ref().is_none_or(|p| &s.project == p));
+            .find(|s| s.is_connected && args.project_id.as_deref().is_none_or(|p| s.project_key() == p));
 
         let Some(session) = session else {
             return Ok(envelope(json!({

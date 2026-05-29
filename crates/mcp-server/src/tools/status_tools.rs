@@ -21,12 +21,13 @@ impl Mcp {
         let sessions = self.store.sessions().await;
         let data: Vec<Value> = sessions
             .iter()
-            .filter(|s| args.project_id.as_ref().is_none_or(|p| &s.project == p))
+            .filter(|s| args.project_id.as_ref().is_none_or(|p| s.project_key() == p))
             .map(|s| {
                 json!({
                     "sessionId": s.session_id,
                     "appName": s.app_name,
-                    "projectName": s.project,
+                    "projectId": s.project_id,
+                    "connectedAt": s.connected_at,
                     "isConnected": s.is_connected,
                 })
             })

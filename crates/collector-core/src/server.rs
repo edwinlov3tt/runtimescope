@@ -5,25 +5,27 @@
 //! `ws_port` (default 6767), HTTP API on `http_port` (default 6768). All store
 //! access is async (the store is the dedicated-thread `StoreHandle`).
 
+use crate::auth::AuthManager;
 use crate::event::{project_of, EventBatch, HandshakePayload, WsMessage};
 use crate::store::StoreHandle;
 use axum::{
     extract::{
-        ws::{Message, WebSocket, WebSocketUpgrade},
+        ws::{CloseFrame, Message, WebSocket, WebSocketUpgrade},
         Query, State,
     },
-    http::{StatusCode, Uri},
-    response::IntoResponse,
+    http::{header, HeaderMap, StatusCode, Uri},
+    response::{IntoResponse, Response},
     routing::get,
     Json, Router,
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 struct AppState {
     store: StoreHandle,
+    auth: AuthManager,
     started: Instant,
     version: String,
 }
@@ -32,18 +34,27 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
-/// Bind both ports and serve forever. Returns only on bind error.
+/// Bind both ports and serve forever. Returns only on bind error. Auth is read
+/// from `RUNTIMESCOPE_AUTH_TOKEN` (off when unset).
 pub async fn serve(
     store: StoreHandle,
     ws_port: u16,
     http_port: u16,
     version: String,
 ) -> std::io::Result<()> {
-    let state = AppState { store, started: Instant::now(), version };
+    let state = AppState {
+        store,
+        auth: AuthManager::from_env(),
+        started: Instant::now(),
+        version,
+    };
 
     let http = Router::new()
+        // public (no auth even when enabled)
         .route("/readyz", get(readyz))
         .route("/api/health", get(health))
+        .route("/metrics", get(metrics))
+        // gated
         .route("/api/sessions", get(sessions))
         .route("/api/events/network", get(events_network))
         .fallback(not_found)
@@ -61,6 +72,19 @@ pub async fn serve(
     Ok(())
 }
 
+/// Gate check for the non-public HTTP routes.
+fn http_authorized(s: &AppState, headers: &HeaderMap) -> bool {
+    if !s.auth.enabled() {
+        return true;
+    }
+    let presented = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
+    s.auth.authorized(AuthManager::extract_bearer(presented))
+}
+
+fn unauthorized() -> Response {
+    (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized" }))).into_response()
+}
+
 // ---- HTTP handlers ----
 
 async fn readyz() -> impl IntoResponse {
@@ -75,11 +99,22 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
         "timestamp": now_ms(),
         "uptime": s.started.elapsed().as_secs(),
         "sessions": connected,
-        "authEnabled": false,
+        "authEnabled": s.auth.enabled(),
     }))
 }
 
-async fn sessions(State(s): State<AppState>) -> impl IntoResponse {
+async fn metrics() -> impl IntoResponse {
+    let body = "# RuntimeScope collector metrics\nruntimescope_up 1\n";
+    (
+        [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
+        body,
+    )
+}
+
+async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
     let list: Vec<Value> = s
         .store
         .sessions()
@@ -95,17 +130,21 @@ async fn sessions(State(s): State<AppState>) -> impl IntoResponse {
         })
         .collect();
     let count = list.len();
-    Json(json!({ "data": list, "count": count }))
+    Json(json!({ "data": list, "count": count })).into_response()
 }
 
 async fn events_network(
     State(s): State<AppState>,
+    headers: HeaderMap,
     Query(q): Query<HashMap<String, String>>,
-) -> impl IntoResponse {
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
     let project = q.get("project_id").map(String::as_str);
     let data = s.store.events_by_type("network", project).await;
     let count = data.len();
-    Json(json!({ "data": data, "count": count }))
+    Json(json!({ "data": data, "count": count })).into_response()
 }
 
 async fn not_found(uri: Uri) -> impl IntoResponse {
@@ -124,6 +163,32 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl Int
 async fn handle_socket(mut socket: WebSocket, s: AppState) {
     let mut session_id: Option<String> = None;
     let mut project: Option<String> = None;
+
+    // Auth gate: when enabled, the first frame must be a valid authenticated
+    // handshake within 5s, else close with WS code 4001 (wire-protocol §3).
+    if s.auth.enabled() {
+        let authed = match tokio::time::timeout(Duration::from_secs(5), socket.recv()).await {
+            Ok(Some(Ok(Message::Text(text)))) => parse_authed_handshake(&s, text.as_str()),
+            _ => None,
+        };
+        match authed {
+            Some(h) => {
+                let proj = project_of(&h);
+                session_id = Some(h.session_id.clone());
+                project = Some(proj.clone());
+                s.store.register_session(h.session_id, h.app_name, proj).await;
+            }
+            None => {
+                let _ = socket
+                    .send(Message::Close(Some(CloseFrame {
+                        code: 4001,
+                        reason: "Authentication timeout".into(),
+                    })))
+                    .await;
+                return;
+            }
+        }
+    }
 
     while let Some(Ok(msg)) = socket.recv().await {
         let Message::Text(text) = msg else { continue };
@@ -150,5 +215,20 @@ async fn handle_socket(mut socket: WebSocket, s: AppState) {
 
     if let Some(sid) = session_id {
         s.store.mark_disconnected(sid).await;
+    }
+}
+
+/// Parse a text frame as a handshake and return it only if its `authToken` is
+/// authorized. Used for the auth-on first-frame gate.
+fn parse_authed_handshake(s: &AppState, text: &str) -> Option<HandshakePayload> {
+    let m = serde_json::from_str::<WsMessage>(text).ok()?;
+    if m.kind != "handshake" {
+        return None;
+    }
+    let h = serde_json::from_value::<HandshakePayload>(m.payload).ok()?;
+    if s.auth.authorized(h.auth_token.as_deref()) {
+        Some(h)
+    } else {
+        None
     }
 }

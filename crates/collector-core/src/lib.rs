@@ -9,6 +9,7 @@
 //! crash recovery. The full 19 event types, auth, and the command channel
 //! widen this in later milestones.
 
+pub mod auth;
 pub mod event;
 pub mod server;
 pub mod store;

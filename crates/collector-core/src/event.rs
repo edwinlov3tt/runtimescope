@@ -56,3 +56,35 @@ pub fn event_type_of(v: &Value) -> String {
         .unwrap_or("unknown")
         .to_string()
 }
+
+/// The wire event types the collector accepts (wire-protocol §4). `POST
+/// /api/events` rejects events whose `eventType` isn't in this set.
+pub const VALID_EVENT_TYPES: &[&str] = &[
+    "network", "console", "session", "state", "render", "dom_snapshot",
+    "performance", "database", "custom", "navigation", "ui",
+    "recon_metadata", "recon_design_tokens", "recon_fonts", "recon_layout_tree",
+    "recon_accessibility", "recon_computed_styles", "recon_element_snapshot",
+    "recon_asset_inventory",
+];
+
+pub fn is_valid_event_type(t: &str) -> bool {
+    VALID_EVENT_TYPES.contains(&t)
+}
+
+/// The HTTP `/api/events/<kind>` routes Node exposes, mapped to their event
+/// type. `renders` → `render` is the one route↔type mismatch. `timeline` is
+/// handled separately (a cross-type merge). Anything else → 404.
+pub fn kind_to_event_type(kind: &str) -> Option<&'static str> {
+    Some(match kind {
+        "network" => "network",
+        "console" => "console",
+        "state" => "state",
+        "renders" => "render",
+        "performance" => "performance",
+        "database" => "database",
+        "custom" => "custom",
+        "ui" => "ui",
+        "navigation" => "navigation",
+        _ => return None,
+    })
+}

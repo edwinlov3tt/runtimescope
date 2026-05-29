@@ -7,7 +7,10 @@
 
 use crate::auth::AuthManager;
 use crate::command::CommandHub;
-use crate::event::{project_of, EventBatch, HandshakePayload, WsMessage};
+use crate::event::{
+    event_type_of, is_valid_event_type, kind_to_event_type, project_of, EventBatch,
+    HandshakePayload, WsMessage,
+};
 use crate::store::StoreHandle;
 use axum::{
     extract::{
@@ -16,7 +19,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -63,6 +66,7 @@ pub async fn serve(
         // gated
         .route("/api/sessions", get(sessions))
         .route("/api/projects", get(projects))
+        .route("/api/events", post(post_events))
         .route("/api/events/{kind}", get(events_by_kind))
         .fallback(not_found)
         .with_state(state.clone());
@@ -140,9 +144,9 @@ async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
     Json(json!({ "data": list, "count": count })).into_response()
 }
 
-/// Generic event read API: `/api/events/<kind>`, scoped by `?project_id=`.
-/// The store is type-agnostic, so one handler serves every family. The only
-/// route↔type quirk is `renders` → eventType `render` (matching the Node API).
+/// Event read API: `/api/events/<kind>`, scoped by `?project_id=` + query
+/// filters. `timeline` is a cross-type merge; other kinds map to one event type
+/// (`renders`→`render`); an unknown kind → 404 (Node has explicit routes).
 async fn events_by_kind(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -152,14 +156,105 @@ async fn events_by_kind(
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
-    let event_type = match kind.as_str() {
-        "renders" => "render",
-        other => other,
-    };
     let project = q.get("project_id").map(String::as_str);
-    let data = s.store.events_by_type(event_type, project).await;
+
+    if kind == "timeline" {
+        let types = q.get("event_types").map(|s| {
+            s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>()
+        });
+        let data = s.store.timeline(project, types).await;
+        let count = data.len();
+        return Json(json!({ "data": data, "count": count })).into_response();
+    }
+
+    let Some(event_type) = kind_to_event_type(&kind) else {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "error": "Not found", "path": format!("/api/events/{kind}") })),
+        )
+            .into_response();
+    };
+
+    let mut data = s.store.events_by_type(event_type, project).await;
+    apply_filters(&mut data, &q);
     let count = data.len();
     Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// Apply the read-API query filters Node supports, reading fields off the raw
+/// event value. `status` is intentionally NOT a filter — Node's network route
+/// doesn't forward it (locked by conformance).
+fn apply_filters(data: &mut Vec<Value>, q: &HashMap<String, String>) {
+    if let Some(since) = q.get("since_seconds").and_then(|v| v.parse::<i64>().ok()) {
+        let cutoff = now_ms() - since * 1000;
+        data.retain(|e| e.get("timestamp").and_then(Value::as_i64).is_none_or(|t| t >= cutoff));
+    }
+    if let Some(method) = q.get("method") {
+        let want = method.to_ascii_uppercase();
+        data.retain(|e| {
+            e.get("method").and_then(Value::as_str).is_some_and(|m| m.to_ascii_uppercase() == want)
+        });
+    }
+    if let Some(pat) = q.get("url_pattern") {
+        data.retain(|e| e.get("url").and_then(Value::as_str).is_some_and(|u| u.contains(pat.as_str())));
+    }
+    if let Some(level) = q.get("level") {
+        data.retain(|e| e.get("level").and_then(Value::as_str) == Some(level.as_str()));
+    }
+    if let Some(search) = q.get("search") {
+        let needle = search.to_lowercase();
+        data.retain(|e| {
+            e.get("message").and_then(Value::as_str).is_some_and(|m| m.to_lowercase().contains(&needle))
+        });
+    }
+    if let Some(sid) = q.get("session_id") {
+        data.retain(|e| e.get("sessionId").and_then(Value::as_str) == Some(sid.as_str()));
+    }
+}
+
+/// `POST /api/events` — HTTP ingest (the Workers SDK + Python SDK path).
+/// Body: `{ sessionId, appName, projectId, events: [...] }`. Returns the ingest
+/// receipt `{ accepted, dropped, rejected, sessionId }`; 200 if anything was
+/// accepted, 429 if all were rejected, 400 on an empty/invalid payload.
+async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(payload) = serde_json::from_str::<Value>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body is not valid JSON" }))).into_response();
+    };
+    let events = payload.get("events").and_then(Value::as_array);
+    let Some(events) = events.filter(|e| !e.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Missing or empty events array" }))).into_response();
+    };
+
+    let session_id = payload.get("sessionId").and_then(Value::as_str).unwrap_or("").to_string();
+    let app_name = payload.get("appName").and_then(Value::as_str).unwrap_or("unknown").to_string();
+    let project = payload
+        .get("projectId")
+        .and_then(Value::as_str)
+        .map(String::from)
+        .unwrap_or_else(|| app_name.clone());
+
+    if !session_id.is_empty() {
+        s.store.register_session(session_id.clone(), app_name, project.clone()).await;
+    }
+
+    let mut accepted_events: Vec<Value> = Vec::new();
+    let mut rejected = 0usize;
+    for ev in events {
+        if is_valid_event_type(&event_type_of(ev)) {
+            accepted_events.push(ev.clone());
+        } else {
+            rejected += 1;
+        }
+    }
+    let accepted = accepted_events.len();
+    if accepted > 0 {
+        s.store.add_batch(project, accepted_events).await;
+    }
+    let status = if accepted > 0 { StatusCode::OK } else { StatusCode::TOO_MANY_REQUESTS };
+    (status, Json(json!({ "accepted": accepted, "dropped": 0, "rejected": rejected, "sessionId": session_id }))).into_response()
 }
 
 /// Sessions grouped by app name (the dashboard's project list).

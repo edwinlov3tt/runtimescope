@@ -1,6 +1,6 @@
 # Audit 0002 — Rust collector port (external adversarial review)
 
-**Status:** Open — **Phase A (gate hardening) DONE**; Phases B–E pending. The conformance gate is now **33 tests / 12 spec files**: green 33/33 vs Node, honest **21/33 vs Rust** (the 12 reds are the B/C/E backlog — see Phase A note below).
+**Status:** Open — **Phases A (gate) + B (HTTP) DONE**; C–E pending. Conformance gate = 33 tests / 12 specs: **33/33 vs Node, 29/33 vs Rust**. The 4 remaining reds: `mcp-tool-shapes` (1 → Phase C), `auth-frames` (3 → Phase E).
 **Date:** 2026-05-29
 **Reviewer:** external coding agent (Codex), adversarial brief — see [`../audits/`](.) and the review prompt handed off by the owner.
 **Scope:** the Rust collector port at `main` (commits `0e11346`…`338cf8c`): `crates/*`, `tests/conformance/`, `packages/recon-sidecar/`.
@@ -36,7 +36,7 @@ Full evidence (probe counts, `file:line`) in the review transcript. The differen
   **Corrections the agents surfaced while encoding *real* Node behavior (ADR-0006):**
   - **The HTTP layer returns events VERBATIM in *both* Node and Rust** — no reshaping at `/api/events/*`. Finding #1's "raw vs reshaped" was misattributed: reshaping happens only in the **MCP tool** layer (`network.ts` → finding #2). `http-field-fidelity` is green vs Rust (already conformant). So **Phase B's HTTP work is narrower than #1 implied** — it's filters + `POST /api/events` ingest + `timeline` merge + unknown-route 404, **not** response reshaping.
   - Node's `/api/events/network` route **does not forward `status`** to the store (it's a no-op filter); `timeline` is **insertion-ordered**, not timestamp-sorted. Both locked as real behavior.
-- **Phase B — HTTP parity** (#1): explicit filtered routes, timeline merge, POST ingest, reshaping, 404.
+- **Phase B — HTTP parity** (#1): **✅ DONE.** `/api/events/<kind>` now applies Node's query filters (`method`/`url_pattern`/`since_seconds`/`level`/`search`/`session_id`; `status` left a no-op to match Node), validates kind → 404 for unknown; `timeline` is a cross-type insertion-ordered merge with `event_types` filter; `POST /api/events` ingest returns the `{accepted,dropped,rejected,sessionId}` receipt (200/429), rejects invalid `eventType`s, 400s on empty payload. (No HTTP response reshaping needed — already matched, per Phase A.) `http-filters` + `http-ingest-and-routes` now green vs Rust (8 tests). Node unaffected (33/33).
 - **Phase C — MCP tool semantics + honest catalog** (#2, #8): port real arg/shape for high-traffic store-read tools; gate on "answers correctly," mark deferred tools explicitly.
 - **Phase D — durability** (#4, #3, #5): torn-tail truncate; WAL rotation/truncation + bounded retention; propagate write errors.
 - **Phase E — auth + metadata + sidecar** (#6, #7, #9): constant-time compare + `AUTH_FAILED`; persist sessions + separate name/projectId; sidecar argv + URL allowlist.

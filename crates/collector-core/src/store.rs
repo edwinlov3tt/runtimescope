@@ -51,6 +51,7 @@ enum Cmd {
     Sessions { reply: oneshot::Sender<Vec<SessionInfo>> },
     ConnectedCount { reply: oneshot::Sender<usize> },
     EventsByType { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
+    Timeline { project: Option<String>, types: Option<Vec<String>>, reply: oneshot::Sender<Vec<Value>> },
 }
 
 /// Cloneable async handle to the store. Cheap to clone (just the channel sender).
@@ -128,6 +129,9 @@ impl StoreHandle {
                     Cmd::EventsByType { event_type, project, reply } => {
                         let _ = reply.send(query_events(&conn, &event_type, project.as_deref()));
                     }
+                    Cmd::Timeline { project, types, reply } => {
+                        let _ = reply.send(query_timeline(&conn, project.as_deref(), types.as_deref()));
+                    }
                 }
             }
         });
@@ -180,6 +184,18 @@ impl StoreHandle {
         }
         rx.await.unwrap_or_default()
     }
+
+    /// All events for a project in **insertion order** (oldest-first), optionally
+    /// restricted to a set of event types — the cross-type timeline merge.
+    /// Matches the Node `getEventTimeline` (buffer.toArray(), not timestamp-sorted).
+    pub async fn timeline(&self, project: Option<&str>, types: Option<Vec<String>>) -> Vec<Value> {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::Timeline { project: project.map(String::from), types, reply };
+        if self.tx.send(cmd).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
 }
 
 /// INSERT OR IGNORE one raw event. Idempotent on `event_id` (so WAL replay is safe).
@@ -197,6 +213,34 @@ fn insert_event(conn: &Connection, project: &str, ev: &Value) {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
         rusqlite::params![event_id, session_id, project, event_type, timestamp, data],
     );
+}
+
+/// Timeline: all events for a project in insertion order (id ASC), optionally
+/// filtered to a set of event types (filtered in Rust to keep the SQL simple).
+fn query_timeline(conn: &Connection, project: Option<&str>, types: Option<&[String]>) -> Vec<Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT event_type, data FROM events WHERE (?1 IS NULL OR project = ?1) ORDER BY id ASC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(rusqlite::params![project], |r| {
+        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+    });
+    let mut out = Vec::new();
+    if let Ok(rows) = rows {
+        for (event_type, data) in rows.flatten() {
+            if let Some(filter) = types {
+                if !filter.iter().any(|t| t == &event_type) {
+                    continue;
+                }
+            }
+            if let Ok(v) = serde_json::from_str::<Value>(&data) {
+                out.push(v);
+            }
+        }
+    }
+    out
 }
 
 /// Query events of a type, optionally project-scoped, newest-first.

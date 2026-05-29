@@ -5,7 +5,7 @@
 //! in-process store. The remaining 62 tools fan out in Milestone 3 onto this
 //! exact pattern (rmcp `#[tool]` + schemars-derived args + the standard envelope).
 
-use collector_core::{new_store, port_from_env, serve, SharedStore, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION};
+use collector_core::{open_store, port_from_env, serve, StoreHandle, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION};
 use rmcp::{
     handler::server::{tool::ToolRouter, wrapper::Parameters, ServerHandler},
     model::{CallToolResult, Content},
@@ -18,7 +18,7 @@ use serde_json::{json, Value};
 
 #[derive(Clone)]
 struct Mcp {
-    store: SharedStore,
+    store: StoreHandle,
     // Read by the #[tool_router]/#[tool_handler] macro-generated code, not by
     // hand — the dead-code lint can't see through the macro.
     #[allow(dead_code)]
@@ -33,7 +33,7 @@ struct NetArgs {
 
 #[tool_router]
 impl Mcp {
-    fn new(store: SharedStore) -> Self {
+    fn new(store: StoreHandle) -> Self {
         Self { store, tool_router: Self::tool_router() }
     }
 
@@ -42,10 +42,7 @@ impl Mcp {
         &self,
         Parameters(args): Parameters<NetArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let events = {
-            let store = self.store.lock().unwrap();
-            store.events_by_type("network", args.project_id.as_deref())
-        };
+        let events = self.store.events_by_type("network", args.project_id.as_deref()).await;
         let data: Vec<Value> = events
             .iter()
             .map(|e| {
@@ -77,7 +74,7 @@ impl ServerHandler for Mcp {
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
-    let store = new_store();
+    let store = open_store().await?;
 
     // Embed the collector in-process (ADR-0008): WS + HTTP run alongside MCP so
     // the (future) command channel's send is an in-process call, and the tools

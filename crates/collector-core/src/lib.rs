@@ -2,20 +2,22 @@
 //!
 //! Linked by both the standalone `collector-server` bin and the `mcp-server`
 //! bin (ADR-0008: mcp-server embeds the collector in-process). Holds the wire
-//! types, the event/session store, and the WS+HTTP server.
+//! types, the persistent event/session store (dedicated DB-owner thread +
+//! rusqlite WAL + JSONL WAL), and the WS+HTTP server.
 //!
-//! Milestone 1 scope: in-memory store, network events, the slice query surface.
-//! WAL/SQLite persistence, the full 19 event types, auth, and the command
-//! channel widen this in later milestones.
+//! Milestone 1 scope: network events end-to-end with durable persistence +
+//! crash recovery. The full 19 event types, auth, and the command channel
+//! widen this in later milestones.
 
 pub mod event;
 pub mod server;
 pub mod store;
+pub mod wal;
 
-pub use server::{serve, SharedStore};
-pub use store::Store;
+pub use server::serve;
+pub use store::StoreHandle;
 
-use std::sync::{Arc, Mutex};
+use std::path::PathBuf;
 
 /// The collector version string reported by `/api/health`.
 pub const VERSION: &str = "0.11.0-dev";
@@ -29,11 +31,14 @@ pub fn port_from_env(var: &str, default: u16) -> u16 {
     std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
-/// Build a fresh shared store with the default ring-buffer capacity.
-pub fn new_store() -> SharedStore {
-    let cap = std::env::var("RUNTIMESCOPE_BUFFER_SIZE")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(10_000);
-    Arc::new(Mutex::new(Store::new(cap)))
+/// The data directory: `$HOME/.runtimescope` (the conformance harness sets HOME
+/// to an isolated temp dir, so a restart-at-same-HOME finds the prior data).
+pub fn data_dir() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+    PathBuf::from(home).join(".runtimescope")
+}
+
+/// Open the persistent store (runs WAL recovery before returning).
+pub async fn open_store() -> Result<StoreHandle, String> {
+    StoreHandle::open(data_dir()).await
 }

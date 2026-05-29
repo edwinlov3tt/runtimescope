@@ -2,10 +2,11 @@
 //! and the `mcp-server` bin (which embeds it in-process per ADR-0008).
 //!
 //! Two axum apps on two ports (matching the Node collector): SDK WebSocket on
-//! `ws_port` (default 6767), HTTP API on `http_port` (default 6768).
+//! `ws_port` (default 6767), HTTP API on `http_port` (default 6768). All store
+//! access is async (the store is the dedicated-thread `StoreHandle`).
 
-use crate::event::{event_type_of, project_of, EventBatch, HandshakePayload, WsMessage};
-use crate::store::Store;
+use crate::event::{project_of, EventBatch, HandshakePayload, WsMessage};
+use crate::store::StoreHandle;
 use axum::{
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
@@ -18,14 +19,11 @@ use axum::{
 };
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-pub type SharedStore = Arc<Mutex<Store>>;
 
 #[derive(Clone)]
 struct AppState {
-    store: SharedStore,
+    store: StoreHandle,
     started: Instant,
     version: String,
 }
@@ -36,7 +34,7 @@ fn now_ms() -> i64 {
 
 /// Bind both ports and serve forever. Returns only on bind error.
 pub async fn serve(
-    store: SharedStore,
+    store: StoreHandle,
     ws_port: u16,
     http_port: u16,
     version: String,
@@ -53,17 +51,12 @@ pub async fn serve(
 
     let ws = Router::new().route("/", get(ws_upgrade)).with_state(state);
 
-    let http_listener =
-        tokio::net::TcpListener::bind(("127.0.0.1", http_port)).await?;
+    let http_listener = tokio::net::TcpListener::bind(("127.0.0.1", http_port)).await?;
     let ws_listener = tokio::net::TcpListener::bind(("127.0.0.1", ws_port)).await?;
 
-    let http_srv = axum::serve(http_listener, http);
-    let ws_srv = axum::serve(ws_listener, ws);
-
-    // Both run until the process is killed.
     tokio::try_join!(
-        async { http_srv.await },
-        async { ws_srv.await },
+        async { axum::serve(http_listener, http).await },
+        async { axum::serve(ws_listener, ws).await },
     )?;
     Ok(())
 }
@@ -75,7 +68,7 @@ async fn readyz() -> impl IntoResponse {
 }
 
 async fn health(State(s): State<AppState>) -> impl IntoResponse {
-    let connected = s.store.lock().unwrap().connected_count();
+    let connected = s.store.connected_count().await;
     Json(json!({
         "status": "ok",
         "version": s.version,
@@ -89,9 +82,8 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
 async fn sessions(State(s): State<AppState>) -> impl IntoResponse {
     let list: Vec<Value> = s
         .store
-        .lock()
-        .unwrap()
         .sessions()
+        .await
         .into_iter()
         .map(|si| {
             json!({
@@ -111,7 +103,7 @@ async fn events_network(
     Query(q): Query<HashMap<String, String>>,
 ) -> impl IntoResponse {
     let project = q.get("project_id").map(String::as_str);
-    let data = s.store.lock().unwrap().events_by_type("network", project);
+    let data = s.store.events_by_type("network", project).await;
     let count = data.len();
     Json(json!({ "data": data, "count": count }))
 }
@@ -142,21 +134,14 @@ async fn handle_socket(mut socket: WebSocket, s: AppState) {
                     let proj = project_of(&h);
                     session_id = Some(h.session_id.clone());
                     project = Some(proj.clone());
-                    s.store
-                        .lock()
-                        .unwrap()
-                        .register_session(h.session_id, h.app_name, proj);
+                    s.store.register_session(h.session_id, h.app_name, proj).await;
                 }
             }
             "event" => {
                 if let (Ok(batch), Some(proj)) =
                     (serde_json::from_value::<EventBatch>(m.payload.clone()), project.clone())
                 {
-                    let mut store = s.store.lock().unwrap();
-                    for ev in batch.events {
-                        let et = event_type_of(&ev);
-                        store.add_event(proj.clone(), et, ev);
-                    }
+                    s.store.add_batch(proj, batch.events).await;
                 }
             }
             _ => {}
@@ -164,6 +149,6 @@ async fn handle_socket(mut socket: WebSocket, s: AppState) {
     }
 
     if let Some(sid) = session_id {
-        s.store.lock().unwrap().mark_disconnected(&sid);
+        s.store.mark_disconnected(sid).await;
     }
 }

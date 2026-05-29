@@ -5,13 +5,16 @@
 //! Honors RUNTIMESCOPE_PORT / RUNTIMESCOPE_HTTP_PORT (the conformance harness
 //! sets these and waits for /readyz).
 
-use collector_core::{new_store, port_from_env, serve, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION};
+use collector_core::{open_store, port_from_env, serve, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
-    let store = new_store();
+
+    let store = open_store()
+        .await
+        .map_err(|e| std::io::Error::other(format!("store init failed: {e}")))?;
 
     eprintln!("[RuntimeScope] collector-server (rust {VERSION})");
     eprintln!("[RuntimeScope]   WebSocket: ws://127.0.0.1:{ws_port}");

@@ -12,9 +12,9 @@ A runtime monitoring system for Claude Code. Long-running TypeScript collector d
 
 ## Where the active work is
 
-**Phase: Wire-Protocol-Lock (next up — handoff doc not yet written).**
+**Phase: Wire-Protocol-Lock (next up — [handoff doc ready](./handoffs/phase-wire-protocol-lock-handoff.md)).**
 
-Trigger: Phase Tauri-Tray shipped v0.1.0 of `@runtimescope/tray` ([completion report](./reports/phase-tauri-tray-completion-report.md)). The tray locks three HTTP endpoints as its contract (documented in [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md)) — the next phase consolidates that surface + adds a conformance test suite that the Rust collector must pass.
+Trigger: Phase Tauri-Tray shipped v0.1.0 of `@runtimescope/tray` ([completion report](./reports/phase-tauri-tray-completion-report.md)). The tray locks three HTTP endpoints as its contract (documented in [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md)) — the next phase consolidates that surface + adds a conformance test suite that the Rust collector must pass. The self-contained brief for the receiving instance is [`handoffs/phase-wire-protocol-lock-handoff.md`](./handoffs/phase-wire-protocol-lock-handoff.md).
 
 **Phase plan:** [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md)
 **Decisions driving sequencing:**
@@ -45,7 +45,7 @@ Per the master phase plan:
 
 ## Resolution order when uncertain
 
-1. The active phase brief (in [`handoffs/`](./handoffs/) — for Wire-Protocol-Lock, the brief is not yet written; until it is, the [Tauri-Tray completion report](./reports/phase-tauri-tray-completion-report.md) + [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md) are the load-bearing inputs).
+1. The active phase brief — [`handoffs/phase-wire-protocol-lock-handoff.md`](./handoffs/phase-wire-protocol-lock-handoff.md). It is self-contained and cites the live wire surface; the [Tauri-Tray completion report](./reports/phase-tauri-tray-completion-report.md) + [`docs/specs/tray-api-surface.md`](./specs/tray-api-surface.md) are supporting inputs.
 2. The audit findings in [`audits/`](./audits/).
 3. ADRs in [`decisions/`](./decisions/).
 4. [`../CLAUDE.md`](../CLAUDE.md) operating manual.

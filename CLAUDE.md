@@ -111,6 +111,21 @@ Zero-dependency SDK for Cloudflare Workers. Sends events via HTTP POST to the co
 - SDK targets `es2020`, collector and MCP server target `node20`
 - MCP server version and SDK version (`SDK_VERSION` constant) should stay in sync across `sdk/src/index.ts`, `server-sdk/src/index.ts`, and `workers-sdk/src/transport.ts`
 
+## Engineering practices & review discipline
+
+These are hard-won from the Rust-port audit (`docs/audits/`), where a green test suite masked real divergences. Follow them, especially when porting/replacing a component or generating code in bulk.
+
+- **A gate is only as strong as what it asserts. "Green" must mean the contract holds.** When replacing a reference implementation (e.g. the Rust collector vs. the Node one), the equivalence test must **diff full observable behavior against the reference** — response *shapes*, every query filter, status codes, error frames, field types — not counts or existence. *A test that still passes against a stub is worse than no test: it manufactures false confidence.* The Rust collector passed 17/17 while `POST /api/events` 404'd and every `/api/events/*` filter was ignored.
+- **Before declaring a surface "ported," enumerate its consumers and its full route/method table — that's the checklist.** The HTTP API has explicit per-route filters + `POST /api/events` ingest (Workers SDK + Python SDK depend on it); collapsing N explicit routes into one generic handler is a **smell** unless you've verified every route's behavior. Read the *consumers* (SDK reconnect logic keys off the `AUTH_FAILED` frame; the dashboard depends on reshaped fields), not just the producer.
+- **"Compiles + clippy-clean" ≠ correct** — never sufficient for ported or agent/parallel-generated code. Each ported unit needs a **behavioral check against its source** (run it, diff output). The M3 fan-out produced 60 tools; only ~5 were behavior-verified, and several were silently shaped wrong.
+- **Test the failure paths, not just the happy path** — for durability/correctness code this *is* the contract: crash mid-write, torn/partial data, disk/DB errors, restart-after-N-restarts. The torn-tail recovery "worked" on the happy test but dropped good data after a real tear.
+- **Never discard a `Result` on a write/IO path** (`let _ = wal.commit()` is a data-loss smell). Propagate it; an `add_batch`/ack that returns success while the write failed is silent data loss. Surface failures via logs/metrics/return type.
+- **Secrets compare in constant time; replicate protocol *signals* exactly.** Token checks must not short-circuit (timing leak), and a from-scratch reimplementation must preserve the exact frames/codes consumers branch on (`AUTH_FAILED` vs `AUTH_TIMEOUT` — getting it wrong caused a bad-token reconnect storm).
+- **Treat tool inputs as untrusted.** A tool that takes a URL/path/command (e.g. `scan_website` → Playwright `page.goto`) needs scheme/host allowlisting (block `file://`, private/internal IPs — SSRF), and never shell-split env into argv.
+- **Don't let placeholders satisfy a readiness gate.** Deferred/stub tools must be *explicitly marked unavailable* and **excluded** from "done" metrics — `tools/list >= 60` counting `data: null` stubs is gaming the signal, not measuring parity.
+- **Keep distinct domain concepts as distinct fields**, even when they sometimes share a value. `projectName` (= `appName`) and the runtime `projectId` are separate in `collector/src/types.ts` — collapsing them corrupts session/project metadata. Mirror the canonical types faithfully.
+- **Periodically attack your own gate:** ask "what would pass this test that shouldn't?" If you can't answer, the gate isn't proven. Re-run the auditor's differential probe pattern (spawn reference + candidate, diff real outputs) whenever a parity claim is on the line.
+
 ## Publishing to npm
 
 All 4 public packages are published under the `@runtimescope` org. A GitHub Action (`.github/workflows/publish.yml`) handles automated publishing.

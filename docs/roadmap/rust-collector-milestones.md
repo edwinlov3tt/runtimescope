@@ -80,10 +80,11 @@ The biggest LOC chunk and the most parallelizable — the agent fan-out is what 
 ## Milestone 4 — Engines + recon (fan-out, ~1 wk) — 🟡 IN PROGRESS
 
 - [x] **`scan_website` REAL via the recon sidecar (ADR-0007 payoff).** mcp-server spawns the Node sidecar (`mcp-server/src/sidecar.rs`, one-shot newline-JSON over stdio) and proxies `scan_website` → verified end-to-end: a live scan of example.com returns 6 recon events (`recon_metadata/design_tokens/fonts/layout_tree/accessibility/asset_inventory`) through the Rust mcp-server. Sidecar launch command via `RUNTIMESCOPE_RECON_SIDECAR`. **Browser resolution + bundling is M6** (the smoke needed `PLAYWRIGHT_BROWSERS_PATH` at the installed Chromium; curl-install must ship/locate it).
-- [ ] Wire the browser-recon tools (`get_computed_styles`, `get_element_snapshot`, `get_layout_tree`, `get_style_diff`) to the same `call_sidecar(...)` client (the client is factored; each maps to a sidecar method — needs the tool↔URL semantics decided).
-- [ ] `api-discovery` (done as real in M3 over stored network events), `query-monitor`, `process-monitor`, `infra-connector` — deepen the stubs. process-monitor (OS) + infra-connector (external APIs) are independent → fan out, one agent per engine.
+- [x] **`scan_website` ingests → the recon read-family is real.** scan_website stores its captured `recon_*` events under a project; `get_page_metadata` / `get_design_tokens` / `get_font_info` / `get_layout_tree` / `get_accessibility_tree` / `get_asset_inventory` read them back. Verified end-to-end on example.com (real tokens/metadata/fonts), including across a restart (persistence).
+- [x] **process-monitor read tools real** (`get_dev_processes`, `get_port_usage`) via dep-free OS introspection (`ps`/`lsof`, async, whole-word hint matching). Verified against the live machine.
+- [ ] **Remaining M4:** the selector-specific browser-recon tools (`get_computed_styles`, `get_element_snapshot`) → live sidecar capture (url+selector — reuse `call_sidecar`); `get_style_diff` (no stored type); mutating process tools (`kill_process`/`purge_caches`/`restart_dev_server` — need care); `infra-connector` (external platform APIs — needs tokens/config, lower priority); **DB live-introspection** (`get_schema_map`/`get_table_data`/`modify_table_data`/`get_database_connections`/`suggest_indexes` — needs DB-driver crates + connection config; the largest remaining M4 chunk, effectively its own engine).
 
-**Team?** The remaining engine stubs map cleanly to per-engine agents (as M3 did for tools).
+**Team?** The remaining engine stubs map cleanly to per-engine agents (as M3 did for tools); DB-introspection is large enough to be its own track.
 
 ## Milestone 5 — `pm/` project-manager subsystem (own serial track, ~1.5 wk)
 

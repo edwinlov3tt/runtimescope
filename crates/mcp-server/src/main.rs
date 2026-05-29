@@ -1,128 +1,41 @@
 //! `mcp-server` — embeds collector-core in-process (ADR-0008) and exposes the
 //! MCP tool surface over stdio JSON-RPC.
 //!
-//! M1/M2 slice + command channel: get_network_requests (store read) and
-//! get_dom_snapshot (server→SDK command channel via CommandHub). The remaining
-//! ~61 tools fan out in Milestone 3 onto this exact pattern (rmcp `#[tool]` +
-//! schemars-derived args + the standard `{summary,data,issues,metadata}` envelope,
-//! reading `self.store` / driving `self.hub`).
+//! `Mcp` holds the shared store + command hub. Tool families live under
+//! `tools/` (one module + named router each); `Mcp::new` combines the routers.
+//! The Milestone 3 fan-out adds family modules and one `+ Self::<family>_router()`
+//! line each — see `tools/mod.rs` for the pattern.
+
+mod tools;
 
 use collector_core::{
     open_store, port_from_env, serve, CommandHub, StoreHandle, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
 };
 use rmcp::{
-    handler::server::{tool::ToolRouter, wrapper::Parameters, ServerHandler},
-    model::{CallToolResult, Content},
-    tool, tool_handler, tool_router,
+    handler::server::{tool::ToolRouter, ServerHandler},
+    tool_handler,
     transport::stdio,
-    ErrorData, ServiceExt,
+    ServiceExt,
 };
-use serde::Deserialize;
-use serde_json::{json, Value};
 
 #[derive(Clone)]
-struct Mcp {
-    store: StoreHandle,
-    hub: CommandHub,
-    // Read by the #[tool_router]/#[tool_handler] macro-generated code, not by
-    // hand — the dead-code lint can't see through the macro.
-    #[allow(dead_code)]
+pub struct Mcp {
+    pub store: StoreHandle,
+    pub hub: CommandHub,
     tool_router: ToolRouter<Self>,
 }
 
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct NetArgs {
-    /// Scope results to one project (the proj_xxx from .runtimescope/config.json).
-    project_id: Option<String>,
-}
-
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-struct DomArgs {
-    project_id: Option<String>,
-    max_size: Option<u64>,
-}
-
-#[tool_router]
 impl Mcp {
     fn new(store: StoreHandle, hub: CommandHub) -> Self {
-        Self { store, hub, tool_router: Self::tool_router() }
-    }
-
-    #[tool(description = "Get captured network (fetch) requests from the running app. Returns URL, method, status, and timing.")]
-    async fn get_network_requests(
-        &self,
-        Parameters(args): Parameters<NetArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        let events = self.store.events_by_type("network", args.project_id.as_deref()).await;
-        let data: Vec<Value> = events
-            .iter()
-            .map(|e| {
-                json!({
-                    "url": e.get("url"),
-                    "method": e.get("method"),
-                    "status": e.get("status"),
-                    "duration": e.get("duration"),
-                })
-            })
-            .collect();
-        let count = data.len();
-        let envelope = json!({
-            "summary": format!("Found {count} network request(s)."),
-            "data": data,
-            "issues": [],
-            "metadata": { "eventCount": count, "projectId": args.project_id },
-        });
-        Ok(CallToolResult::success(vec![Content::text(envelope.to_string())]))
-    }
-
-    #[tool(description = "Capture a live DOM snapshot from the connected SDK (server→SDK command channel).")]
-    async fn get_dom_snapshot(
-        &self,
-        Parameters(args): Parameters<DomArgs>,
-    ) -> Result<CallToolResult, ErrorData> {
-        // Pick a connected session (optionally project-scoped).
-        let session = self
-            .store
-            .sessions()
-            .await
-            .into_iter()
-            .find(|s| s.is_connected && args.project_id.as_ref().is_none_or(|p| &s.project == p));
-
-        let Some(session) = session else {
-            let env = json!({
-                "summary": "No active SDK session connected. Ensure the SDK is running in the browser.",
-                "data": null,
-                "issues": ["No active session"],
-                "metadata": { "eventCount": 0, "sessionId": null, "projectId": args.project_id },
-            });
-            return Ok(CallToolResult::success(vec![Content::text(env.to_string())]));
-        };
-
-        let params = json!({ "maxSize": args.max_size.unwrap_or(500_000) });
-        match self.hub.send_command(&session.session_id, "capture_dom_snapshot", params).await {
-            Ok(payload) => {
-                let env = json!({
-                    "summary": "DOM snapshot captured.",
-                    "data": payload,
-                    "issues": [],
-                    "metadata": { "eventCount": 1, "sessionId": session.session_id, "projectId": args.project_id },
-                });
-                Ok(CallToolResult::success(vec![Content::text(env.to_string())]))
-            }
-            Err(e) => {
-                let env = json!({
-                    "summary": format!("Failed to capture DOM snapshot: {e}"),
-                    "data": null,
-                    "issues": [e],
-                    "metadata": { "eventCount": 0, "sessionId": session.session_id, "projectId": args.project_id },
-                });
-                Ok(CallToolResult::success(vec![Content::text(env.to_string())]))
-            }
-        }
+        // Combine every family's router. M3 fan-out appends `+ Self::x_router()`.
+        let tool_router = Self::core_router() + Self::status_router();
+        Self { store, hub, tool_router }
     }
 }
 
-#[tool_handler]
+// Point the handler at the combined `tool_router` field (the macro default is
+// `Self::tool_router()`, which we don't have — we merge named routers in new()).
+#[tool_handler(router = self.tool_router)]
 impl ServerHandler for Mcp {
     // Default get_info() advertises the tools capability (validated in the M0 spike).
 }
@@ -148,7 +61,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // The conformance mcp-driver waits for this exact marker before sending
     // JSON-RPC (and only then attaches — see the harness note). Print it before
     // serve(stdio()) so initialize lands after the transport reader is up.
-    eprintln!("[RuntimeScope] MCP server running on stdio (2 tools — M1/M2 slice + command channel)");
+    eprintln!("[RuntimeScope] MCP server running on stdio");
 
     let service = Mcp::new(store, hub).serve(stdio()).await?;
     service.waiting().await?;

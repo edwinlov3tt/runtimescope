@@ -39,8 +39,23 @@ pub mod status_tools;
 
 use rmcp::model::{CallToolResult, Content};
 use serde_json::Value;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Wrap a JSON envelope as the single text-content result every tool returns.
 pub fn envelope(v: Value) -> CallToolResult {
     CallToolResult::success(vec![Content::text(v.to_string())])
+}
+
+/// Current time in ms since epoch.
+pub fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// ms epoch → ISO-8601 with millis + `Z`, matching JS `new Date(ms).toISOString()`.
+/// The MCP tool layer reshapes stored numeric timestamps to ISO strings; use this
+/// everywhere a tool surfaces a timestamp (audit #2).
+pub fn iso_ms(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms)
+        .unwrap_or_default()
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
 }

@@ -1,23 +1,11 @@
 //! Core tools: network reads + the DOM-snapshot command-channel tool.
 
-use crate::tools::envelope;
+use crate::tools::{envelope, iso_ms, now_ms};
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::time::{SystemTime, UNIX_EPOCH};
-
-fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
-}
-
-/// ms epoch → ISO-8601 with millis + `Z`, matching JS `new Date(ms).toISOString()`.
-fn iso_ms(ms: i64) -> String {
-    chrono::DateTime::from_timestamp_millis(ms)
-        .unwrap_or_default()
-        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
-}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct NetArgs {

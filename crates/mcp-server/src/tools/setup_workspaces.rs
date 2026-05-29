@@ -56,12 +56,27 @@ pub struct ProjectConfigArgs {
 pub struct ScanWebsiteArgs {
     /// The full URL to scan (e.g. "https://stripe.com").
     url: String,
+    /// Project to store the captured recon events under (so the recon tools can
+    /// read them back). Defaults to the URL's host.
+    project_id: Option<String>,
     /// Viewport width in pixels (default 1280).
     viewport_width: Option<u32>,
     /// Viewport height in pixels (default 720).
     viewport_height: Option<u32>,
     /// Wait condition before scanning: load, networkidle, or domcontentloaded.
     wait_for: Option<String>,
+}
+
+/// Derive a project name from a URL's host (fallback "scan").
+fn host_of(url: &str) -> String {
+    url.split("://")
+        .nth(1)
+        .unwrap_or(url)
+        .split('/')
+        .next()
+        .filter(|h| !h.is_empty())
+        .unwrap_or("scan")
+        .to_string()
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -323,19 +338,30 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             params["waitFor"] = json!(w);
         }
 
+        let project = args.project_id.clone().unwrap_or_else(|| host_of(&args.url));
+
         match crate::sidecar::call_sidecar("scan_website", params).await {
             Ok(result) => {
-                // The sidecar returns { events: [...], ... } ready to store.
-                let event_count = result
+                // The sidecar returns { events: [...], ... } ready to store. INGEST
+                // them under `project` so the recon read-tools (get_design_tokens,
+                // get_layout_tree, …) return this scan's data.
+                let events: Vec<Value> = result
                     .get("events")
                     .and_then(Value::as_array)
-                    .map(|a| a.len())
-                    .unwrap_or(0);
+                    .cloned()
+                    .unwrap_or_default();
+                let event_count = events.len();
+                if event_count > 0 {
+                    self.store.add_batch(project.clone(), events).await;
+                }
                 Ok(envelope(json!({
-                    "summary": format!("Scanned {} — {event_count} recon event(s) captured.", args.url),
+                    "summary": format!(
+                        "Scanned {} — {event_count} recon event(s) captured under project '{project}'. Query them with the recon tools (project_id: '{project}').",
+                        args.url
+                    ),
                     "data": result,
                     "issues": [],
-                    "metadata": { "eventCount": event_count, "projectId": null },
+                    "metadata": { "eventCount": event_count, "projectId": project },
                 })))
             }
             Err(e) => Ok(envelope(json!({

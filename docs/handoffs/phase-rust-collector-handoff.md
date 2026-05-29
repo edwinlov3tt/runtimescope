@@ -1,4 +1,4 @@
-# Phase Rust-Collector Handoff — port the collector + mcp-server + cli to Rust (v0.12.0)
+# Phase Rust-Collector Handoff — port the collector + mcp-server + cli to Rust (v0.11.0)
 
 > **Audience:** the Claude Code instance(s) executing Phase Rust-Collector.
 > **This is the big one — ~8 weeks honest** ([ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) §37). Read this whole file, then read [`../roadmap/rust-collector-milestones.md`](../roadmap/rust-collector-milestones.md) for the execution sequence and where to fan out vs. stay serial.
@@ -8,7 +8,7 @@
 
 ## Why this phase, in one paragraph
 
-The Node collector is sound (v0.10.9 audit closed all five lifetime findings), but the *distribution* is the problem: `npm install -g` + a ~200-dep dashboard build tree is the supply-chain surface [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) exists to kill. Rust gives a single signed binary delivered by `curl | sh`, the dashboard embedded via `include_bytes!`, and no npm CLI ever again. This phase replaces three Node packages with four Rust crates. It ships as **v0.12.0**; the Node packages stay on npm at v0.10.12 as a git-tagged rollback (deprecate, don't unpublish).
+The Node collector is sound (v0.10.9 audit closed all five lifetime findings), but the *distribution* is the problem: `npm install -g` + a ~200-dep dashboard build tree is the supply-chain surface [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) exists to kill. Rust gives a single signed binary delivered by `curl | sh`, the dashboard embedded via `include_bytes!`, and no npm CLI ever again. This phase replaces three Node packages with four Rust crates. It ships as **v0.11.0** (the clean number reserved for the Rust cutover per the [ADR-0002 addendum](../decisions/0002-rust-port-sequence-and-distribution.md)); the Node packages stay on npm at **v0.10.13** (Wire-Protocol-Lock, the final Node release) as a git-tagged rollback (deprecate, don't unpublish).
 
 ---
 
@@ -82,7 +82,7 @@ The Node collector is **~14.5K LOC**, mcp-server **~8.6K**, cli **~2.4K** — ~2
 1. **Playwright is JS-only — and `scan_website` + several `recon-*` tools depend on it.** There is no drop-in Rust equivalent. Options, in rough preference order:
    - **(a) Defer the browser tools to a Node sidecar** the Rust collector spawns on demand. Keeps the port honest; isolates the one piece that genuinely needs a JS browser engine. **Recommended** — write this as a mini-ADR.
    - **(b) `chromiumoxide` / `fantoccini`+WebDriver** in Rust. More native, but reimplements a lot of Playwright's ergonomics and is a known time sink.
-   - **(c) Cut the browser-recon tools from v0.12.0** and restore via sidecar in a follow-up. Acceptable if the owner doesn't use them daily.
+   - **(c) Cut the browser-recon tools from v0.11.0** and restore via sidecar in a follow-up. Acceptable if the owner doesn't use them daily.
    - **Decide this in Milestone 0 / 1, not Milestone 4.** It affects how `mcp-server` is structured.
 2. **`rmcp` (Rust MCP SDK) maturity.** Validate it handles the 63-tool registration + the stdio framing Claude Code expects *before* porting all 63. Build one tool end-to-end against it in the vertical slice.
 3. **`pm/` project-discovery** reads the filesystem and parses Claude session transcripts (`session-parser.ts`). FS-heavy, lots of edge cases. Port with its existing tests as the spec.
@@ -170,7 +170,7 @@ npm run bench && npm run bench:compare -- node collector-server
 - [ ] `curl | sh` install drops 4 binaries, `runtimescope` on PATH, self-update works against a signed GitHub Release.
 - [ ] First-run data-wipe warning + `RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1` opt-out implemented.
 - [ ] `packages/collector/`, `packages/mcp-server/`, `packages/cli/` deleted; tagged rollback verified.
-- [ ] Ships as v0.12.0. Node packages deprecated (not unpublished) on npm.
+- [ ] Ships as v0.11.0. Node packages (final: v0.10.13) deprecated (not unpublished) on npm.
 - [ ] Completion report + CURRENT_STATE + HANDOFF (pointing at Phase SDK-Channel-Migration) updated.
 
 Resolution order if uncertain:

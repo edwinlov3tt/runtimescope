@@ -3,7 +3,7 @@
 **Status:** Accepted
 **Date:** 2026-05-29
 **Deciders:** Project owner + implementing instance
-**Phase:** Wire-Protocol-Lock (v0.11.0)
+**Phase:** Wire-Protocol-Lock (shipped as v0.10.13; v0.11.0 reserved for the Rust collector)
 
 ---
 
@@ -33,7 +33,7 @@ Concretely:
 
 ### Scope of the lock
 
-- **Locked (the Rust collector must match):** the WS envelope + handshake (incl. 5s auth timeout / close 4001), event ingest + project isolation, the server→SDK command channel's `requestId` correlation, the HTTP `/api/*` shapes + status codes + the public/auth gate, the SQLite logical schema, and WAL `fsync`-before-`commit` durability + torn-tail recovery. Five spec files, 15 tests at v0.11.0.
+- **Locked (the Rust collector must match):** the WS envelope + handshake (incl. 5s auth timeout / close 4001), event ingest + project isolation, the server→SDK command channel's `requestId` correlation, the HTTP `/api/*` shapes + status codes + the public/auth gate, the SQLite logical schema, and WAL `fsync`-before-`commit` durability + torn-tail recovery. Five spec files, 15 tests at v0.10.13.
 - **Documented but evolvable (not locked):** internal routes (`/api/pm/*`, `/api/v1/admin/*`).
 - **Not in this suite:** throughput/latency/memory — that's the `bench/` contract (a *performance* gate, not *correctness*).
 

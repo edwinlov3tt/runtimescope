@@ -7,6 +7,10 @@
 
 ---
 
+> **Addendum (2026-05-29) — version-number reassignment.** This ADR originally assigned **Wire-Protocol-Lock → v0.11.0** and **Rust-Collector → v0.12.0**. The owner has reassigned the numbers: **Wire-Protocol-Lock ships as a `0.10.x` patch (v0.10.13)** — it's no-behavior-change tooling and doesn't merit a minor bump — and **v0.11.0 is reserved as the clean number for the Rust collector.** SDK-Channel-Migration shifts accordingly (v0.13.0 → v0.12.0). Everything else in this ADR (sequence, fresh-data, curl-install, embedded dashboard, CDN SDKs) stands unchanged. Rationale: keep a clean, memorable minor-version boundary for the Rust cutover rather than spend it on a docs-and-tests phase.
+
+---
+
 ## Context
 
 [ADR-0001](./0001-audit-then-rust.md) committed to "audit first, then Rust." That decision is intact and shipped as v0.10.9 — see [Audit 0001](../audits/0001-collector-process-lifetime.md) (Closed) and [Phase Audit completion report](../reports/phase-audit-completion-report.md). This ADR supersedes only the *forward-looking* section of ADR-0001 (the recommended sequence after the audit closes); the audit decision itself remains correct.
@@ -82,7 +86,7 @@ A third decision-input: **the tray ships before the Rust collector.** This creat
 
 **Reversal cost:**
 
-- Cheap up through Phase Wire-Protocol-Lock (v0.11.0). It's docs + tests; abandoning it loses 2-3 days.
+- Cheap up through Phase Wire-Protocol-Lock (v0.10.13). It's docs + tests; abandoning it loses 2-3 days.
 - Medium through Phase Rust-Collector. Tagged releases preserve the Node code; if the Rust port fails, we resurrect `packages/collector/` from git history. We just don't keep a parallel copy in the working tree.
 - Higher for Phase SDK-Channel-Migration. Once the CDN URL is in the wild as the recommended install pattern, reverting means changing docs + breaking integrations. Worth getting right the first time, not optimizing for reversal.
 

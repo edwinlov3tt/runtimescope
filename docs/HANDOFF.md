@@ -14,7 +14,7 @@ A runtime monitoring system for Claude Code. Long-running TypeScript collector d
 
 **Phase: Rust-Collector (next — [handoff ready](./handoffs/phase-rust-collector-handoff.md) + [milestones](./roadmap/rust-collector-milestones.md)).**
 
-Trigger: Phase Wire-Protocol-Lock is substantively complete ([completion report](./reports/phase-wire-protocol-lock-completion-report.md)). The wire contract is now **executable**: `npm run conformance` (15 tests / 5 specs) passes against the Node collector and becomes the Rust port's acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD` (ADR-0006). Specs: [`wire-protocol.md`](./specs/wire-protocol.md), [`mcp-tool-surface.md`](./specs/mcp-tool-surface.md). **v0.11.0 is bumped in-tree but not yet published** — `git tag v0.11.0 && git push --tags` when ready.
+Trigger: Phase Wire-Protocol-Lock is substantively complete ([completion report](./reports/phase-wire-protocol-lock-completion-report.md)). The wire contract is now **executable**: `npm run conformance` (15 tests / 5 specs) passes against the Node collector and becomes the Rust port's acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD` (ADR-0006). Specs: [`wire-protocol.md`](./specs/wire-protocol.md), [`mcp-tool-surface.md`](./specs/mcp-tool-surface.md). Ships as **v0.10.13** (bumped in-tree, not yet published — `git tag v0.10.13 && git push --tags` when ready). **v0.11.0 is reserved as the clean number for the Rust collector** ([ADR-0002 addendum](./decisions/0002-rust-port-sequence-and-distribution.md)).
 
 One open question handed forward (must be decided before Rust Milestone 2): the server→SDK command channel is triggered in-process today; ADR-0002 splits collector and mcp-server into separate Rust bins, so that mechanism needs a design. Flagged in `wire-protocol.md` §5.
 
@@ -41,9 +41,9 @@ Open deferrals (see CURRENT_STATE.md and the Tauri-Tray completion report for de
 Per the master phase plan:
 
 1. **Phase Tauri-Tray** (**SHIPPED v0.1.0** — see [completion report](./reports/phase-tauri-tray-completion-report.md)).
-2. **Phase Wire-Protocol-Lock** (**COMPLETE — v0.11.0 in-tree, publish pending** — see [completion report](./reports/phase-wire-protocol-lock-completion-report.md)). Conformance suite + specs + ADR-0006 landed; 15/15 green.
-3. **Phase Rust-Collector** (v0.12.0) — 4 Rust crates, dashboard embedded, curl-install, fresh data on cutover (no migration). ~8 weeks. Plan written ahead of time: [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) (contract + module→crate map + hard spots) and [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md) (milestones + agent-team fan-out strategy).
-4. **Phase SDK-Channel-Migration** (v0.13.0) — `cdn.runtimescope.dev` + `runtimescope sdk install` + npm-with-provenance. ~2 weeks.
+2. **Phase Wire-Protocol-Lock** (**COMPLETE — v0.10.13 in-tree, publish pending** — see [completion report](./reports/phase-wire-protocol-lock-completion-report.md)). Conformance suite + specs + ADR-0006 landed; 15/15 green. A 0.10.x patch, not a minor bump.
+3. **Phase Rust-Collector** (**v0.11.0** — the clean reserved number) — 4 Rust crates, dashboard embedded, curl-install, fresh data on cutover (no migration). ~8 weeks. Plan written ahead of time: [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) (contract + module→crate map + hard spots) and [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md) (milestones + agent-team fan-out strategy).
+4. **Phase SDK-Channel-Migration** (v0.12.0) — `cdn.runtimescope.dev` + `runtimescope sdk install` + npm-with-provenance. ~2 weeks.
 
 ## Resolution order when uncertain
 

@@ -92,7 +92,7 @@ The biggest LOC chunk and the most parallelizable.
 - [ ] `npm run stress` 7/7; `npm run bench:compare -- node <rust>` within gates (target: Rust beats Node).
 - [ ] Signed-binary release workflow + the conformance/bench gate in CI.
 - [ ] Delete `packages/collector|mcp-server|cli`; verify git-tag rollback.
-- [ ] v0.12.0; deprecate Node packages on npm; completion report; CURRENT_STATE + HANDOFF → Phase SDK-Channel-Migration.
+- [ ] v0.11.0; deprecate Node packages (final v0.10.13) on npm; completion report; CURRENT_STATE + HANDOFF → Phase SDK-Channel-Migration.
 
 **Team?** No — this is the careful close. One author owns the destructive cutover.
 

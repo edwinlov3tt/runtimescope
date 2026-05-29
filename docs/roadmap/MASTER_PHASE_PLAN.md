@@ -20,30 +20,30 @@ This is the single source of truth for what phase is next. **Do not invent phase
 DONE   ──▶  Phase Audit (v0.10.9)
               audit/0001 closed, all five findings shipped
 
-we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
-                   native macOS menu-bar app, ad-hoc signed for personal use
-                   talks to existing Node collector via HTTP API only
-                   ships in ~5-7d
+DONE   ──▶  Phase Tauri-Tray (tray @ v0.1.0; workspace at v0.10.12)
+              native macOS menu-bar app, ad-hoc signed for personal use
+              talks to existing Node collector via HTTP API only
 
-                Phase Wire-Protocol-Lock (v0.11.0)
-                  scoped down — ~2-3d
-                  thin spec (~2 pages, invariants only)
-                  tests/conformance/ as the executable spec
-                  no behavior change
+DONE   ──▶  Phase Wire-Protocol-Lock (v0.10.13)
+              tests/conformance/ as the executable spec — 15/15 green
+              thin spec (invariants only) + ADR-0006
+              no behavior change (a 0.10.x patch, NOT a minor bump)
 
-                Phase Rust-Collector (v0.12.0)
+we are here ──▶  Phase Rust-Collector (v0.11.0)   ← the clean number, reserved for Rust
                   ~8 weeks
                   4 Rust crates replace 3 Node packages
                   dashboard embedded via include_bytes!
                   fresh data on cutover (no migration)
                   curl-install replaces npm install -g
 
-                Phase SDK-Channel-Migration (v0.13.0)
+                Phase SDK-Channel-Migration (v0.12.0)
                   ~2 weeks
                   cdn.runtimescope.dev for browser + Workers SDK
                   CLI-vendored install path
                   npm gets --provenance (fallback only)
 ```
+
+> **Version note (2026-05-29, [ADR-0002 addendum](../decisions/0002-rust-port-sequence-and-distribution.md)):** Wire-Protocol-Lock ships as a `0.10.x` patch (v0.10.13), not v0.11.0 — it's no-behavior-change tooling. **v0.11.0 is reserved as the clean number for the Rust collector**; the rest of the sequence shifts down one minor.
 
 ## Phase Tauri-Tray (current)
 
@@ -110,7 +110,7 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 **Acceptance criteria:**
 1. Specs cover every wire format the JS SDKs depend on (verified by code excerpts in the spec doc).
 2. Conformance test suite passes against the v0.10.9 Node collector.
-3. Ships as v0.11.0. No behavior change.
+3. Ships as v0.10.13 (a 0.10.x patch — no behavior change; v0.11.0 reserved for Rust).
 4. Completion report at `../reports/phase-wire-protocol-lock-completion-report.md`.
 
 **Out of scope:**
@@ -167,7 +167,7 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 | 3e | MCP server: stdio JSON-RPC + 55 tools — full integration with JS SDK |
 | 3f | CLI: service install, doctor, mcp doctor, sdk install (scaffold for Phase 4) |
 | 3g | Dashboard embed + curl-install script + signed releases + auto-update |
-| 3h | Canary + cutover docs + v0.12.0 release |
+| 3h | Canary + cutover docs + v0.11.0 release |
 
 **Acceptance criteria for the phase as a whole:**
 1. Rust collector passes the conformance suite from Phase Wire-Protocol-Lock.
@@ -176,8 +176,8 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 4. `curl -sSL https://runtimescope.dev/install.sh | sh` installs cleanly on macOS arm64.
 5. `runtimescope service install` installs and starts the Rust collector.
 6. Tray app picks up the Rust collector without changes (HTTP API is the contract).
-7. `packages/collector/`, `packages/mcp-server/`, `packages/cli/` deleted from the repo. Git tag v0.10.9 preserves the Node code.
-8. Ships as v0.12.0.
+7. `packages/collector/`, `packages/mcp-server/`, `packages/cli/` deleted from the repo. Git tag v0.10.13 preserves the final Node code.
+8. Ships as v0.11.0.
 
 **Estimated effort:** 8 weeks honest. Each sub-phase produces a completion report; cumulative reports become the de-facto changelog.
 
@@ -216,7 +216,7 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 4. `runtimescope sdk install browser` works on a fresh machine, fetches the latest CDN version, writes the file, refuses to write if SRI mismatches.
 5. `npm audit signatures @runtimescope/sdk` verifies provenance.
 6. Docs updated end-to-end.
-7. Ships as v0.13.0.
+7. Ships as v0.12.0.
 
 **Estimated effort:** ~2 weeks (including domain setup + CDN infrastructure + CI rework).
 
@@ -226,8 +226,8 @@ we are here ──▶  Phase Tauri-Tray (v0.11.0-pre or unversioned)
 - **Migrating the dashboard to Leptos/Dioxus.** Embed-via-`include_bytes!` removes the supply-chain concern; rewriting is out of scope.
 - **Hosted SaaS collector.** Local-first stays.
 - **Replacing `exceljs` / `better-sqlite3`** — both go away when the Node collector retires.
-- **Workspace-key authentication, multi-tenant routing, etc.** — out of scope for the Rust port; revisit only after v0.13.0 ships.
-- **Data migration from v0.10.x to v0.12.x.** Explicitly accepted as data loss per ADR-0002. Revisit only when there's a second user.
+- **Workspace-key authentication, multi-tenant routing, etc.** — out of scope for the Rust port; revisit only after v0.12.0 (SDK-Channel-Migration) ships.
+- **Data migration from v0.10.x to v0.11.x.** Explicitly accepted as data loss per ADR-0002. Revisit only when there's a second user.
 
 ## Proposed but not yet scheduled
 

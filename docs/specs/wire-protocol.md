@@ -1,10 +1,10 @@
 # RuntimeScope wire protocol — locked invariants
 
-> **Status:** Locked as of v0.11.0 (Phase Wire-Protocol-Lock).
-> **Audience:** anyone implementing a RuntimeScope collector (Node today, Rust at v0.12.0) or any SDK that talks to one.
+> **Status:** Locked by Phase Wire-Protocol-Lock, shipped as **v0.10.13** (a patch on the Node `0.10.x` line — no behavior change). **`v0.11.0` is reserved as the clean number for the Rust collector** (see [ADR-0002 addendum](../decisions/0002-rust-port-sequence-and-distribution.md)).
+> **Audience:** anyone implementing a RuntimeScope collector (Node today, Rust at v0.11.0) or any SDK that talks to one.
 > **This document is a thin mirror. The implementation is truth, and [`tests/conformance/`](../../tests/conformance/) is the executable contract** ([ADR-0006](../decisions/0006-conformance-tests-are-the-spec.md)). Where this doc and a green conformance test disagree, the test wins and this doc is re-derived. Each invariant cites a `file:line` source and, where applicable, the conformance spec that guards it.
 
-Run the contract: `npm run conformance` (passes against the v0.10.12 Node collector; becomes the Rust acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD`).
+Run the contract: `npm run conformance` (passes against the v0.10.13 Node collector; becomes the Rust acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD`).
 
 This complements [`tray-api-surface.md`](./tray-api-surface.md) (the 3 endpoints the tray locks) and [`mcp-tool-surface.md`](./mcp-tool-surface.md) (the 63-tool catalog). This file covers the full SDK↔collector + persistence surface.
 

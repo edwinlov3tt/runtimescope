@@ -4,7 +4,7 @@
 **Brief:** [`../handoffs/phase-wire-protocol-lock-handoff.md`](../handoffs/phase-wire-protocol-lock-handoff.md)
 **Decision frame:** [`../decisions/0002-rust-port-sequence-and-distribution.md`](../decisions/0002-rust-port-sequence-and-distribution.md) (invariant #3)
 **Initial commit:** `7e88f46` — *docs: Phase Rust-Collector plan*
-**Released as:** v0.11.0 (version bumped in-tree; **tag/publish pending owner approval** — see §6).
+**Released as:** v0.10.13 (a patch on the Node `0.10.x` line — no behavior change). **v0.11.0 is reserved as the clean number for the Rust collector.** Tag/publish pending owner approval — see §6.
 
 ---
 
@@ -12,7 +12,7 @@
 
 | Deliverable | Path | Status |
 |---|---|---|
-| Executable conformance suite | [`tests/conformance/`](../../tests/conformance/) | ✅ 15 tests / 5 specs, green vs. Node v0.11.0 |
+| Executable conformance suite | [`tests/conformance/`](../../tests/conformance/) | ✅ 15 tests / 5 specs, green vs. Node v0.10.13 |
 | Wire-protocol spec (thin, cited) | [`../specs/wire-protocol.md`](../specs/wire-protocol.md) | ✅ |
 | MCP tool catalog (63 tools) | [`../specs/mcp-tool-surface.md`](../specs/mcp-tool-surface.md) | ✅ |
 | ADR — tests are the spec | [`../decisions/0006-conformance-tests-are-the-spec.md`](../decisions/0006-conformance-tests-are-the-spec.md) | ✅ Accepted |
@@ -56,12 +56,12 @@ The command channel is triggered **in-process** today (mcp-server embeds the col
 
 ## 6. Release status — owner action required
 
-Versions bumped in-tree to **v0.11.0** (11 npm packages + the 3 `SDK_VERSION` constants; tray stays at 0.1.0). The phase is "no behavior change" — this is the contract-maturity signal per ADR-0002.
+Versions bumped in-tree to **v0.10.13** (11 npm packages + the 3 `SDK_VERSION` constants; tray stays at 0.1.0). A patch on the Node `0.10.x` line — no behavior change. **v0.11.0 is deliberately skipped here and reserved as the clean number for the Rust collector** (owner decision, 2026-05-29; amends ADR-0002's original v0.12.0 assignment).
 
 **Not yet published.** Publishing is the owner's explicit call:
 
 ```bash
-git tag v0.11.0 && git push --tags    # triggers the publish workflow (which now runs the conformance gate)
+git tag v0.10.13 && git push --tags    # triggers the publish workflow (which now runs the conformance gate)
 ```
 
 ## 7. Next phase

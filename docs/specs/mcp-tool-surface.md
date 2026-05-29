@@ -1,6 +1,6 @@
 # MCP tool surface — catalog
 
-> **Status:** Locked as of v0.11.0 (Phase Wire-Protocol-Lock).
+> **Status:** Locked by Phase Wire-Protocol-Lock, shipped as v0.10.13. (v0.11.0 is reserved for the Rust collector.)
 > **63 tools across 34 files** (`grep -c "server\.tool(" packages/mcp-server/src/tools/*.ts`). Each tool's authoritative input schema is its `zod` definition in code; this doc is a static **index**, not a re-specification. The MCP stdio JSON-RPC contract (tools/list + tools/call envelope) is guarded by [`tests/conformance/specs/mcp-tools.conformance.test.ts`](../../tests/conformance/specs/mcp-tools.conformance.test.ts).
 
 > ⚠️ The mcp-server's startup log still prints "55 tools" — that string is **stale**; the real count is 63. Fix it during Phase Rust-Collector.

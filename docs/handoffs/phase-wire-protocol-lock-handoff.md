@@ -27,7 +27,7 @@ Per [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) (invari
 
 ## Phase Wire-Protocol-Lock prompt (this is your contract)
 
-> **Goal:** before any Rust collector code is written, lock the contract the Rust collector must honor — both as a thin written spec (invariants only) and as an executable conformance suite (the real source of truth). **No behavior change.** Ships as **v0.11.0**.
+> **Goal:** before any Rust collector code is written, lock the contract the Rust collector must honor — both as a thin written spec (invariants only) and as an executable conformance suite (the real source of truth). **No behavior change.** Ships as **v0.10.13** (a 0.10.x patch; v0.11.0 is reserved for the Rust collector — [ADR-0002 addendum](../decisions/0002-rust-port-sequence-and-distribution.md)).
 >
 > **Scope:** ~2–3 days. This is a documentation + test phase. You are not changing how the collector behaves; you are pinning down how it *already* behaves so a from-scratch reimplementation can be proven equivalent.
 >
@@ -45,7 +45,7 @@ Per [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) (invari
 > **Acceptance criteria:**
 > 1. Specs cover every wire format the JS/Python SDKs depend on, each line cross-referenced to a code excerpt.
 > 2. Conformance suite passes green against the v0.10.12 Node collector.
-> 3. Ships as v0.11.0. No behavior change (586 unit + 7 stress still green; existing snapshots unchanged).
+> 3. Ships as v0.10.13. No behavior change (586 unit + 7 stress still green; existing snapshots unchanged).
 > 4. Completion report at `docs/reports/phase-wire-protocol-lock-completion-report.md`.
 
 ---
@@ -210,7 +210,7 @@ So your real harness work is narrower than this doc's file tree implies: write `
 
 | Why | File | Action |
 |---|---|---|
-| Version bump to v0.11.0 | all `package.json` + `SDK_VERSION` constants | `npm version 0.11.0 --workspaces --no-git-tag-version`; update `SDK_VERSION` in sdk/server-sdk/workers-sdk per CLAUDE.md |
+| Version bump to v0.10.13 | publishable `package.json` + `SDK_VERSION` constants | `npm version 0.10.13 --no-git-tag-version -w <each publishable pkg>` (NOT `--workspaces` — that would bump the tray off its 0.1.0 line); update `SDK_VERSION` in sdk/server-sdk/workers-sdk per CLAUDE.md |
 | Wire the conformance suite into CI | [`.github/workflows/publish.yml`](../../.github/workflows/publish.yml) | add a `npm run conformance` step (or a separate workflow) — gate releases on it |
 | Conformance npm script | [`../../package.json`](../../package.json) — root | add `"conformance": "vitest run tests/conformance"` |
 | Phase bookkeeping | [`../CURRENT_STATE.md`](../CURRENT_STATE.md), [`../HANDOFF.md`](../HANDOFF.md) | at phase end: mark Wire-Protocol-Lock shipped, point at Phase Rust-Collector |
@@ -250,7 +250,7 @@ runtimescope service install   # ~60s on a many-project machine; that's normal
 - [ ] Durability test kills the collector mid-batch and asserts no torn-tail corruption on restart.
 - [ ] `npm run conformance` wired into the release path (publish.yml or a sibling workflow).
 - [ ] All 586 unit + 7 stress still green — **no behavior changed**.
-- [ ] Version bumped to v0.11.0 across the workspace (collector resumes releasing; this is a real version, not a tray-style private one).
+- [ ] Version bumped to v0.10.13 across the publishable packages (tray stays at 0.1.0; v0.11.0 reserved for Rust).
 - [ ] Completion report at [`../reports/phase-wire-protocol-lock-completion-report.md`](../reports/phase-wire-protocol-lock-completion-report.md) following [`../templates/phase-completion-report.md`](../templates/phase-completion-report.md).
 - [ ] CURRENT_STATE.md + HANDOFF.md point at Phase Rust-Collector as next.
 
@@ -273,4 +273,4 @@ If those don't resolve it — especially the §B locked-vs-internal boundary —
 - **Resist fixing bugs.** If a conformance test surfaces a real bug in the Node collector, that's a genuinely good outcome — but fixing it *changes the contract you're freezing*. Write it up, get owner sign-off, and decide whether the fix lands here (and the Rust port inherits corrected behavior) or whether the bug is the contract (and the Rust port must replicate it). Either is defensible; silently picking one is not.
 - **The harness seam is everything.** Spend your design time on `spawn-collector.ts` taking a binary path. Get that right and Phase Rust-Collector's acceptance gate is `RUNTIMESCOPE_COLLECTOR_BIN=./target/release/runtimescope-collector npm run conformance` with zero test edits.
 - **You're the second spec under `docs/specs/`.** The tray spec set the convention (state the consumer, cite the source, stay thin). Follow it. `wire-protocol.md` is the same shape, just wider.
-- **This phase resumes real versioning.** Tauri-Tray was deliberately private at 0.1.0; Wire-Protocol-Lock ships v0.11.0 on the published packages. The version bump is part of the deliverable.
+- **This phase ships as v0.10.13** — a patch on the Node `0.10.x` line, not a minor bump (it's no-behavior-change tooling). **v0.11.0 is reserved as the clean number for the Rust collector** ([ADR-0002 addendum](../decisions/0002-rust-port-sequence-and-distribution.md)).

@@ -12,7 +12,44 @@ use crate::tools::envelope;
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
+use tokio::process::Command;
+
+/// Run a command and capture stdout as a String (None on spawn/exec failure).
+async fn run(cmd: &str, args: &[&str]) -> Option<String> {
+    let out = Command::new(cmd).args(args).output().await.ok()?;
+    Some(String::from_utf8_lossy(&out.stdout).into_owned())
+}
+
+/// Dev-tooling process names worth surfacing in get_dev_processes.
+const DEV_HINTS: &[&str] = &[
+    "node", "vite", "next", "npm", "pnpm", "yarn", "webpack", "esbuild", "rollup",
+    "deno", "bun", "tsx", "ts-node", "nodemon", "postgres", "mysqld", "redis-server",
+    "docker", "prisma", "turbo", "remix", "astro", "nuxt",
+];
+
+/// True if `hint` appears in `haystack` as a whole word (alphanumeric
+/// boundaries), so "bun" matches "/bin/bun" but not "powerd.bundle".
+fn word_match(haystack: &str, hint: &str) -> bool {
+    let bytes = haystack.as_bytes();
+    let mut from = 0;
+    while let Some(rel) = haystack[from..].find(hint) {
+        let start = from + rel;
+        let end = start + hint.len();
+        let before_ok = start == 0 || !bytes[start - 1].is_ascii_alphanumeric();
+        let after_ok = end == bytes.len() || !bytes[end].is_ascii_alphanumeric();
+        if before_ok && after_ok {
+            return true;
+        }
+        from = start + 1;
+    }
+    false
+}
+
+/// Basename of an executable path or command token.
+fn basename(s: &str) -> &str {
+    s.rsplit('/').next().unwrap_or(s)
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DevProcessesArgs {
@@ -92,29 +129,85 @@ pub struct InfraOverviewArgs {
 
 #[tool_router(router = process_infra_router, vis = "pub")]
 impl Mcp {
-    #[tool(description = "List all running dev processes (Next.js, Vite, Prisma, Docker, databases, etc.) with PID, port, memory, and CPU usage.")]
+    #[tool(description = "List running dev processes (Next.js, Vite, Prisma, Docker, databases, etc.) with PID and command. Optionally filter by type or project substring.")]
     async fn get_dev_processes(
         &self,
-        Parameters(_args): Parameters<DevProcessesArgs>,
+        Parameters(args): Parameters<DevProcessesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // `ps -axo pid=,args=` — pid + full command line.
+        let Some(out) = run("ps", &["-axo", "pid=,args="]).await else {
+            return Ok(envelope(json!({
+                "summary": "Could not run `ps` to inspect processes.",
+                "data": null, "issues": ["ps unavailable"], "metadata": { "eventCount": 0 },
+            })));
+        };
+        let type_filter = args.r#type.as_deref().map(str::to_lowercase);
+        let proj_filter = args.project.as_deref().map(str::to_lowercase);
+        let mut procs: Vec<Value> = Vec::new();
+        for line in out.lines() {
+            let line = line.trim_start();
+            let Some((pid_str, cmdline)) = line.split_once(char::is_whitespace) else { continue };
+            let Ok(pid) = pid_str.trim().parse::<u32>() else { continue };
+            let cmdline = cmdline.trim();
+            let lc = cmdline.to_lowercase();
+            // Keep only dev-tooling processes (whole-word hint match).
+            if !DEV_HINTS.iter().any(|h| word_match(&lc, h)) {
+                continue;
+            }
+            if type_filter.as_ref().is_some_and(|t| !lc.contains(t)) {
+                continue;
+            }
+            if proj_filter.as_ref().is_some_and(|p| !lc.contains(p)) {
+                continue;
+            }
+            let command = basename(cmdline.split_whitespace().next().unwrap_or(cmdline));
+            procs.push(json!({ "pid": pid, "command": command, "args": cmdline }));
+        }
+        let count = procs.len();
         Ok(envelope(json!({
-            "summary": "get_dev_processes deferred (OS/infra engine): OS process inspection is not yet available in the Rust collector.",
-            "data": null,
+            "summary": format!("{count} dev process(es) running."),
+            "data": procs,
             "issues": [],
-            "metadata": {},
+            "metadata": { "eventCount": count },
         })))
     }
 
-    #[tool(description = "Show which dev processes are bound to which ports. Useful for debugging port conflicts.")]
+    #[tool(description = "Show which dev processes are bound to which listening TCP ports. Useful for debugging port conflicts.")]
     async fn get_port_usage(
         &self,
-        Parameters(_args): Parameters<PortUsageArgs>,
+        Parameters(args): Parameters<PortUsageArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Listening TCP sockets owned by the user, with the holding process.
+        let Some(out) = run("lsof", &["-nP", "-iTCP", "-sTCP:LISTEN"]).await else {
+            return Ok(envelope(json!({
+                "summary": "Could not run `lsof` to inspect ports.",
+                "data": null, "issues": ["lsof unavailable"], "metadata": { "eventCount": 0 },
+            })));
+        };
+        let mut ports: Vec<Value> = Vec::new();
+        for line in out.lines().skip(1) {
+            // COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME(:PORT (LISTEN))
+            let cols: Vec<&str> = line.split_whitespace().collect();
+            if cols.len() < 9 {
+                continue;
+            }
+            let command = cols[0];
+            let Ok(pid) = cols[1].parse::<u32>() else { continue };
+            let name = cols[8];
+            let Some(port) = name.rsplit(':').next().and_then(|p| p.parse::<u32>().ok()) else { continue };
+            if args.port.is_some_and(|want| want != port) {
+                continue;
+            }
+            ports.push(json!({ "port": port, "pid": pid, "command": command }));
+        }
+        ports.sort_by_key(|p| p["port"].as_u64().unwrap_or(0));
+        ports.dedup_by_key(|p| (p["port"].as_u64().unwrap_or(0), p["pid"].as_u64().unwrap_or(0)));
+        let count = ports.len();
         Ok(envelope(json!({
-            "summary": "get_port_usage deferred (OS/infra engine): OS port inspection is not yet available in the Rust collector.",
-            "data": null,
+            "summary": format!("{count} listening TCP port(s) in use by dev processes."),
+            "data": ports,
             "issues": [],
-            "metadata": {},
+            "metadata": { "eventCount": count },
         })))
     }
 

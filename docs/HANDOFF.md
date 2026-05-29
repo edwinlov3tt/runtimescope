@@ -40,7 +40,7 @@ Per the master phase plan:
 
 1. **Phase Tauri-Tray** (**SHIPPED v0.1.0** — see [completion report](./reports/phase-tauri-tray-completion-report.md)).
 2. **Phase Wire-Protocol-Lock (current next)** — thin spec + conformance test suite. The Rust port's acceptance gate. Inherits the tray as a concrete client. Targeted at v0.11.0 of the workspace surface. ~2-3d.
-3. **Phase Rust-Collector** (v0.12.0) — 4 Rust crates, dashboard embedded, curl-install, fresh data on cutover (no migration). ~8 weeks.
+3. **Phase Rust-Collector** (v0.12.0) — 4 Rust crates, dashboard embedded, curl-install, fresh data on cutover (no migration). ~8 weeks. Plan written ahead of time: [`handoffs/phase-rust-collector-handoff.md`](./handoffs/phase-rust-collector-handoff.md) (contract + module→crate map + hard spots) and [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md) (milestones + agent-team fan-out strategy).
 4. **Phase SDK-Channel-Migration** (v0.13.0) — `cdn.runtimescope.dev` + `runtimescope sdk install` + npm-with-provenance. ~2 weeks.
 
 ## Resolution order when uncertain

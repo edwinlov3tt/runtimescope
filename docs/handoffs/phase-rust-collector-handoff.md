@@ -79,14 +79,10 @@ The Node collector is **~14.5K LOC**, mcp-server **~8.6K**, cli **~2.4K** — ~2
 
 ## Known Hard Spots (budget extra time, don't discover these late)
 
-1. **Playwright is JS-only — and `scan_website` + several `recon-*` tools depend on it.** There is no drop-in Rust equivalent. Options, in rough preference order:
-   - **(a) Defer the browser tools to a Node sidecar** the Rust collector spawns on demand. Keeps the port honest; isolates the one piece that genuinely needs a JS browser engine. **Recommended** — write this as a mini-ADR.
-   - **(b) `chromiumoxide` / `fantoccini`+WebDriver** in Rust. More native, but reimplements a lot of Playwright's ergonomics and is a known time sink.
-   - **(c) Cut the browser-recon tools from v0.11.0** and restore via sidecar in a follow-up. Acceptable if the owner doesn't use them daily.
-   - **Decide this in Milestone 0 / 1, not Milestone 4.** It affects how `mcp-server` is structured.
-2. **`rmcp` (Rust MCP SDK) maturity.** Validate it handles the 63-tool registration + the stdio framing Claude Code expects *before* porting all 63. Build one tool end-to-end against it in the vertical slice.
+1. **Playwright is JS-only — RESOLVED ([ADR-0007](../decisions/0007-playwright-node-sidecar.md)): Node sidecar.** `scan_website` + browser-recon tools are kept by having the Rust `mcp-server` spawn a lazy Node sidecar (bundling Playwright + the lifted scan/recon logic); everything else stays pure Rust. Packaging into curl-install is a Milestone 6 detail.
+2. **`rmcp` (Rust MCP SDK) — VALIDATED ([research note 0001](../research/0001-rust-foundational-spikes.md)).** rmcp **1.7.0** (stable 1.x) serves a tool over stdio JSON-RPC with our exact envelope; input schemas auto-derive from Rust structs via `schemars` (replacing zod). The macro API (`#[tool_router]`/`#[tool]`/`#[tool_handler]`) compiled essentially as-written.
 3. **`pm/` project-discovery** reads the filesystem and parses Claude session transcripts (`session-parser.ts`). FS-heavy, lots of edge cases. Port with its existing tests as the spec.
-4. **`better-sqlite3` is synchronous; `rusqlite` in an async server** needs a blocking pool (`tokio::task::spawn_blocking`) or a dedicated DB thread. Decide the concurrency model in `collector-core`, once.
+4. **`better-sqlite3` is synchronous; `rusqlite` in an async server — RESOLVED ([research note 0001](../research/0001-rust-foundational-spikes.md)): dedicated DB-owner thread** fed via `mpsc`/`oneshot` (mirrors the current single-writer EventStore). Spike: 5000 concurrent-task inserts, WAL active, ~33k ins/sec.
 5. **Bench parity is a real gate, not a formality.** Rust *should* crush Node here, but the soak's steady-state tail-slope leak detector ([`bench/README.md`](../../bench/README.md)) will catch a Rust leak (e.g. an unbounded `HashMap` of sessions) just as readily. Run the bench continuously, not just at the end.
 
 ---
@@ -104,7 +100,7 @@ The Node collector is **~14.5K LOC**, mcp-server **~8.6K**, cli **~2.4K** — ~2
 | structured logs | `tracing` + `tracing-subscriber` |
 | `playwright` | **no equivalent — see Hard Spot #1** |
 
-Toolchain is already pinned: `rust-toolchain.toml` → 1.90.0 (from the tray phase). tokio/serde/reqwest patterns are proven in `packages/tray/src-tauri/`.
+Toolchain is already pinned: `rust-toolchain.toml` → **1.95.0** (with `rustfmt`, `clippy`; targets aarch64 + x86_64 darwin). tokio/serde/reqwest patterns are proven in `packages/tray/src-tauri/`; rmcp + rusqlite are validated ([research note 0001](../research/0001-rust-foundational-spikes.md)).
 
 ---
 

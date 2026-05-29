@@ -20,16 +20,17 @@ ADR-0002 budgets **~8 weeks**. In Claude-Code working-session terms that's **doz
 
 ---
 
-## Milestone 0 — Prerequisites & decisions (serial, ~2–3 days)
+## Milestone 0 — Prerequisites & decisions (serial, ~2–3 days) — ✅ COMPLETE (2026-05-29)
 
-**Gate to enter the phase at all.**
+**Gate to enter the phase at all.** All four resolved:
 
-- [ ] Phase Wire-Protocol-Lock shipped: `npm run conformance` exists and is green against Node. *(This is the acceptance gate; no Rust before it.)*
-- [ ] **ADR-0007: Playwright strategy** decided (sidecar / native / cut — see handoff Hard Spot #1). This shapes `mcp-server`'s structure, so decide it now.
-- [ ] Validate `rmcp` (Rust MCP SDK) handles stdio framing + multi-tool registration with a throwaway 1-tool spike.
-- [ ] Decide the rusqlite concurrency model (`spawn_blocking` pool vs. dedicated DB thread).
+- [x] Phase Wire-Protocol-Lock shipped (v0.10.13): `npm run conformance` green against Node — the acceptance gate exists.
+- [x] **Playwright strategy → Node sidecar** ([ADR-0007](../decisions/0007-playwright-node-sidecar.md)). `mcp-server` keeps `scan_website` + browser-recon by spawning a lazy Node sidecar; everything else stays pure Rust.
+- [x] **`rmcp` 1.7.0 validated** ([research note 0001](../research/0001-rust-foundational-spikes.md)). Throwaway spike served a tool over stdio JSON-RPC with the exact `{summary,data,issues,metadata}` envelope; input schema auto-derives from the Rust struct via `schemars` (the zod replacement). Stable 1.x API.
+- [x] **rusqlite concurrency → dedicated DB-owner thread** fed via `mpsc`/`oneshot` ([research note 0001](../research/0001-rust-foundational-spikes.md)). Spike: 5000 concurrent-task inserts, WAL active, ~33k ins/sec. (Mirrors the current single-writer EventStore.)
+- [x] **Command-channel mechanism → `mcp-server` embeds `collector-core` in-process** ([ADR-0008](../decisions/0008-rust-mcp-embeds-collector-core.md)). Closes the `wire-protocol.md` §5 open question: separate crates, same process when MCP is active; `send_command` stays in-process — no bridge.
 
-**Team?** No. These are judgment calls and spikes.
+**Team?** No. These were judgment calls + spikes. **Done — proceed to M1.**
 
 ## Milestone 1 — Spine: `collector-core` + one vertical slice (serial, ~1 wk)
 

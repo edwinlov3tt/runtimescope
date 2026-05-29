@@ -37,9 +37,9 @@ Concretely:
 - **Documented but evolvable (not locked):** internal routes (`/api/pm/*`, `/api/v1/admin/*`).
 - **Not in this suite:** throughput/latency/memory — that's the `bench/` contract (a *performance* gate, not *correctness*).
 
-### One open question this phase surfaced but did not resolve
+### One open question this phase surfaced — since resolved
 
-The server→SDK command channel (`capture_dom_snapshot` et al.) is triggered today by the MCP tool layer calling `collector.sendCommand()` **in-process** — mcp-server embeds the collector. ADR-0002 splits them into separate Rust bins. The conformance test pins the **observable** round-trip; the **mechanism** (shared process vs. internal bridge) is left to Phase Rust-Collector to design, flagged in `wire-protocol.md` §5 and the Rust handoff. Recorded here so it isn't forgotten: it must be decided before Rust Milestone 2.
+The server→SDK command channel (`capture_dom_snapshot` et al.) is triggered today by the MCP tool layer calling `collector.sendCommand()` **in-process** — mcp-server embeds the collector. ADR-0002 splits them into separate Rust *crates*. The conformance test pins the **observable** round-trip; the mechanism was left to Phase Rust-Collector. **Resolved in M0 by [ADR-0008](./0008-rust-mcp-embeds-collector-core.md):** the Rust `mcp-server` embeds `collector-core` in-process (separate crates, same process when MCP is active), so `send_command` stays in-process — no bridge.
 
 ## Consequences
 

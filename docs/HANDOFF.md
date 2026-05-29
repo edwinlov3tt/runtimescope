@@ -12,11 +12,16 @@ A runtime monitoring system for Claude Code. Long-running TypeScript collector d
 
 ## Where the active work is
 
-**Phase: Rust-Collector (next — [handoff ready](./handoffs/phase-rust-collector-handoff.md) + [milestones](./roadmap/rust-collector-milestones.md)).**
+**Phase: Rust-Collector (target v0.11.0) — Milestone 0 COMPLETE; Milestone 1 is next.** [Handoff](./handoffs/phase-rust-collector-handoff.md) + [milestones](./roadmap/rust-collector-milestones.md).
 
-Trigger: Phase Wire-Protocol-Lock is substantively complete ([completion report](./reports/phase-wire-protocol-lock-completion-report.md)). The wire contract is now **executable**: `npm run conformance` (15 tests / 5 specs) passes against the Node collector and becomes the Rust port's acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD` (ADR-0006). Specs: [`wire-protocol.md`](./specs/wire-protocol.md), [`mcp-tool-surface.md`](./specs/mcp-tool-surface.md). Ships as **v0.10.13** (bumped in-tree, not yet published — `git tag v0.10.13 && git push --tags` when ready). **v0.11.0 is reserved as the clean number for the Rust collector** ([ADR-0002 addendum](./decisions/0002-rust-port-sequence-and-distribution.md)).
+Wire-Protocol-Lock shipped as **v0.10.13** (published to npm 2026-05-29, conformance gate green in CI — the final Node release). The wire contract is **executable**: `npm run conformance` (15/5) is the Rust port's acceptance gate via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD` (ADR-0006).
 
-One open question handed forward (must be decided before Rust Milestone 2): the server→SDK command channel is triggered in-process today; ADR-0002 splits collector and mcp-server into separate Rust bins, so that mechanism needs a design. Flagged in `wire-protocol.md` §5.
+**Milestone 0 decisions (all made — see [milestones](./roadmap/rust-collector-milestones.md)):**
+- Playwright → **Node sidecar** ([ADR-0007](./decisions/0007-playwright-node-sidecar.md)).
+- Command channel → **mcp-server embeds collector-core in-process** ([ADR-0008](./decisions/0008-rust-mcp-embeds-collector-core.md)); closes the `wire-protocol.md` §5 open question — no cross-process bridge.
+- **rmcp 1.7** + **rusqlite dedicated-DB-thread** validated by spikes ([research 0001](./research/0001-rust-foundational-spikes.md)).
+
+**Next: Milestone 1** — the `collector-core` spine + one green vertical slice (handshake → ingest → /api/health → one MCP tool → conformance test green). **Serial, one author, no agent team until M1's slice is green.** Toolchain pinned at Rust 1.95.0.
 
 **Phase plan:** [`roadmap/MASTER_PHASE_PLAN.md`](./roadmap/MASTER_PHASE_PLAN.md)
 **Decisions driving sequencing:**

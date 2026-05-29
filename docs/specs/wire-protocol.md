@@ -61,7 +61,7 @@ Commands: `capture_dom_snapshot`, `capture_performance_metrics`, `clear_renders`
 
 **Invariant:** responses correlate to requests by **`requestId`** ([`server.ts:1006,1055`](../../packages/collector/src/server.ts#L1006)); an unmatched `requestId` is dropped; a command times out (default 10s) if no response.
 
-> ⚠️ **Rust-port design note (open):** today the trigger lives in the MCP tool layer, which calls `collector.sendCommand()` **in-process** (mcp-server embeds the collector). [ADR-0002](../decisions/0002-rust-port-sequence-and-distribution.md) splits these into separate Rust bins — the Rust design must provide an equivalent path (shared process, or an internal collector↔mcp bridge) for this channel. The conformance test pins the **observable** behavior; the mechanism is the Rust phase's to design. Resolve before Milestone 2 of Phase Rust-Collector.
+> ✅ **Rust-port design note (RESOLVED — [ADR-0008](../decisions/0008-rust-mcp-embeds-collector-core.md)):** the trigger calls `collector.sendCommand()` **in-process** (mcp-server embeds the collector). The Rust `mcp-server` bin links `collector-core` and runs its embedded collector **in the same process** — exactly as the Node mcp-server does today — so `send_command` stays an in-process call and no cross-process bridge is needed. "Separate crates" (ADR-0002) means separate compilation units, not separate processes for this channel.
 
 ## 6. Heartbeat
 

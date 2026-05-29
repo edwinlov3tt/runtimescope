@@ -52,7 +52,7 @@ All run against any binary via `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_
 
 ## 5. Open question handed to Phase Rust-Collector
 
-The command channel is triggered **in-process** today (mcp-server embeds the collector). ADR-0002 splits them into separate Rust bins — the Rust design must provide an equivalent path (shared process or internal bridge) for the command channel. The conformance test pins the **observable** round-trip; the **mechanism** is the Rust phase's call. Flagged in [`wire-protocol.md` §5](../specs/wire-protocol.md), [`mcp-tool-surface.md`](../specs/mcp-tool-surface.md), [ADR-0006](../decisions/0006-conformance-tests-are-the-spec.md), and the Rust handoff. **Must be decided before Rust Milestone 2.**
+The command channel is triggered **in-process** today (mcp-server embeds the collector). ADR-0002 splits them into separate Rust crates. The conformance test pins the **observable** round-trip; the mechanism was the Rust phase's call. **Resolved in Rust Milestone 0 by [ADR-0008](../decisions/0008-rust-mcp-embeds-collector-core.md):** the Rust `mcp-server` embeds `collector-core` in-process (separate crates, same process when MCP is active), so `send_command` stays in-process — no bridge needed.
 
 ## 6. Release status — owner action required
 

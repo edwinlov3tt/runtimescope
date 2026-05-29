@@ -11,3 +11,4 @@ serde_json.workspace = true
 axum.workspace = true
 tracing.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
+futures-util = "0.3"

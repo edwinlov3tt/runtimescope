@@ -10,11 +10,13 @@
 //! widen this in later milestones.
 
 pub mod auth;
+pub mod command;
 pub mod event;
 pub mod server;
 pub mod store;
 pub mod wal;
 
+pub use command::CommandHub;
 pub use server::serve;
 pub use store::StoreHandle;
 

@@ -5,7 +5,9 @@
 //! Honors RUNTIMESCOPE_PORT / RUNTIMESCOPE_HTTP_PORT (the conformance harness
 //! sets these and waits for /readyz).
 
-use collector_core::{open_store, port_from_env, serve, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION};
+use collector_core::{
+    open_store, port_from_env, serve, CommandHub, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
+};
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
@@ -20,5 +22,7 @@ async fn main() -> std::io::Result<()> {
     eprintln!("[RuntimeScope]   WebSocket: ws://127.0.0.1:{ws_port}");
     eprintln!("[RuntimeScope]   HTTP API:  http://127.0.0.1:{http_port}");
 
-    serve(store, ws_port, http_port, VERSION.to_string()).await
+    // Standalone daemon has no MCP, so the command hub is unused here (sessions
+    // still register; commands simply never get issued). Same serve() either way.
+    serve(store, CommandHub::new(), ws_port, http_port, VERSION.to_string()).await
 }

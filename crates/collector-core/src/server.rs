@@ -6,6 +6,7 @@
 //! access is async (the store is the dedicated-thread `StoreHandle`).
 
 use crate::auth::AuthManager;
+use crate::command::CommandHub;
 use crate::event::{project_of, EventBatch, HandshakePayload, WsMessage};
 use crate::store::StoreHandle;
 use axum::{
@@ -18,13 +19,16 @@ use axum::{
     routing::get,
     Json, Router,
 };
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use tokio::sync::mpsc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone)]
 struct AppState {
     store: StoreHandle,
+    hub: CommandHub,
     auth: AuthManager,
     started: Instant,
     version: String,
@@ -38,12 +42,14 @@ fn now_ms() -> i64 {
 /// from `RUNTIMESCOPE_AUTH_TOKEN` (off when unset).
 pub async fn serve(
     store: StoreHandle,
+    hub: CommandHub,
     ws_port: u16,
     http_port: u16,
     version: String,
 ) -> std::io::Result<()> {
     let state = AppState {
         store,
+        hub,
         auth: AuthManager::from_env(),
         started: Instant::now(),
         version,
@@ -189,14 +195,26 @@ async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl Int
     ws.on_upgrade(move |socket| handle_socket(socket, s))
 }
 
-async fn handle_socket(mut socket: WebSocket, s: AppState) {
+async fn handle_socket(socket: WebSocket, s: AppState) {
+    // Split so the embedded collector can PUSH command frames to this SDK
+    // (the command channel) while the read loop handles incoming frames.
+    let (mut ws_sink, mut ws_stream) = socket.split();
+    let (out_tx, mut out_rx) = mpsc::unbounded_channel::<Message>();
+    let writer = tokio::spawn(async move {
+        while let Some(msg) = out_rx.recv().await {
+            if ws_sink.send(msg).await.is_err() {
+                break;
+            }
+        }
+    });
+
     let mut session_id: Option<String> = None;
     let mut project: Option<String> = None;
 
     // Auth gate: when enabled, the first frame must be a valid authenticated
     // handshake within 5s, else close with WS code 4001 (wire-protocol §3).
     if s.auth.enabled() {
-        let authed = match tokio::time::timeout(Duration::from_secs(5), socket.recv()).await {
+        let authed = match tokio::time::timeout(Duration::from_secs(5), ws_stream.next()).await {
             Ok(Some(Ok(Message::Text(text)))) => parse_authed_handshake(&s, text.as_str()),
             _ => None,
         };
@@ -205,37 +223,49 @@ async fn handle_socket(mut socket: WebSocket, s: AppState) {
                 let proj = project_of(&h);
                 session_id = Some(h.session_id.clone());
                 project = Some(proj.clone());
-                s.store.register_session(h.session_id, h.app_name, proj).await;
+                s.store.register_session(h.session_id.clone(), h.app_name, proj).await;
+                s.hub.register(h.session_id, out_tx.clone());
             }
             None => {
-                let _ = socket
-                    .send(Message::Close(Some(CloseFrame {
-                        code: 4001,
-                        reason: "Authentication timeout".into(),
-                    })))
-                    .await;
+                let _ = out_tx.send(Message::Close(Some(CloseFrame {
+                    code: 4001,
+                    reason: "Authentication timeout".into(),
+                })));
+                drop(out_tx);
+                let _ = writer.await;
                 return;
             }
         }
     }
 
-    while let Some(Ok(msg)) = socket.recv().await {
+    while let Some(Ok(msg)) = ws_stream.next().await {
         let Message::Text(text) = msg else { continue };
-        let Ok(m) = serde_json::from_str::<WsMessage>(text.as_str()) else { continue };
-        match m.kind.as_str() {
+        // Parse as a raw value: command_response carries `requestId` as a
+        // sibling of `payload`, not inside it.
+        let Ok(v) = serde_json::from_str::<Value>(text.as_str()) else { continue };
+        match v.get("type").and_then(Value::as_str).unwrap_or("") {
             "handshake" => {
-                if let Ok(h) = serde_json::from_value::<HandshakePayload>(m.payload.clone()) {
+                if let Ok(h) = serde_json::from_value::<HandshakePayload>(
+                    v.get("payload").cloned().unwrap_or(Value::Null),
+                ) {
                     let proj = project_of(&h);
                     session_id = Some(h.session_id.clone());
                     project = Some(proj.clone());
-                    s.store.register_session(h.session_id, h.app_name, proj).await;
+                    s.store.register_session(h.session_id.clone(), h.app_name, proj).await;
+                    s.hub.register(h.session_id, out_tx.clone());
                 }
             }
             "event" => {
-                if let (Ok(batch), Some(proj)) =
-                    (serde_json::from_value::<EventBatch>(m.payload.clone()), project.clone())
-                {
+                if let (Ok(batch), Some(proj)) = (
+                    serde_json::from_value::<EventBatch>(v.get("payload").cloned().unwrap_or(Value::Null)),
+                    project.clone(),
+                ) {
                     s.store.add_batch(proj, batch.events).await;
+                }
+            }
+            "command_response" => {
+                if let Some(req_id) = v.get("requestId").and_then(Value::as_str) {
+                    s.hub.handle_response(req_id, v.get("payload").cloned().unwrap_or(Value::Null));
                 }
             }
             _ => {}
@@ -243,8 +273,11 @@ async fn handle_socket(mut socket: WebSocket, s: AppState) {
     }
 
     if let Some(sid) = session_id {
-        s.store.mark_disconnected(sid).await;
+        s.store.mark_disconnected(sid.clone()).await;
+        s.hub.unregister(&sid);
     }
+    drop(out_tx);
+    let _ = writer.await;
 }
 
 /// Parse a text frame as a handshake and return it only if its `authToken` is

@@ -1,6 +1,6 @@
 # Audit 0002 — Rust collector port (external adversarial review)
 
-**Status:** Open — remediation Phases A–E (below) not yet started.
+**Status:** Open — **Phase A (gate hardening) DONE**; Phases B–E pending. The conformance gate is now **33 tests / 12 spec files**: green 33/33 vs Node, honest **21/33 vs Rust** (the 12 reds are the B/C/E backlog — see Phase A note below).
 **Date:** 2026-05-29
 **Reviewer:** external coding agent (Codex), adversarial brief — see [`../audits/`](.) and the review prompt handed off by the owner.
 **Scope:** the Rust collector port at `main` (commits `0e11346`…`338cf8c`): `crates/*`, `tests/conformance/`, `packages/recon-sidecar/`.
@@ -31,7 +31,11 @@ Full evidence (probe counts, `file:line`) in the review transcript. The differen
 
 ## Remediation plan — gate first
 
-- **Phase A — harden the conformance gate.** Add specs (vs. Node) for every `/api/events/*` filter, `timeline` merge, `POST /api/events` ingest, unknown-route 404, field-level response fidelity, and MCP output shapes for the top tools + `AUTH_FAILED` vs `AUTH_TIMEOUT`. These go **red against Rust** — that's the point; the gate becomes honest. Closes the root cause.
+- **Phase A — harden the conformance gate. ✅ DONE (2026-05-29).** Added 5 specs / 16 tests via a workflow fan-out: `http-filters`, `http-ingest-and-routes` (POST ingest + timeline + 404), `http-field-fidelity`, `mcp-tool-shapes`, `auth-frames`. Green 33/33 vs Node; **21/33 vs Rust** — the 12 reds catch exactly the divergences the old gate missed. The gate is now honest; remaining work is measurable against it.
+
+  **Corrections the agents surfaced while encoding *real* Node behavior (ADR-0006):**
+  - **The HTTP layer returns events VERBATIM in *both* Node and Rust** — no reshaping at `/api/events/*`. Finding #1's "raw vs reshaped" was misattributed: reshaping happens only in the **MCP tool** layer (`network.ts` → finding #2). `http-field-fidelity` is green vs Rust (already conformant). So **Phase B's HTTP work is narrower than #1 implied** — it's filters + `POST /api/events` ingest + `timeline` merge + unknown-route 404, **not** response reshaping.
+  - Node's `/api/events/network` route **does not forward `status`** to the store (it's a no-op filter); `timeline` is **insertion-ordered**, not timestamp-sorted. Both locked as real behavior.
 - **Phase B — HTTP parity** (#1): explicit filtered routes, timeline merge, POST ingest, reshaping, 404.
 - **Phase C — MCP tool semantics + honest catalog** (#2, #8): port real arg/shape for high-traffic store-read tools; gate on "answers correctly," mark deferred tools explicitly.
 - **Phase D — durability** (#4, #3, #5): torn-tail truncate; WAL rotation/truncation + bounded retention; propagate write errors.

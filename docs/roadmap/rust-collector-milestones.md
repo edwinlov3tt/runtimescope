@@ -32,7 +32,7 @@ ADR-0002 budgets **~8 weeks**. In Claude-Code working-session terms that's **doz
 
 **Team?** No. These were judgment calls + spikes. **Done — proceed to M1.**
 
-## Milestone 1 — Spine: `collector-core` + one vertical slice (serial, ~1 wk) — 🟡 IN PROGRESS
+## Milestone 1 — Spine: `collector-core` + one vertical slice (serial, ~1 wk) — 🟢 DONE
 
 The most important week of the phase. **One author. No fan-out.**
 
@@ -44,7 +44,9 @@ The most important week of the phase. **One author. No fan-out.**
 - [x] **Persistence + durability** (rusqlite WAL-mode + a JSONL WAL with fsync-before-commit, behind the dedicated-DB-owner thread fed via mpsc/oneshot — research 0001 / ADR-0008). The `durability` conformance test passes against `collector-server`. 2 WAL unit tests (roundtrip + torn-tail). The store API went async; HTTP handlers + the MCP tool `await` it.
 - [x] **Auth** (`RUNTIMESCOPE_AUTH_TOKEN`): WS handshake gate (no/invalid token → close **4001** within 5s; valid token accepted), HTTP `Authorization: Bearer` gate (gated routes → **401**), the public-route set (health/readyz/metrics) reachable without auth, `/api/health.authEnabled`, and a minimal `/metrics`. Makes the `handshake` + `http-contracts` specs fully green.
 - [x] **Conformance gate broadened to 17 tests / 7 specs** (all green vs the Node source-of-truth) so "green" is a real done-signal, not a network-only shape-check. Added `event-families` (every event type → `/api/events/*`, gates M2) + `mcp-tool-families` (get_console_messages/get_session_info/detect_issues read the store, gates M3). **Rust binaries: 13/17** — `handshake` 3/3, `event-roundtrip` 2/2, `http-contracts` 6/6, `durability` 1/1, `mcp-tools` data-roundtrip. The 4 gaps are the roadmap: `event-families`→M2; `mcp-tool-families` + `mcp-tools` catalog/command-channel→M3.
-- [ ] **Remaining M1:** the full 19 serde event types (slice persists events as raw `Value` JSON in the `data` column — fine for storage, but typed access is needed for issue-detection etc.); WAL sealed-file rotation + bounded truncation (`wal.ts` `rotate`/`deleteSealed` — not exercised by the one-restart durability test); a short written patterns doc. Then M1 is done and M3's fan-out can begin.
+- [x] **M1-tidy DONE — patterns doc written ([`../specs/rust-collector-patterns.md`](../specs/rust-collector-patterns.md)); the other two items resolved as decisions, not refactors:**
+  - **Event model = raw `Value`, not typed structs (decided, documented).** The conformance-driven build implemented every tool on `Value` field access and passes 68/68. Node's `types.ts` is compile-time-only (casts `as T` with no runtime validation), so forcing serde-typed deserialization would be *stricter* than Node — events with unexpected shapes would drop where Node proceeds. Net regression risk, zero behavioral gain. The validation boundary is `event.rs::VALID_EVENT_TYPES`, an **exact match** to Node's 19-type `EventType` union (verified).
+  - **WAL bounding DONE; rotation unnecessary.** `truncate()` after every committed batch (+ after recovery) keeps the JSONL WAL O(in-flight), so Node's sealed-file rotation isn't needed (`recover()` still reads `sealed-*` defensively). Crash-safe (torn-tail heal + dedup-on-replay); 4 WAL unit tests. (Audit Phase D.)
 
 **Exit criterion:** a second engineer (or agent) could look at the slice + patterns doc and write a new tool/route/engine without asking how. The slice proves the shape; persistence + the type set complete it.
 

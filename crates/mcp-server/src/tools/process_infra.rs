@@ -1,11 +1,13 @@
-//! Process-monitor + infra-connector tools. All deferred stubs for now: these
-//! need OS process inspection and external infra-platform APIs the Rust
-//! collector does not have yet. Each tool registers with the correct args and
-//! returns a valid envelope whose data is null and summary marks it deferred.
+//! Process-monitor + infra-connector tools (M4). Real OS introspection
+//! (`get_dev_processes`/`get_port_usage` via ps/lsof) and mutation
+//! (`kill_process`/`purge_caches`/`restart_dev_server` via kill/du/fs/nohup, with
+//! a PID safety guard + path-traversal guard hardened beyond Node). The infra log
+//! tools mirror Node's dormant connectors (no client is ever loaded → empty);
+//! `get_infra_overview` detects platforms from network-request hostnames.
 
-// Stub args feed the MCP input schema (schemars JsonSchema derive) but aren't
-// read yet — not dead code, the lint can't see through the derive. Revisit when
-// these grow real OS/infra implementations (M4).
+// Some tool-arg fields feed the MCP input schema (schemars JsonSchema derive) but
+// aren't read by the dormant-parity infra log tools — not dead code, the lint
+// can't see through the derive.
 #![allow(dead_code)]
 
 use crate::tools::{envelope, now_ms};
@@ -125,6 +127,22 @@ fn infer_start_command(ptype: &str, raw: &str) -> Option<String> {
 async fn process_cwd(pid: u32) -> Option<String> {
     let out = run("lsof", &["-a", "-p", &pid.to_string(), "-d", "cwd", "-Fn"]).await?;
     out.lines().find_map(|l| l.strip_prefix('n').map(|p| p.to_string()))
+}
+
+/// Validate a directory before deleting fixed cache subdirs under it: must be an
+/// ABSOLUTE path with no `..` components. Hardening BEYOND Node (which validates
+/// nothing) — these tools delete e.g. `.cache`/`.next/cache` under a
+/// caller-supplied base, so an unconstrained/traversing path is a footgun under
+/// prompt-injection. Returns the trailing-slash-trimmed base, or None to reject.
+fn safe_purge_base(dir: &str) -> Option<String> {
+    let p = std::path::Path::new(dir);
+    if !p.is_absolute() {
+        return None;
+    }
+    if p.components().any(|c| matches!(c, std::path::Component::ParentDir)) {
+        return None;
+    }
+    Some(dir.trim_end_matches('/').to_string())
 }
 
 /// Run a command and capture stdout as a String (None on spawn/exec failure).
@@ -366,8 +384,17 @@ impl Mcp {
         Parameters(args): Parameters<PurgeCachesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let dry = args.dry_run.unwrap_or(false);
-        let base = args.directory.trim_end_matches('/').to_string();
         let now = now_ms();
+        // Path-traversal guard (beyond Node): only delete under an absolute,
+        // `..`-free base. Rejection is a no-op, not a deletion.
+        let Some(base) = safe_purge_base(&args.directory) else {
+            return Ok(envelope(json!({
+                "summary": "Refusing to purge caches: `directory` must be an absolute path with no `..` components.",
+                "data": { "directory": args.directory, "dryRun": dry, "totalFreedMB": 0.0, "caches": [] },
+                "issues": ["Unsafe cache directory rejected"],
+                "metadata": { "timeRange": { "from": now, "to": now }, "eventCount": 0, "sessionId": null },
+            })));
+        };
         let mut caches: Vec<Value> = Vec::new();
         let mut total = 0.0f64;
         for target in CACHE_TARGETS {
@@ -476,8 +503,8 @@ impl Mcp {
         let mut caches_freed = 0.0f64;
         let mut caches_purged = 0usize;
         if !args.skip_cache_purge.unwrap_or(false) {
-            if let Some(cwd) = &cwd {
-                let base = cwd.trim_end_matches('/');
+            if let Some(base) = cwd.as_deref().and_then(safe_purge_base) {
+                let base = base.as_str();
                 for target in CACHE_TARGETS {
                     let full = format!("{base}/{target}");
                     if !std::path::Path::new(&full).exists() {
@@ -498,20 +525,30 @@ impl Mcp {
         let mut restart_error: Option<String> = None;
         match (&start_command, &cwd) {
             (Some(cmd), Some(cwd)) => {
-                match std::process::Command::new("sh")
-                    .arg("-c")
-                    .arg(format!("nohup {cmd} >/dev/null 2>&1 &"))
-                    .current_dir(cwd)
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(Stdio::null())
-                    .spawn()
-                {
-                    Ok(child) => {
-                        new_pid = Some(child.id());
-                        restarted = true;
+                // NO shell: split into argv and exec the binary directly under
+                // `nohup` (which detaches it from SIGHUP). This removes the shell
+                // metacharacter-injection vector (`;`, `|`, `$()`) that Node's
+                // `spawn(.., {shell:true})` carries. Trade-off: shell syntax in
+                // `command` (pipes, env-var prefixes, quoting) is not interpreted.
+                let argv: Vec<&str> = cmd.split_whitespace().collect();
+                if argv.is_empty() {
+                    restart_error = Some("Start command was empty.".to_string());
+                } else {
+                    match std::process::Command::new("nohup")
+                        .arg(argv[0])
+                        .args(&argv[1..])
+                        .current_dir(cwd)
+                        .stdin(Stdio::null())
+                        .stdout(Stdio::null())
+                        .stderr(Stdio::null())
+                        .spawn()
+                    {
+                        Ok(child) => {
+                            new_pid = Some(child.id());
+                            restarted = true;
+                        }
+                        Err(e) => restart_error = Some(e.to_string()),
                     }
-                    Err(e) => restart_error = Some(e.to_string()),
                 }
             }
             (None, _) => {
@@ -652,5 +689,41 @@ impl Mcp {
             "issues": [],
             "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 1, "sessionId": null },
         })))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Locks the path-traversal guard (security review, beyond Node — Node validates
+    // nothing). Pure logic, so it's gated here rather than via Node conformance.
+    #[test]
+    fn safe_purge_base_requires_absolute_no_dotdot() {
+        assert_eq!(safe_purge_base("/Users/me/project/"), Some("/Users/me/project".to_string()));
+        assert_eq!(safe_purge_base("/tmp/x"), Some("/tmp/x".to_string()));
+        // Relative paths are rejected.
+        assert_eq!(safe_purge_base("project"), None);
+        assert_eq!(safe_purge_base("./project"), None);
+        // `..` traversal is rejected even when absolute.
+        assert_eq!(safe_purge_base("/Users/me/../../etc"), None);
+        assert_eq!(safe_purge_base("/a/b/../c"), None);
+    }
+
+    #[test]
+    fn host_of_url_extracts_hostname() {
+        assert_eq!(host_of_url("https://my.vercel.app/api/x?y=1"), "my.vercel.app");
+        assert_eq!(host_of_url("http://localhost:3000/"), "localhost");
+        assert_eq!(host_of_url("https://user@db.supabase.co/rest"), "db.supabase.co");
+        assert_eq!(host_of_url("https://app.workers.dev"), "app.workers.dev");
+    }
+
+    #[test]
+    fn infer_start_command_maps_types() {
+        assert_eq!(infer_start_command("next", ""), Some("npx next dev".to_string()));
+        assert_eq!(infer_start_command("vite", ""), Some("npx vite".to_string()));
+        assert_eq!(infer_start_command("node", "node server.js"), Some("npm run dev".to_string()));
+        // Unknown/non-runnable types infer nothing.
+        assert_eq!(infer_start_command("docker", "docker compose up"), None);
     }
 }

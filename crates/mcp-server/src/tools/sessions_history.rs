@@ -153,16 +153,24 @@ impl Mcp {
         };
 
         let history = self.store.session_history(&project, limit).await;
+        // createdAt is the SESSION's time (Node: disconnectedAt ?? connectedAt),
+        // not the snapshot creation time — only the metrics come from the snapshot.
+        let sessions = self.store.sessions().await;
+        let created_at_of = |sid: &str| -> i64 {
+            sessions.iter().find(|s| s.session_id == sid).map(|s| s.connected_at).unwrap_or(0)
+        };
         let m = |snap: &collector_core::store::SnapshotRow, key: &str| -> i64 {
             snap.metrics.get(key).and_then(Value::as_i64).unwrap_or(0)
         };
+        let created: Vec<i64> = history.iter().map(|s| created_at_of(&s.session_id)).collect();
         let data: Vec<Value> = history
             .iter()
-            .map(|s| {
+            .enumerate()
+            .map(|(i, s)| {
                 json!({
                     "sessionId": s.session_id,
                     "project": s.project,
-                    "createdAt": crate::tools::iso_ms(s.created_at),
+                    "createdAt": crate::tools::iso_ms(created[i]),
                     "totalEvents": m(s, "totalEvents"),
                     "errorCount": m(s, "errorCount"),
                     "endpointCount": m(s, "endpointCount"),
@@ -172,10 +180,10 @@ impl Mcp {
             })
             .collect();
         let count = data.len();
-        let time_range = if history.is_empty() {
+        let time_range = if created.is_empty() {
             json!({ "from": 0, "to": 0 })
         } else {
-            json!({ "from": history[history.len() - 1].created_at, "to": history[0].created_at })
+            json!({ "from": created[created.len() - 1], "to": created[0] })
         };
         Ok(envelope(json!({
             "summary": format!("{count} session(s) in history for project \"{project}\"."),
@@ -193,46 +201,47 @@ impl Mcp {
         let capped_limit = args.limit.unwrap_or(200).min(1000);
         let offset = args.offset.unwrap_or(0);
 
-        // Default to the common event types if none requested.
-        let default_types = [
-            "network",
-            "console",
-            "session",
-            "state",
-            "render",
-            "performance",
-            "database",
-        ];
-        let requested: Vec<String> = match &args.event_types {
-            Some(types) if !types.is_empty() => types.clone(),
-            _ => default_types.iter().map(|s| s.to_string()).collect(),
-        };
-
-        // Resolve the event-scoping key. Events are stored under
-        // projectId-when-present-else-appName; history is addressed by appName
-        // (Node's per-app SQLite store), so map appName → its session's scope key.
-        let project_filter: Option<String> = if let Some(pid) = &args.project_id {
-            Some(pid.clone())
-        } else if let Some(app) = &args.project {
+        // History is addressed by appName (Node's per-app SQLite store), NOT by the
+        // projectId scope — two apps can share one projectId, so projectId-scoping
+        // would leak/merge their histories. Resolve a project_id arg to an appName
+        // (getAppForProjectId) via the session registry.
+        let resolved_app: Option<String> = if let Some(app) = &args.project {
+            Some(app.clone())
+        } else if let Some(pid) = &args.project_id {
             self.store
                 .sessions()
                 .await
                 .iter()
-                .find(|s| &s.app_name == app)
-                .map(|s| s.project_key().to_string())
-                .or_else(|| Some(app.clone()))
+                .find(|s| s.project_id.as_deref() == Some(pid.as_str()))
+                .map(|s| s.app_name.clone())
         } else {
             None
         };
-        let project_filter = project_filter.as_deref();
+        let Some(app) = resolved_app else {
+            // No project / unresolvable project_id → data: null (Node parity).
+            return Ok(envelope(json!({
+                "summary": match &args.project_id {
+                    Some(pid) => format!("No project specified or project_id \"{pid}\" not found."),
+                    None => "No project specified.".to_string(),
+                },
+                "data": null,
+                "issues": ["Provide either project (appName) or project_id (proj_xxx)."],
+                "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": 0, "sessionId": null },
+            })));
+        };
 
-        let mut collected: Vec<Value> = Vec::new();
-        for ty in &requested {
-            let mut events = self.store.events_by_type(ty, project_filter).await;
-            if let Some(sid) = &args.session_id {
-                events.retain(|e| e.get("sessionId").and_then(Value::as_str) == Some(sid.as_str()));
-            }
-            collected.extend(events);
+        // Only the events of this app's sessions. When event_types is omitted,
+        // return ALL types (Node returns every type, not a fixed whitelist).
+        let requested: Option<Vec<String>> = args.event_types.clone().filter(|t| !t.is_empty());
+        let mut collected: Vec<Value> = self.store.events_for_app(&app).await;
+        if let Some(types) = &requested {
+            collected.retain(|e| {
+                let ty = e.get("eventType").or_else(|| e.get("type")).and_then(Value::as_str).unwrap_or("");
+                types.iter().any(|t| t == ty)
+            });
+        }
+        if let Some(sid) = &args.session_id {
+            collected.retain(|e| e.get("sessionId").and_then(Value::as_str) == Some(sid.as_str()));
         }
 
         let total = collected.len();
@@ -299,7 +308,6 @@ impl Mcp {
         struct Agg {
             session_count: usize,
             active_sessions: usize,
-            scope: String,
             project_id: Option<String>,
         }
         let mut by_app: BTreeMap<String, Agg> = BTreeMap::new();
@@ -312,7 +320,6 @@ impl Mcp {
             let entry = by_app.entry(s.app_name.clone()).or_insert(Agg {
                 session_count: 0,
                 active_sessions: 0,
-                scope: s.project_key().to_string(),
                 project_id: s.project_id.clone(),
             });
             entry.session_count += 1;
@@ -323,7 +330,9 @@ impl Mcp {
 
         let mut data: Vec<Value> = Vec::with_capacity(by_app.len());
         for (name, agg) in &by_app {
-            let event_count = self.store.event_count(Some(&agg.scope)).await;
+            // App-scoped count (per-app store), so apps sharing a projectId don't
+            // report each other's events.
+            let event_count = self.store.event_count_for_app(name).await;
             data.push(json!({
                 "name": name,
                 "projectId": agg.project_id,

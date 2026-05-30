@@ -101,6 +101,8 @@ enum Cmd {
     EventsByType { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
     Timeline { project: Option<String>, types: Option<Vec<String>>, reply: oneshot::Sender<Vec<Value>> },
     EventCount { project: Option<String>, reply: oneshot::Sender<usize> },
+    EventsForApp { app: String, reply: oneshot::Sender<Vec<Value>> },
+    EventCountForApp { app: String, reply: oneshot::Sender<usize> },
     SaveSnapshot {
         session_id: String,
         project: String,
@@ -254,6 +256,20 @@ impl StoreHandle {
                     Cmd::EventCount { project, reply } => {
                         let _ = reply.send(count_events(&conn, project.as_deref()));
                     }
+                    Cmd::EventsForApp { app, reply } => {
+                        // App-scoped (not projectId-scoped): events belonging to a
+                        // session of this appName. Disambiguates the monorepo case
+                        // where several apps share one projectId (Node's per-app
+                        // SQLite store equivalent).
+                        let sids: Vec<String> =
+                            sessions.iter().filter(|s| s.app_name == app).map(|s| s.session_id.clone()).collect();
+                        let _ = reply.send(query_events_for_sessions(&conn, &sids));
+                    }
+                    Cmd::EventCountForApp { app, reply } => {
+                        let sids: Vec<String> =
+                            sessions.iter().filter(|s| s.app_name == app).map(|s| s.session_id.clone()).collect();
+                        let _ = reply.send(count_events_for_sessions(&conn, &sids));
+                    }
                     Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply } => {
                         let id = conn
                             .execute(
@@ -330,6 +346,25 @@ impl StoreHandle {
         let (reply, rx) = oneshot::channel();
         let cmd = Cmd::EventCount { project: project.map(String::from), reply };
         if self.tx.send(cmd).await.is_err() {
+            return 0;
+        }
+        rx.await.unwrap_or(0)
+    }
+
+    /// All events belonging to sessions of `app` (appName), newest-first. This is
+    /// the appName-addressed read (history tools) — distinct from projectId scope.
+    pub async fn events_for_app(&self, app: &str) -> Vec<Value> {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Cmd::EventsForApp { app: app.to_string(), reply }).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Count of events belonging to sessions of `app` (appName).
+    pub async fn event_count_for_app(&self, app: &str) -> usize {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Cmd::EventCountForApp { app: app.to_string(), reply }).await.is_err() {
             return 0;
         }
         rx.await.unwrap_or(0)
@@ -454,6 +489,41 @@ fn count_events(conn: &Connection, project: Option<&str>) -> usize {
         |r| r.get::<_, i64>(0),
     )
     .unwrap_or(0) as usize
+}
+
+/// Events for a set of session ids, newest-first (id DESC). Empty set → no rows.
+fn query_events_for_sessions(conn: &Connection, session_ids: &[String]) -> Vec<Value> {
+    if session_ids.is_empty() {
+        return Vec::new();
+    }
+    let placeholders = vec!["?"; session_ids.len()].join(",");
+    let sql = format!("SELECT data FROM events WHERE session_id IN ({placeholders}) ORDER BY id DESC");
+    let mut stmt = match conn.prepare(&sql) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let params: Vec<&dyn rusqlite::ToSql> = session_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let rows = stmt.query_map(params.as_slice(), |r| r.get::<_, String>(0));
+    let mut out = Vec::new();
+    if let Ok(rows) = rows {
+        for row in rows.flatten() {
+            if let Ok(v) = serde_json::from_str::<Value>(&row) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
+/// COUNT(*) of events for a set of session ids.
+fn count_events_for_sessions(conn: &Connection, session_ids: &[String]) -> usize {
+    if session_ids.is_empty() {
+        return 0;
+    }
+    let placeholders = vec!["?"; session_ids.len()].join(",");
+    let sql = format!("SELECT COUNT(*) FROM events WHERE session_id IN ({placeholders})");
+    let params: Vec<&dyn rusqlite::ToSql> = session_ids.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    conn.query_row(&sql, params.as_slice(), |r| r.get::<_, i64>(0)).unwrap_or(0) as usize
 }
 
 /// Latest snapshot per session for a project, newest-first, capped at `limit`.

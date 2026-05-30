@@ -263,24 +263,26 @@ fn parse_query_string(url: &str) -> Vec<Value> {
         .collect()
 }
 
-/// Minimal percent-decoding (+ → space) for query-string keys/values.
+/// Percent-decoding (+ → space) for query-string keys/values. Decodes into a
+/// byte buffer then interprets as UTF-8 (lossy), matching `URLSearchParams` —
+/// byte-casting each `%XX` to a `char` would corrupt multi-byte UTF-8 (`%E2%9C%93`).
 fn url_decode(s: &str) -> String {
-    let bytes = s.replace('+', " ");
-    let bytes = bytes.as_bytes();
-    let mut out = String::with_capacity(bytes.len());
+    let src = s.replace('+', " ");
+    let b = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(b.len());
     let mut i = 0;
-    while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(b) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(b as char);
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(byte) = u8::from_str_radix(&src[i + 1..i + 3], 16) {
+                out.push(byte);
                 i += 3;
                 continue;
             }
         }
-        out.push(bytes[i] as char);
+        out.push(b[i]);
         i += 1;
     }
-    out
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 fn issue_to_json(i: &Issue) -> Value {
@@ -375,64 +377,66 @@ impl Mcp {
         let session_id = session.session_id.clone();
         let app_name = session.app_name.clone();
 
-        // All events for this session, by type (scoped to the project key).
-        let by = |events: Vec<Value>| -> Vec<Value> {
-            events
-                .into_iter()
-                .filter(|e| e.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str()))
-                .collect()
+        // Issue detection runs over the PROJECT's events (Node detectIssues uses
+        // store.getAllEvents(.., project_id), not the single session).
+        let network_proj = self.store.events_by_type("network", pid).await;
+        let console_proj = self.store.events_by_type("console", pid).await;
+        let issues = detect_issues(&network_proj, &console_proj);
+
+        // Metrics: port of SessionManager.computeMetrics — over ALL events for the
+        // session (every type, so totalEvents includes navigation/ui/custom and the
+        // synthetic session connect event), not a fixed type whitelist.
+        let etype = |e: &Value| -> String {
+            e.get("eventType").and_then(Value::as_str).unwrap_or("").to_string()
         };
-        let network = by(self.store.events_by_type("network", pid).await);
-        let console = by(self.store.events_by_type("console", pid).await);
-        let render = by(self.store.events_by_type("render", pid).await);
-        let state = by(self.store.events_by_type("state", pid).await);
-        let performance = by(self.store.events_by_type("performance", pid).await);
-        let database = by(self.store.events_by_type("database", pid).await);
-        let session_events = by(self.store.events_by_type("session", pid).await);
+        let all_session: Vec<Value> = self
+            .store
+            .timeline(pid, None)
+            .await
+            .into_iter()
+            .filter(|e| e.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str()))
+            .collect();
+        let of = |t: &str| -> Vec<&Value> { all_session.iter().filter(|e| etype(e) == t).collect() };
+        let network = of("network");
+        let console = of("console");
+        let render = of("render");
+        let database = of("database");
+        let performance = of("performance");
 
-        // Issue detection runs over the project's events (matches detect_issues).
-        let issues = detect_issues(&network, &console);
-
-        // Metrics (Node SessionMetrics): totalEvents counts the synthetic session
-        // connect event too; errorCount = console errors + network 4xx/5xx;
-        // queryCount = distinct normalized DB patterns; componentCount = distinct
-        // render components; webVitals from web-vital performance entries.
-        let total_events = network.len()
-            + console.len()
-            + render.len()
-            + state.len()
-            + performance.len()
-            + database.len()
-            + session_events.len();
+        let total_events = all_session.len();
         let error_count = console.iter().filter(|e| str_field(e, "level") == "error").count()
             + network.iter().filter(|e| num_field(e, "status") >= 400.0).count();
+        // queryCount = distinct normalizedQuery.
         let queries: BTreeSet<String> = database
             .iter()
-            .map(|e| {
-                let q = e.get("normalizedQuery").or_else(|| e.get("query")).and_then(Value::as_str).unwrap_or("");
-                q.to_string()
-            })
+            .map(|e| str_field(e, "normalizedQuery").to_string())
             .collect();
-        let components: BTreeSet<String> = render
-            .iter()
-            .filter_map(|e| {
-                e.get("componentName")
-                    .or_else(|| e.get("component"))
-                    .and_then(Value::as_str)
-                    .map(String::from)
-            })
-            .collect();
+        // componentCount = distinct componentName across each render event's profiles[].
+        let mut components: BTreeSet<String> = BTreeSet::new();
+        for re in &render {
+            if let Some(profiles) = re.get("profiles").and_then(Value::as_array) {
+                for p in profiles {
+                    if let Some(name) = p.get("componentName").and_then(Value::as_str) {
+                        components.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        // endpointCount = distinct "<method> <url>".
         let endpoints: BTreeSet<String> = network
             .iter()
             .map(|e| format!("{} {}", str_field(e, "method"), str_field(e, "url")))
             .collect();
+        // webVitals: keyed by metricName, only entries carrying a rating (browser
+        // Web Vitals, not server metrics).
         let mut web_vitals = serde_json::Map::new();
-        for e in &performance {
-            if str_field(e, "metricType") == "web-vital" || e.get("rating").is_some() {
-                if let Some(name) = e.get("name").and_then(Value::as_str) {
+        for pe in &performance {
+            let rating = pe.get("rating");
+            if rating.is_some_and(|r| !r.is_null()) {
+                if let Some(name) = pe.get("metricName").and_then(Value::as_str) {
                     web_vitals.insert(
                         name.to_string(),
-                        json!({ "value": e.get("value").cloned().unwrap_or(Value::Null), "rating": e.get("rating").cloned().unwrap_or(Value::Null) }),
+                        json!({ "value": pe.get("value").cloned().unwrap_or(Value::Null), "rating": rating.cloned().unwrap_or(Value::Null) }),
                     );
                 }
             }

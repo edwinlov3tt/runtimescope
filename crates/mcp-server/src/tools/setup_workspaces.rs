@@ -399,7 +399,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             ),
             "data": null,
             "issues": ["get_project_config is deferred — config file I/O is not yet ported to the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -486,7 +486,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             ),
             "data": null,
             "issues": ["create_workspace is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -503,7 +503,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             "summary": "Deferred: listing workspaces requires the workspace/PM subsystem, which is not yet ported to the Rust collector.",
             "data": null,
             "issues": ["list_workspaces is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -524,7 +524,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             ),
             "data": null,
             "issues": ["create_workspace_api_key is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -544,7 +544,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             ),
             "data": null,
             "issues": ["move_project_to_workspace is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -565,7 +565,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             ),
             "data": null,
             "issues": ["setup_project is deferred — config scaffolding and hook registration are not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -583,7 +583,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             "summary": "Deferred: collector lifecycle control (launchd/systemd/spawn) is not yet ported to the Rust collector. When running under the MCP server, a collector is already embedded.",
             "data": null,
             "issues": ["start_collector is deferred — service install/spawn lifecycle is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 
@@ -601,7 +601,7 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             "summary": "Deferred: collector lifecycle control (launchd/systemd/SIGTERM) is not yet ported to the Rust collector.",
             "data": null,
             "issues": ["stop_collector is deferred — service stop/uninstall lifecycle is not yet available in the Rust collector."],
-            "metadata": { "eventCount": 0, "projectId": null },
+            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
     }
 }

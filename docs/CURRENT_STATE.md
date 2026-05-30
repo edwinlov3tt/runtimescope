@@ -36,7 +36,7 @@ This file is updated when releases land or gates change. It is *not* a running l
 | Build (existing packages + tray) | `npm run build` | ✅ all 13 existing packages + new `packages/tray` build clean. Pre-existing playground build-script issue persists at the inherited HEAD — see Tauri-Tray completion report §4.2 |
 | Unit tests | `npm test` | ✅ **586 / 0** |
 | Stress harness | `npm run stress` | ✅ **7 / 7** scenarios |
-| Wire-protocol + tool-shape conformance | `npm run conformance` | ✅ **68 / 68 vs Node AND Rust** (gate asserts filters/shapes/codes/derived-fields across HTTP + ~30 MCP tools incl. DB introspection + suggest_indexes, not just counts). Audit 0002 fully closed. See [`audits/0002-rust-port-audit.md`](./audits/0002-rust-port-audit.md). |
+| Wire-protocol + tool-shape conformance | `npm run conformance` | **74 vs Node (all green); 68 / 74 vs Rust** — the 6 reds are the M5 pm/ workspace characterization gate (`pm-workspaces.conformance.test.ts`, green-vs-Node / red-vs-Rust by design until pm/ is ported). Audit 0002 (the first 68) fully closed. See [`audits/0002-rust-port-audit.md`](./audits/0002-rust-port-audit.md). |
 | Benchmark | `npm run bench` | ✅ Node baseline at `bench/baselines/node.json` (~59k evt/s, p99 ~7ms, no leak) |
 | Tray Rust unit | `cd packages/tray/src-tauri && cargo test --lib` | ✅ **2 / 0** |
 | Tray release build | `cd packages/tray && cargo tauri build` | ✅ produces `RuntimeScope_0.1.0_aarch64.dmg` (2.6 MB), ad-hoc signed |

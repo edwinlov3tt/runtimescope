@@ -1,17 +1,100 @@
-//! Database tools: query log + performance reads from captured `database`
-//! events, plus live-DB introspection tools (schema/table/connections/indexes)
-//! that are deferred until the Rust collector grows DB introspection.
+//! Database tools: query log + performance + index suggestions from captured
+//! `database` events. The connection-based introspection tools (schema/table/
+//! connections) mirror Node's behavior, which is itself dormant — Node never
+//! registers a connection (`ConnectionManager.addConnection` is never called),
+//! so every reachable call returns "no connections configured". Live DB
+//! introspection (a real driver engine) is unbuilt in BOTH Node and Rust; it's a
+//! shared latent gap, not a Rust regression. See docs/audits/0002.
 
-// Deferred-stub tools accept args (for the MCP input schema, via schemars'
-// JsonSchema derive) but don't read them yet — not dead code, the lint just
-// can't see through the derive. Revisit when these are implemented (M4).
+// The connection-introspection tools accept args (for the MCP input schema, via
+// schemars' JsonSchema derive) but don't read most of them — the only reachable
+// path is "no connections configured", matching Node. Not dead code; the lint
+// can't see through the derive.
 #![allow(dead_code)]
 
-use crate::tools::envelope;
+use crate::tools::{envelope, now_ms};
 use crate::Mcp;
-use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
+use rmcp::{handler::server::wrapper::Parameters, model::Content, model::CallToolResult, tool, tool_router, ErrorData};
+use regex::Regex;
 use serde::Deserialize;
 use serde_json::{json, Value};
+use std::sync::OnceLock;
+
+/// First column after a WHERE clause, with its comparison operator — ported
+/// verbatim from `query-monitor.ts` so column extraction matches Node exactly.
+fn where_col_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)WHERE\s+.*?["'`]?(\w+)["'`]?\s*(=|>|<|>=|<=|!=|LIKE|IN|IS)\s"#).unwrap())
+}
+
+/// Column after an ORDER BY clause.
+fn order_col_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r#"(?i)ORDER\s+BY\s+["'`]?(\w+)["'`]?"#).unwrap())
+}
+
+/// A suggested index, mirroring Node's `IndexSuggestion`. `columns` is stored
+/// SORTED — Node's `columns.sort()` mutates the array in place before storing it.
+struct IndexSuggestion {
+    table: String,
+    columns: Vec<String>,
+    reason: String,
+    impact: &'static str,
+    query_pattern: String,
+}
+
+/// Port of `suggestIndexes` (query-monitor.ts): for each query >100ms, parse the
+/// WHERE/ORDER-BY columns per table, dedup by (table, sorted-columns), keeping the
+/// first occurrence. `events` must be newest-first (matches Node's buffer order).
+fn suggest_indexes(events: &[&Value]) -> Vec<IndexSuggestion> {
+    let mut out: Vec<IndexSuggestion> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for e in events {
+        let dur = num(e, "duration");
+        if dur < 100.0 {
+            continue;
+        }
+        let query = e.get("query").and_then(Value::as_str).unwrap_or("");
+        let Some(tables) = e.get("tablesAccessed").and_then(Value::as_array) else {
+            continue;
+        };
+        for t in tables {
+            let Some(table) = t.as_str() else { continue };
+            let mut columns: Vec<String> = Vec::new();
+            for c in where_col_re().captures_iter(query) {
+                columns.push(c[1].to_string());
+            }
+            for c in order_col_re().captures_iter(query) {
+                columns.push(c[1].to_string());
+            }
+            if columns.is_empty() {
+                continue;
+            }
+            // Dedup key AND stored columns are sorted (JS `.sort()` mutates).
+            columns.sort();
+            let key = format!("{table}:{}", columns.join(","));
+            if !seen.insert(key) {
+                continue;
+            }
+            let impact = if dur > 1000.0 {
+                "high"
+            } else if dur > 300.0 {
+                "medium"
+            } else {
+                "low"
+            };
+            let normalized = e.get("normalizedQuery").and_then(Value::as_str).unwrap_or("");
+            out.push(IndexSuggestion {
+                table: table.to_string(),
+                columns,
+                reason: format!("Query taking {}ms uses these columns in WHERE/ORDER BY", dur.round() as i64),
+                impact,
+                query_pattern: normalized.chars().take(150).collect(),
+            });
+        }
+    }
+    out
+}
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct QueryLogArgs {
@@ -362,11 +445,13 @@ impl Mcp {
         &self,
         Parameters(_args): Parameters<SchemaMapArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // No connection can be registered (parity with Node, whose ConnectionManager
+        // is never fed) → the only reachable response is "no connections configured".
         Ok(envelope(json!({
-            "summary": "Schema introspection is deferred to a later milestone (DB introspection).",
+            "summary": "No database connections configured.",
             "data": null,
-            "issues": [],
-            "metadata": { "deferred": true },
+            "issues": ["Configure a database connection in your project's infrastructure config."],
+            "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": 0, "sessionId": null },
         })))
     }
 
@@ -375,11 +460,12 @@ impl Mcp {
         &self,
         Parameters(_args): Parameters<TableDataArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Node's get_table_data no-connection issue text differs from get_schema_map.
         Ok(envelope(json!({
-            "summary": "Table data reads are deferred to a later milestone (DB introspection).",
+            "summary": "No database connections configured.",
             "data": null,
-            "issues": [],
-            "metadata": { "deferred": true },
+            "issues": ["Configure a database connection."],
+            "metadata": { "timeRange": { "from": 0, "to": 0 }, "eventCount": 0, "sessionId": null },
         })))
     }
 
@@ -388,12 +474,9 @@ impl Mcp {
         &self,
         Parameters(_args): Parameters<ModifyTableArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        Ok(envelope(json!({
-            "summary": "Table data modification is deferred to a later milestone (DB introspection).",
-            "data": null,
-            "issues": [],
-            "metadata": { "deferred": true },
-        })))
+        // Node returns a RAW string here (not a JSON envelope) on the no-connection
+        // path — replicated verbatim for parity.
+        Ok(CallToolResult::success(vec![Content::text("No database connections configured.")]))
     }
 
     #[tool(description = "List all configured database connections with their health status.")]
@@ -401,24 +484,75 @@ impl Mcp {
         &self,
         Parameters(_args): Parameters<DbConnectionsArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Mirrors Node: the ConnectionManager is never fed, so the list is empty.
         Ok(envelope(json!({
-            "summary": "Database connection listing is deferred to a later milestone (DB introspection).",
-            "data": null,
+            "summary": "0 database connection(s) configured.",
+            "data": [],
             "issues": [],
-            "metadata": { "deferred": true },
+            "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 0, "sessionId": null },
         })))
     }
 
     #[tool(description = "Analyze captured database queries and suggest missing indexes based on WHERE/ORDER BY columns and query performance.")]
     async fn suggest_indexes(
         &self,
-        Parameters(_args): Parameters<SuggestIndexesArgs>,
+        Parameters(args): Parameters<SuggestIndexesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let pid = args.project_id.as_deref();
+        let now = now_ms();
+        let events = self.store.events_by_type("database", pid).await;
+        // Optional sinceSeconds filter (Node: timestamp >= now - secs*1000).
+        let cutoff = args.since_seconds.map(|s| now as f64 - s * 1000.0);
+        let filtered: Vec<&Value> = events
+            .iter()
+            .filter(|e| cutoff.is_none_or(|c| num(e, "timestamp") >= c))
+            .collect();
+
+        let suggestions = suggest_indexes(&filtered);
+        let data: Vec<Value> = suggestions
+            .iter()
+            .map(|s| {
+                json!({
+                    "table": s.table,
+                    "columns": s.columns,
+                    "reason": s.reason,
+                    "estimatedImpact": s.impact,
+                    "queryPattern": s.query_pattern,
+                    "suggestedSQL": format!(
+                        "CREATE INDEX idx_{}_{} ON {}({});",
+                        s.table, s.columns.join("_"), s.table, s.columns.join(", ")
+                    ),
+                })
+            })
+            .collect();
+        let issues: Vec<String> = suggestions
+            .iter()
+            .filter(|s| s.impact == "high")
+            .map(|s| format!("High-impact index missing on {}({})", s.table, s.columns.join(", ")))
+            .collect();
+
+        // sessionId via resolveSessionContext (first session matching project_id).
+        let session_id = self
+            .store
+            .sessions()
+            .await
+            .into_iter()
+            .find(|s| pid.is_none_or(|p| s.project_id.as_deref() == Some(p)))
+            .map(|s| s.session_id);
+
         Ok(envelope(json!({
-            "summary": "Index suggestions are deferred to a later milestone (DB introspection).",
-            "data": null,
-            "issues": [],
-            "metadata": { "deferred": true },
+            "summary": format!(
+                "{} index suggestion(s) based on {} captured queries.",
+                suggestions.len(), filtered.len()
+            ),
+            "data": data,
+            "issues": issues,
+            "metadata": {
+                "timeRange": { "from": 0, "to": now },
+                "eventCount": filtered.len(),
+                "sessionId": session_id,
+                "projectId": args.project_id,
+            },
         })))
     }
 }

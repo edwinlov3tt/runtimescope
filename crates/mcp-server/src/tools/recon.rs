@@ -43,6 +43,55 @@ impl Mcp {
             let _ = self.hub.send_command(&session.session_id, command, params).await;
         }
     }
+
+    /// The URL of the most-recently scanned page, derived from stored `recon_*`
+    /// events (scan_website ingests them with a `url`). Mirrors Node's
+    /// `scanner.getLastScannedUrl()` — global, not project-scoped.
+    async fn last_scanned_url(&self) -> Option<String> {
+        for ty in [
+            "recon_metadata",
+            "recon_layout_tree",
+            "recon_design_tokens",
+            "recon_accessibility",
+            "recon_fonts",
+            "recon_asset_inventory",
+        ] {
+            let events = self.store.events_by_type(ty, None).await;
+            if let Some(url) = events.first().and_then(|e| e.get("url")).and_then(|u| u.as_str()) {
+                return Some(url.to_string());
+            }
+        }
+        None
+    }
+
+    /// Live selector capture via the recon sidecar (ADR-0007) — the fallback when
+    /// nothing is stored for a selector but a page has been scanned. Builds a
+    /// synthetic `recon_*` event from the sidecar's raw result, caches it under
+    /// `project`, and returns it. Mirrors Node's `scanner.queryComputedStyles` /
+    /// `queryElementSnapshot` → synthetic-event path. Returns `None` if the sidecar
+    /// is unavailable or finds nothing (caller falls through to the no-data hint).
+    async fn recon_live_capture(
+        &self,
+        method: &str,
+        event_type: &str,
+        url: &str,
+        params: Value,
+        project: &str,
+    ) -> Option<Value> {
+        let raw = crate::sidecar::call_sidecar(method, params).await.ok()?;
+        let obj = raw.as_object()?.clone();
+        let now = crate::tools::now_ms();
+        let mut ev = obj;
+        ev.insert("eventId".into(), json!(format!("evt-scan-{event_type}-{now}")));
+        ev.insert("sessionId".into(), json!(format!("scan-{now}")));
+        ev.insert("timestamp".into(), json!(now));
+        ev.insert("eventType".into(), json!(event_type));
+        ev.insert("url".into(), json!(url));
+        let event = Value::Object(ev);
+        // Best-effort cache so repeat queries hit the store (Node stores it too).
+        let _ = self.store.add_batch(project.to_string(), vec![event.clone()]).await;
+        Some(event)
+    }
 }
 
 /// Extract the raw numeric `timestamp` (epoch ms) from a stored event. Recon
@@ -496,17 +545,37 @@ impl Mcp {
         .await;
         let events = self.store.events_by_type("recon_computed_styles", args.project_id.as_deref()).await;
         // Prefer an event whose selector matches, else the most recent.
-        let event = events
-            .iter()
-            .find(|e| e.get("selector").and_then(|v| v.as_str()) == Some(args.selector.as_str()))
-            .or_else(|| events.first())
-            .cloned();
-
         let empty_entries = |e: &Value| {
             e.get("entries").and_then(|v| v.as_array()).map(|a| a.is_empty()).unwrap_or(true)
         };
+        let mut event = events
+            .iter()
+            .find(|e| e.get("selector").and_then(|v| v.as_str()) == Some(args.selector.as_str()))
+            .or_else(|| events.first())
+            .cloned()
+            .filter(|e| !empty_entries(e));
 
-        let Some(event) = event.filter(|e| !empty_entries(e)) else {
+        // Fallback: nothing stored for this selector, but a page was scanned →
+        // capture live via the sidecar (Node's scanner.queryComputedStyles path).
+        if event.is_none() {
+            if let Some(url) = self.last_scanned_url().await {
+                let project = args.project_id.clone().unwrap_or_else(|| url.clone());
+                if let Some(synth) = self
+                    .recon_live_capture(
+                        "computed_styles",
+                        "recon_computed_styles",
+                        &url,
+                        json!({ "url": url, "selector": args.selector, "properties": prop_filter }),
+                        &project,
+                    )
+                    .await
+                {
+                    event = Some(synth).filter(|e| !empty_entries(e));
+                }
+            }
+        }
+
+        let Some(event) = event else {
             let selector = &args.selector;
             return Ok(envelope(json!({
                 "summary": format!("No computed styles captured for \"{selector}\". Run scan_website first to scan a page, then query selectors on it."),
@@ -589,11 +658,27 @@ impl Mcp {
         )
         .await;
         let events = self.store.events_by_type("recon_element_snapshot", args.project_id.as_deref()).await;
-        let event = events
+        let mut event = events
             .iter()
             .find(|e| e.get("selector").and_then(|v| v.as_str()) == Some(args.selector.as_str()))
             .or_else(|| events.first())
             .cloned();
+
+        // Fallback: capture live via the sidecar (Node's scanner.queryElementSnapshot).
+        if event.is_none() {
+            if let Some(url) = self.last_scanned_url().await {
+                let project = args.project_id.clone().unwrap_or_else(|| url.clone());
+                event = self
+                    .recon_live_capture(
+                        "element_snapshot",
+                        "recon_element_snapshot",
+                        &url,
+                        json!({ "url": url, "selector": args.selector, "depth": args.depth.unwrap_or(5) }),
+                        &project,
+                    )
+                    .await;
+            }
+        }
 
         let Some(event) = event else {
             let selector = &args.selector;

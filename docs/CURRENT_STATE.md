@@ -9,7 +9,7 @@
 
 **What the (old) 17/17 meant vs. didn't:** the wire protocol, persistence/durability, auth handshake, the full event read API, and the store-read tool surface are proven equivalent to Node. It does **not** mean the heavy tools work — DB introspection, process/infra, `pm/` workspaces, and the Playwright-sidecar tools are registered **deferred stubs** (valid envelope, `data: null`). Making those real is the bulk of the remaining work.
 
-**Remaining to a launchable v0.11.0:** M4 done (only `get_style_diff` stays a documented stub — no capture source), M5 (`pm/` subsystem ~4.4K LOC — currently stubbed), M6 (cli + curl-install + dashboard embed), M7 (cutover + ship). See [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md). **Parallel:** Playwright recon sidecar (ADR-0007) on branch `feat/recon-sidecar` / [PR #1](https://github.com/edwinlov3tt/runtimescope/pull/1) — feeds M4's scanner tools.
+**Remaining to a launchable v0.11.0:** M4 done (only `get_style_diff` stays a documented stub — no capture source), **M5 (`pm/` subsystem ~4.4K LOC — DECIDED in-scope, [ADR-0009](./decisions/0009-pm-subsystem-in-v0.11.0.md); the long pole + critical path; ⚠️ no Node tests → conformance-first port)**, M6 (cli + curl-install + dashboard embed), M7 (cutover + ship). See [`roadmap/rust-collector-milestones.md`](./roadmap/rust-collector-milestones.md). **Parallel:** Playwright recon sidecar (ADR-0007) on branch `feat/recon-sidecar` / [PR #1](https://github.com/edwinlov3tt/runtimescope/pull/1) — feeds M4's scanner tools.
 
 This file is updated when releases land or gates change. It is *not* a running log — for that, see [`CHANGELOG.md`](./CHANGELOG.md).
 

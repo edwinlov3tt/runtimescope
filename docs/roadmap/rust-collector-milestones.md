@@ -92,13 +92,15 @@ The biggest LOC chunk and the most parallelizable — the agent fan-out is what 
 
 **Team?** Not needed — M4 is essentially complete.
 
-## Milestone 5 — `pm/` project-manager subsystem (own serial track, ~1.5 wk)
+## Milestone 5 — `pm/` project-manager subsystem (serial, critical path) — 🔴 LAUNCH BLOCKER (decided [ADR-0009](../decisions/0009-pm-subsystem-in-v0.11.0.md), 2026-05-30)
 
-~4.4K LOC, stateful, interconnected (pm-store, pm-routes, project-discovery, session-parser). **Not rib-shaped** — don't fan out *within* it. But it *can* run as a parallel track to M3–M4 (different author/agent, different subsystem).
+~4.4K LOC, stateful, interconnected (pm-store 1659, pm-routes 1345, project-discovery 797, session-parser 342, pm-types 235). **Not rib-shaped** — don't fan out *within* it. Decided to ship in v0.11.0 (full parity at cutover); `pm/` is orthogonal to the core loop but provides workspaces, workspace API keys, project discovery, Claude-session cost/CapEx analysis, and the `/api/pm/*` dashboard UI.
 
-- [ ] Port with the existing TS tests as the behavioral spec (session-transcript parsing has many edge cases).
+- [ ] **⚠️ `pm/` has NO Node test coverage** — the original "port against existing TS tests" premise is false. So: **conformance-first** — write `*.conformance.test.ts` against the **Node `pm/`** first (characterize the untested behavior + spec the port), then make Rust pass. Gate via the 4 workspace MCP tools (`McpDriver`) + the `/api/pm/*` HTTP routes (`spawnCollector`); cover `session-parser` edge cases (cost/token/active-time/compaction from JSONL) with Rust unit tests + end-to-end discover→list assertions.
+- [ ] Port order: pm-types → pm-store (SQLite schema + CRUD) → session-parser → project-discovery → pm-routes → wire the 4 MCP workspace tools + the workspace-API-key auth path.
+- [ ] Narrow scope if characterization shows dead/buggy Node paths (the dormant-engine lesson).
 
-**Team?** One dedicated author/agent for the whole subsystem, running concurrently with the M3–M4 fan-out.
+**Estimate:** beyond the original ~1.5 wk — characterizing 4.4K untested LOC before porting is the bulk of the work.
 
 ## Milestone 6 — `cli` + curl-install + dashboard embed (serial, ~0.5 wk)
 

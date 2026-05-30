@@ -13,3 +13,4 @@ tracing.workspace = true
 rusqlite = { version = "0.40", features = ["bundled"] }
 futures-util = "0.3"
 subtle = "2"
+sha2 = "0.10"

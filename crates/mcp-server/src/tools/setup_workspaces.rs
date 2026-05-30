@@ -8,7 +8,7 @@
 //! summary says it's deferred and whose `data` is null. They still count
 //! toward the tool catalog.
 
-use crate::tools::envelope;
+use crate::tools::{envelope, iso_ms, now_ms};
 use crate::Mcp;
 use rmcp::{handler::server::wrapper::Parameters, model::CallToolResult, tool, tool_router, ErrorData};
 use serde::Deserialize;
@@ -478,16 +478,33 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<CreateWorkspaceArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let _ = (&args.slug, &args.description);
-        Ok(envelope(json!({
-            "summary": format!(
-                "Deferred: cannot create workspace \"{}\" — the workspace/PM subsystem is not yet ported to the Rust collector.",
-                args.name
-            ),
-            "data": null,
-            "issues": ["create_workspace is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
-        })))
+        match self.pm.create_workspace(&args.name, args.slug.as_deref(), args.description.as_deref()) {
+            Ok(ws) => {
+                // create_workspace returns the raw PmWorkspace (createdAt/updatedAt
+                // are NUMBERS here; list_workspaces is the one that ISO-formats them).
+                let mut data = serde_json::Map::new();
+                data.insert("id".into(), json!(ws.id));
+                data.insert("name".into(), json!(ws.name));
+                data.insert("slug".into(), json!(ws.slug));
+                if let Some(d) = &ws.description {
+                    data.insert("description".into(), json!(d));
+                }
+                data.insert("createdAt".into(), json!(ws.created_at));
+                data.insert("updatedAt".into(), json!(ws.updated_at));
+                data.insert("isDefault".into(), json!(ws.is_default));
+                Ok(envelope(json!({
+                    "summary": format!("Created workspace \"{}\" ({}).", ws.name, ws.id),
+                    "data": data,
+                    "issues": [],
+                    "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 0, "sessionId": null, "projectId": null },
+                })))
+            }
+            Err(e) => Ok(envelope(json!({
+                "summary": format!("Failed to create workspace: {e}"),
+                "data": null,
+                "issues": [e],
+            }))),
+        }
     }
 
     // ---------------- list_workspaces (STUB — needs pm/ subsystem) ----------------
@@ -499,11 +516,33 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(_args): Parameters<ListWorkspacesArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let workspaces = self.pm.list_workspaces();
+        let projects = self.pm.list_projects();
+        let data: Vec<Value> = workspaces
+            .iter()
+            .map(|ws| {
+                let project_count =
+                    projects.iter().filter(|p| p.workspace_id.as_deref() == Some(ws.id.as_str())).count();
+                let api_key_count = self.pm.list_api_keys(&ws.id).len();
+                let mut m = serde_json::Map::new();
+                m.insert("id".into(), json!(ws.id));
+                m.insert("name".into(), json!(ws.name));
+                m.insert("slug".into(), json!(ws.slug));
+                if let Some(d) = &ws.description {
+                    m.insert("description".into(), json!(d));
+                }
+                m.insert("isDefault".into(), json!(ws.is_default));
+                m.insert("projectCount".into(), json!(project_count));
+                m.insert("apiKeyCount".into(), json!(api_key_count));
+                m.insert("createdAt".into(), json!(iso_ms(ws.created_at)));
+                Value::Object(m)
+            })
+            .collect();
         Ok(envelope(json!({
-            "summary": "Deferred: listing workspaces requires the workspace/PM subsystem, which is not yet ported to the Rust collector.",
-            "data": null,
-            "issues": ["list_workspaces is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
+            "summary": format!("{} workspace(s). {} project(s) total.", workspaces.len(), projects.len()),
+            "data": data,
+            "issues": [],
+            "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 0, "sessionId": null, "projectId": null },
         })))
     }
 
@@ -516,16 +555,34 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<CreateApiKeyArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        let _ = (&args.label, &args.expires_at);
-        Ok(envelope(json!({
-            "summary": format!(
-                "Deferred: cannot create an API key for workspace {} — the workspace/PM subsystem is not yet ported to the Rust collector.",
-                args.workspace_id
-            ),
-            "data": null,
-            "issues": ["create_workspace_api_key is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
-        })))
+        match self.pm.create_api_key(&args.workspace_id, &args.label, args.expires_at.map(|v| v as i64)) {
+            Ok(k) => {
+                let mut data = serde_json::Map::new();
+                data.insert("key".into(), json!(k.key));
+                data.insert("keyPrefix".into(), json!(k.key_prefix));
+                data.insert("keyLast4".into(), json!(k.key_last4));
+                data.insert("workspaceId".into(), json!(k.workspace_id));
+                data.insert("label".into(), json!(k.label));
+                data.insert("createdAt".into(), json!(k.created_at));
+                if let Some(e) = k.expires_at {
+                    data.insert("expiresAt".into(), json!(e));
+                }
+                Ok(envelope(json!({
+                    "summary": format!(
+                        "Created API key for workspace {}. Store the `key` field securely — it will not be shown again.",
+                        args.workspace_id
+                    ),
+                    "data": data,
+                    "issues": [],
+                    "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 0, "sessionId": null, "projectId": null },
+                })))
+            }
+            Err(e) => Ok(envelope(json!({
+                "summary": format!("Failed: {e}"),
+                "data": null,
+                "issues": [e],
+            }))),
+        }
     }
 
     // ---------------- move_project_to_workspace (STUB — needs pm/ subsystem) ----------------
@@ -537,14 +594,24 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<MoveProjectArgs>,
     ) -> Result<CallToolResult, ErrorData> {
+        let Some(project) = self.pm.get_project(&args.project_id) else {
+            return Ok(envelope(json!({
+                "summary": format!("Project {} not found.", args.project_id),
+                "data": null,
+                "issues": ["project-not-found"],
+            })));
+        };
+        self.pm.set_project_workspace(&args.project_id, &args.workspace_id);
+        let updated = self.pm.get_project(&args.project_id).unwrap_or(project);
         Ok(envelope(json!({
-            "summary": format!(
-                "Deferred: cannot move project {} to workspace {} — the workspace/PM subsystem is not yet ported to the Rust collector.",
-                args.project_id, args.workspace_id
-            ),
-            "data": null,
-            "issues": ["move_project_to_workspace is deferred — the pm/ workspace subsystem is not yet available in the Rust collector."],
-            "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
+            "summary": format!("Moved project \"{}\" to workspace {}.", updated.name, args.workspace_id),
+            "data": {
+                "id": updated.id,
+                "workspaceId": updated.workspace_id,
+                "name": updated.name,
+            },
+            "issues": [],
+            "metadata": { "timeRange": { "from": 0, "to": now_ms() }, "eventCount": 0, "sessionId": null, "projectId": null },
         })))
     }
 

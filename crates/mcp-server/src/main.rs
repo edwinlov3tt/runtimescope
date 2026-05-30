@@ -10,7 +10,8 @@ mod sidecar;
 mod tools;
 
 use collector_core::{
-    open_store, port_from_env, serve, CommandHub, StoreHandle, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
+    data_dir, open_store, port_from_env, serve, CommandHub, PmStore, StoreHandle, DEFAULT_HTTP_PORT,
+    DEFAULT_WS_PORT, VERSION,
 };
 use rmcp::{
     handler::server::{tool::ToolRouter, ServerHandler},
@@ -23,11 +24,13 @@ use rmcp::{
 pub struct Mcp {
     pub store: StoreHandle,
     pub hub: CommandHub,
+    /// pm/ project-manager store (workspaces + API keys) — M5.
+    pub pm: PmStore,
     tool_router: ToolRouter<Self>,
 }
 
 impl Mcp {
-    fn new(store: StoreHandle, hub: CommandHub) -> Self {
+    fn new(store: StoreHandle, hub: CommandHub, pm: PmStore) -> Self {
         // Combine every family's router (M3 fan-out).
         let tool_router = Self::core_router()
             + Self::status_router()
@@ -39,7 +42,7 @@ impl Mcp {
             + Self::sessions_history_router()
             + Self::setup_workspaces_router()
             + Self::recon_router();
-        Self { store, hub, tool_router }
+        Self { store, hub, pm, tool_router }
     }
 }
 
@@ -56,6 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
     let store = open_store().await?;
     let hub = CommandHub::new();
+    // pm/ store (M5): separate pm.db alongside the event store's collector.db.
+    let pm = PmStore::open(&data_dir().join("pm.db"))?;
 
     // Embed the collector in-process (ADR-0008): WS + HTTP run alongside MCP so
     // the command channel's send is an in-process call, and the tools read the
@@ -73,7 +78,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // serve(stdio()) so initialize lands after the transport reader is up.
     eprintln!("[RuntimeScope] MCP server running on stdio");
 
-    let service = Mcp::new(store, hub).serve(stdio()).await?;
+    let service = Mcp::new(store, hub, pm).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

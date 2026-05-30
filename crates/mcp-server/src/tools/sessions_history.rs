@@ -55,8 +55,6 @@ pub struct SessionHistoryArgs {
     project: Option<String>,
     /// Max sessions to return (default 20).
     limit: Option<usize>,
-    /// Scope to one project (the proj_xxx from .runtimescope/config.json).
-    project_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -137,20 +135,9 @@ impl Mcp {
         Parameters(args): Parameters<SessionHistoryArgs>,
     ) -> Result<CallToolResult, ErrorData> {
         let limit = args.limit.unwrap_or(20);
-        // History is addressed by appName (Node: getSessionHistory(project)).
-        // Resolve a project_id arg to its appName via the session registry.
-        let project = match (&args.project, &args.project_id) {
-            (Some(p), _) => p.clone(),
-            (None, Some(pid)) => self
-                .store
-                .sessions()
-                .await
-                .iter()
-                .find(|s| s.project_id.as_deref() == Some(pid.as_str()))
-                .map(|s| s.app_name.clone())
-                .unwrap_or_else(|| "default".to_string()),
-            _ => "default".to_string(),
-        };
+        // History is addressed by appName (Node: getSessionHistory(project ?? 'default')).
+        // Node's schema exposes only `project` + `limit` (no project_id) — match it.
+        let project = args.project.clone().unwrap_or_else(|| "default".to_string());
 
         let history = self.store.session_history(&project, limit).await;
         // createdAt is the SESSION's time (Node: disconnectedAt ?? connectedAt),

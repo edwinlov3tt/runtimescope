@@ -573,3 +573,49 @@ fn query_events(conn: &Connection, event_type: &str, project: Option<&str>) -> V
     }
     out
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Locks the INTENDED Rust behavior for the shared-projectId case (audit 0002
+    // second review #3): appName-addressed reads are isolated per app. This is a
+    // deliberate improvement over Node (whose per-app persistence is asymmetric),
+    // so it cannot live in the Node-vs-Rust conformance suite — it's gated here.
+    #[tokio::test]
+    async fn events_for_app_isolates_apps_sharing_a_project_id() {
+        let dir = std::env::temp_dir().join(format!("store-appiso-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.clone()).await.unwrap();
+
+        // Two apps, ONE shared projectId.
+        store.register_session("sidA".into(), "app-alpha".into(), Some("projShared".into())).await;
+        store.register_session("sidB".into(), "app-beta".into(), Some("projShared".into())).await;
+
+        let net = |sid: &str, url: &str| {
+            serde_json::json!({
+                "eventId": format!("evt-{sid}"), "sessionId": sid, "timestamp": 1,
+                "eventType": "network", "url": url, "method": "GET", "status": 200
+            })
+        };
+        store.add_batch("projShared".into(), vec![net("sidA", "https://x/a")]).await.unwrap();
+        store.add_batch("projShared".into(), vec![net("sidB", "https://x/b")]).await.unwrap();
+
+        // App-scoped reads are ISOLATED: app-alpha sees ONLY sidA's events (its
+        // network + its synthetic session connect), never sidB's — and vice versa.
+        let alpha = store.events_for_app("app-alpha").await;
+        assert!(!alpha.is_empty());
+        assert!(
+            alpha.iter().all(|e| e.get("sessionId").and_then(Value::as_str) == Some("sidA")),
+            "app-alpha leaked another app's events: {alpha:?}"
+        );
+        let beta = store.events_for_app("app-beta").await;
+        assert!(beta.iter().all(|e| e.get("sessionId").and_then(Value::as_str) == Some("sidB")));
+
+        // The projectId scope, by contrast, holds BOTH apps' events.
+        assert!(store.event_count(Some("projShared")).await > store.event_count_for_app("app-alpha").await);
+        assert_eq!(store.event_count_for_app("app-alpha").await, alpha.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

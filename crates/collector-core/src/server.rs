@@ -26,7 +26,11 @@ use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+
+/// Monotonic suffix so backfilled HTTP eventIds are unique even within one ms.
+static HTTP_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Clone)]
 struct AppState {
@@ -244,11 +248,31 @@ async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String
     let mut accepted_events: Vec<Value> = Vec::new();
     let mut rejected = 0usize;
     for ev in events {
-        if is_valid_event_type(&event_type_of(ev)) {
-            accepted_events.push(ev.clone());
-        } else {
+        if !is_valid_event_type(&event_type_of(ev)) {
             rejected += 1;
+            continue;
         }
+        // Backfill the fields an HTTP client (Workers/Python SDK) may omit, so
+        // events without an eventId aren't silently swallowed by INSERT OR IGNORE
+        // (Node http-server.ts parity: generate eventId, default sessionId/timestamp).
+        let mut ev = ev.clone();
+        if let Some(obj) = ev.as_object_mut() {
+            let blank = |o: &serde_json::Map<String, Value>, k: &str| {
+                o.get(k).is_none_or(|v| v.is_null() || v.as_str() == Some(""))
+            };
+            if blank(obj, "eventId") {
+                let seq = HTTP_EVENT_SEQ.fetch_add(1, Ordering::Relaxed);
+                obj.insert("eventId".into(), json!(format!("http-{}-{}", now_ms(), seq)));
+            }
+            if blank(obj, "sessionId") && !session_id.is_empty() {
+                obj.insert("sessionId".into(), json!(session_id));
+            }
+            // Node treats a 0/absent timestamp as missing.
+            if obj.get("timestamp").and_then(Value::as_i64).unwrap_or(0) == 0 {
+                obj.insert("timestamp".into(), json!(now_ms()));
+            }
+        }
+        accepted_events.push(ev);
     }
     let accepted = accepted_events.len();
     if accepted > 0 {

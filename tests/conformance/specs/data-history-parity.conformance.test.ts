@@ -111,9 +111,10 @@ describe('MCP data + history parity edge cases (Node)', () => {
     await new Promise((r) => setTimeout(r, 600));
 
     const { envelope } = await mcp.callTool('runtime_qa_check', { project_id: PROJECT, label: 'p' });
-    const env = envelope as { data: { snapshot: { metrics: {
-      totalEvents: number; componentCount: number; webVitals: Record<string, unknown>;
-    } } } };
+    const env = envelope as {
+      data: { snapshot: { metrics: { totalEvents: number; componentCount: number; webVitals: Record<string, unknown> } } };
+      metadata: { webVitals: unknown };
+    };
     const m = env.data.snapshot.metrics;
 
     // totalEvents counts ALL session events: render + 2 perf + network + the
@@ -125,6 +126,11 @@ describe('MCP data + history parity edge cases (Node)', () => {
     expect(typeof m.webVitals).toBe('object');
     expect(Object.keys(m.webVitals)).toContain('LCP');
     expect(Object.keys(m.webVitals)).not.toContain('heap_used');
+    // metadata.webVitals is the human summary string ("LCP: 2400.0 (good)"),
+    // NOT null — the LCP web-vital has a rating.
+    expect(typeof env.metadata.webVitals).toBe('string');
+    expect(env.metadata.webVitals as string).toContain('LCP');
+    expect(env.metadata.webVitals as string).toContain('(good)');
 
     await d.close();
   });

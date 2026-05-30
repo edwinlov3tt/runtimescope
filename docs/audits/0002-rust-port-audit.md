@@ -64,6 +64,17 @@ The #2/#8 closure was re-audited by the same differential-probe method. The 51-t
 
 Lesson reinforced (already in CLAUDE.md): a happy-path fixture is not a parity test. The fix added the render-profile, web-vital, multi-app, UTF-8, and connect-time cases the original spec lacked.
 
+## Third adversarial review (Codex, 2026-05-30) — verified against `4ae487e`, 4 findings, all fixed
+
+A third pass (this time confirmed on HEAD `4ae487e` / 56 tests — an earlier run had reviewed a stale checkout and re-reported the five already-closed findings) found four new ones, now fixed → suite **57/57 vs Node AND Rust**:
+
+| # | Sev | Fix |
+|---|---|---|
+| 1 | High | `POST /api/events` dropped events **missing an `eventId`** — `INSERT OR IGNORE` no-ops on an empty id, so the ingest returned `accepted: N` while storing 0 (silent telemetry loss for the Workers/Python SDKs). Now backfills `eventId` (`http-<ts>-<seq>`, monotonic counter for in-ms uniqueness), `sessionId`, and `timestamp` before `add_batch`, matching Node `http-server.ts`. Gated by a new `http-ingest-and-routes` case (POST without eventId → 2 events readable). |
+| 2 | Med | `runtime_qa_check` omitted Node's `metadata.webVitals` **summary string** (`"LCP: 2400.0 (good)"`, `, `-joined, else `null`). Added. Gated in `data-history-parity`. |
+| 3 | Med (doc) | The shared-projectId history isolation is a deliberate Rust correction over Node's asymmetric behavior, so it can't be Node-conformance-gated. Now **explicitly locked Rust-side** by `store.rs` unit test `events_for_app_isolates_apps_sharing_a_project_id`. |
+| 4 | Low | `get_session_history` exposed a Rust-only `project_id` arg; Node's schema is `{project, limit}`. Removed it for schema parity. |
+
 ## Status reset
 
 The architecture decisions (ADR-0008 embed-in-process, the `RUNTIMESCOPE_COLLECTOR_CMD` seam, the recon sidecar) survived the audit. What needed work was **implementation fidelity** and **test rigor** — fixable, not a redesign. As of 2026-05-29 all nine findings (plus the five second-review findings) are remediated and the gate is rebuilt to **56/56 vs both** reference (Node) and candidate (Rust); the parity claim now rests on differential shape/filter/behavior tests, not counts. Launch work (M4 remainder → M7 cutover) can resume against this gate.

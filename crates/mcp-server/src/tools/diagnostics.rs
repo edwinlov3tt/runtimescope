@@ -498,6 +498,26 @@ impl Mcp {
             .map(|i| format!("[{}] {}", i.severity.to_uppercase(), i.title))
             .collect();
 
+        // metadata.webVitals: a human summary string ("LCP: 4200.0 (good)", joined
+        // by ", "), or null when there are none (Node qa-check.ts parity).
+        let web_vitals_summary: Value = if web_vitals.is_empty() {
+            Value::Null
+        } else {
+            let parts: Vec<String> = web_vitals
+                .iter()
+                .map(|(name, v)| {
+                    let value = match v.get("value") {
+                        Some(Value::Number(n)) => format!("{:.1}", n.as_f64().unwrap_or(0.0)),
+                        Some(other) => other.to_string(),
+                        None => "0.0".to_string(),
+                    };
+                    let rating = v.get("rating").and_then(Value::as_str).unwrap_or("");
+                    format!("{name}: {value} ({rating})")
+                })
+                .collect();
+            json!(parts.join(", "))
+        };
+
         Ok(envelope(json!({
             "summary": summary,
             "data": data,
@@ -507,6 +527,7 @@ impl Mcp {
                 "eventCount": total_events,
                 "sessionId": session_id,
                 "projectId": args.project_id,
+                "webVitals": web_vitals_summary,
             },
         })))
     }

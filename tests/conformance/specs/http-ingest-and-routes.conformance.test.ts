@@ -166,6 +166,38 @@ describe('http ingest + routes', () => {
     expect(json.dropped).toBe(0);
   });
 
+  it('POST /api/events backfills a missing eventId/timestamp so the event is stored, not silently dropped', async () => {
+    collector = await spawnCollector();
+    await collector.ready();
+
+    const sessionId = `http-${randomBytes(6).toString('hex')}`;
+    const PROJ = `${PROJECT}_backfill`;
+    // A Workers/Python client may omit eventId + timestamp. Node backfills both
+    // (eventId = "http-<ts>-<rand>", timestamp = now); the event MUST land in the
+    // store, not be no-op'd by INSERT OR IGNORE on an empty id.
+    const events = [
+      { sessionId, eventType: 'network', url: 'https://example.com/api/no-id-1',
+        method: 'GET', status: 200, requestHeaders: {}, responseHeaders: {},
+        requestBodySize: 0, responseBodySize: 10, duration: 5, ttfb: 1, source: 'http-ingest' },
+      { sessionId, eventType: 'network', url: 'https://example.com/api/no-id-2',
+        method: 'GET', status: 200, requestHeaders: {}, responseHeaders: {},
+        requestBodySize: 0, responseBodySize: 10, duration: 5, ttfb: 1, source: 'http-ingest' },
+    ];
+
+    const { status, json } = await postEvents(collector.httpPort, {
+      sessionId, appName: 'http-backfill', projectId: PROJ, events,
+    });
+    expect(status).toBe(200);
+    expect(json.accepted).toBe(2);
+
+    // Both events are queryable — proves the backfilled eventId let them persist.
+    const read = await fetch(
+      `http://127.0.0.1:${collector.httpPort}/api/events/network?project_id=${PROJ}`,
+    ).then((r) => r.json()) as { data: Array<{ url: string }>; count: number };
+    expect(read.count).toBe(2);
+    expect(read.data.length).toBe(2);
+  });
+
   it('POST /api/events validates the payload: empty events array → 400 INVALID_PAYLOAD', async () => {
     collector = await spawnCollector();
     await collector.ready();

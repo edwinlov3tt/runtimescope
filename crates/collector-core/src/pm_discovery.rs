@@ -20,6 +20,7 @@
 
 use crate::pm_session_parser::parse_session_jsonl;
 use crate::pm_store::{PmProject, PmSession, PmStore};
+use serde::Serialize;
 use serde_json::Value;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -29,7 +30,8 @@ fn now_ms() -> i64 {
 }
 
 /// Outcome of a discovery pass (ports Node `DiscoveryResult`).
-#[derive(Debug, Default, Clone, PartialEq)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiscoveryResult {
     pub projects_discovered: i64,
     pub projects_updated: i64,

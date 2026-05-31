@@ -11,6 +11,8 @@ use crate::event::{
     event_type_of, is_valid_event_type, kind_to_event_type, project_of, EventBatch,
     HandshakePayload, WsMessage,
 };
+use crate::pm_discovery;
+use crate::pm_store::PmStore;
 use crate::store::StoreHandle;
 use axum::{
     extract::{
@@ -36,6 +38,7 @@ static HTTP_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
 struct AppState {
     store: StoreHandle,
     hub: CommandHub,
+    pm: PmStore,
     auth: AuthManager,
     started: Instant,
     version: String,
@@ -50,6 +53,7 @@ fn now_ms() -> i64 {
 pub async fn serve(
     store: StoreHandle,
     hub: CommandHub,
+    pm: PmStore,
     ws_port: u16,
     http_port: u16,
     version: String,
@@ -57,6 +61,7 @@ pub async fn serve(
     let state = AppState {
         store,
         hub,
+        pm,
         auth: AuthManager::from_env(),
         started: Instant::now(),
         version,
@@ -72,6 +77,13 @@ pub async fn serve(
         .route("/api/projects", get(projects))
         .route("/api/events", post(post_events))
         .route("/api/events/{kind}", get(events_by_kind))
+        // pm/ project-manager surface (M5)
+        .route("/api/pm/discover", post(pm_discover))
+        .route("/api/pm/projects", get(pm_projects))
+        .route("/api/pm/projects/{id}", get(pm_project_by_id))
+        .route("/api/pm/sessions", get(pm_sessions))
+        .route("/api/pm/sessions/{id}", get(pm_session_by_id))
+        .route("/api/pm/workspaces", get(pm_workspaces))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -315,6 +327,83 @@ async fn not_found(uri: Uri) -> impl IntoResponse {
         StatusCode::NOT_FOUND,
         Json(json!({ "error": "Not found", "path": uri.path() })),
     )
+}
+
+// ---- pm/ project-manager routes (M5) ----
+
+/// Trigger Claude project discovery (the over-discovery-filtered scan) + session
+/// indexing. Runs on a blocking thread (fs + SQLite). Returns the DiscoveryResult.
+async fn pm_discover(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let pm = s.pm.clone();
+    let claude_base = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude");
+    let result = tokio::task::spawn_blocking(move || pm_discovery::discover_claude_projects(&claude_base, &pm))
+        .await
+        .unwrap_or_default();
+    Json(result).into_response()
+}
+
+async fn pm_projects(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let mut projects = s.pm.list_projects();
+    if let Some(ws) = q.get("workspace_id") {
+        projects.retain(|p| p.workspace_id.as_deref() == Some(ws.as_str()));
+    }
+    let count = projects.len();
+    Json(json!({ "data": projects, "count": count })).into_response()
+}
+
+async fn pm_project_by_id(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.pm.get_project(&id) {
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Project not found" }))).into_response(),
+        Some(project) => {
+            let stats = s.pm.session_stats(Some(&project.id));
+            let mut obj = serde_json::to_value(&project).unwrap_or_else(|_| json!({}));
+            if let Some(m) = obj.as_object_mut() {
+                m.insert("stats".into(), serde_json::to_value(&stats).unwrap_or_else(|_| json!({})));
+            }
+            Json(obj).into_response()
+        }
+    }
+}
+
+async fn pm_sessions(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project_id = q.get("project_id").map(String::as_str);
+    let limit: i64 = q.get("limit").and_then(|v| v.parse().ok()).unwrap_or(100);
+    let offset: i64 = q.get("offset").and_then(|v| v.parse().ok()).unwrap_or(0);
+    let sessions = s.pm.list_sessions(project_id, limit, offset);
+    let total = s.pm.session_stats(project_id).total_sessions;
+    let count = sessions.len();
+    Json(json!({ "data": sessions, "count": count, "total": total })).into_response()
+}
+
+async fn pm_session_by_id(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.pm.get_session(&id) {
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Session not found" }))).into_response(),
+        Some(session) => Json(session).into_response(),
+    }
+}
+
+async fn pm_workspaces(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    // No auth-key→workspace context here → return all (admin-equivalent), matching
+    // Node's no-caller path. Per-workspace filtering arrives with the API-key auth path.
+    Json(json!({ "data": s.pm.list_workspaces() })).into_response()
 }
 
 // ---- WebSocket ----

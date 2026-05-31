@@ -6,7 +6,8 @@
 //! sets these and waits for /readyz).
 
 use collector_core::{
-    open_store, port_from_env, serve, CommandHub, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
+    data_dir, open_store, port_from_env, serve, CommandHub, PmStore, DEFAULT_HTTP_PORT,
+    DEFAULT_WS_PORT, VERSION,
 };
 
 #[tokio::main]
@@ -17,6 +18,8 @@ async fn main() -> std::io::Result<()> {
     let store = open_store()
         .await
         .map_err(|e| std::io::Error::other(format!("store init failed: {e}")))?;
+    let pm = PmStore::open(&data_dir().join("pm.db"))
+        .map_err(|e| std::io::Error::other(format!("pm store init failed: {e}")))?;
 
     eprintln!("[RuntimeScope] collector-server (rust {VERSION})");
     eprintln!("[RuntimeScope]   WebSocket: ws://127.0.0.1:{ws_port}");
@@ -24,5 +27,5 @@ async fn main() -> std::io::Result<()> {
 
     // Standalone daemon has no MCP, so the command hub is unused here (sessions
     // still register; commands simply never get issued). Same serve() either way.
-    serve(store, CommandHub::new(), ws_port, http_port, VERSION.to_string()).await
+    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string()).await
 }

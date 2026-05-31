@@ -67,8 +67,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // same store the SDK feeds.
     let serve_store = store.clone();
     let serve_hub = hub.clone();
+    let serve_pm = pm.clone();
     tokio::spawn(async move {
-        if let Err(e) = serve(serve_store, serve_hub, ws_port, http_port, VERSION.to_string()).await {
+        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string()).await {
             eprintln!("[RuntimeScope] embedded collector failed: {e}");
         }
     });

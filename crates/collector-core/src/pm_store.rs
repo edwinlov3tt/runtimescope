@@ -11,6 +11,7 @@
 //! of the raw token (the raw `tk_…` is returned exactly once, like Node).
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -95,11 +96,13 @@ CREATE TABLE IF NOT EXISTS pm_deleted_projects (
 );
 ";
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PmWorkspace {
     pub id: String,
     pub name: String,
     pub slug: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -118,36 +121,50 @@ pub struct PmApiKey {
     pub expires_at: Option<i64>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PmProject {
     pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub workspace_id: Option<String>,
     pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub claude_project_key: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtimescope_project: Option<String>,
     pub phase: String,
     pub project_status: String,
     pub sdk_installed: bool,
     /// JSON-encoded array of runtime app names (mirrors Node's `runtime_apps` TEXT column).
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub runtime_apps: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
 }
 
 /// A parsed/indexed Claude session row (the parser's metrics + file bookkeeping).
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct PmSession {
     pub id: String,
     pub project_id: String,
     pub jsonl_path: String,
     pub jsonl_size: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub first_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub summary: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub slug: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub git_branch: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub permission_mode: Option<String>,
     pub message_count: i64,
     pub user_message_count: i64,
@@ -158,9 +175,11 @@ pub struct PmSession {
     pub total_cache_read_tokens: i64,
     pub cost_microdollars: i64,
     pub started_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub ended_at: Option<i64>,
     pub active_minutes: f64,
     pub compaction_count: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_compaction_tokens: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -325,6 +344,53 @@ impl PmStore {
             .unwrap_or(false)
     }
 
+    pub fn get_session(&self, id: &str) -> Option<PmSession> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(&format!("SELECT {SESSION_COLS} FROM pm_sessions WHERE id = ?1"), params![id], map_session)
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Sessions, newest-first by `started_at`, optionally scoped to a project,
+    /// with limit/offset (ports Node `listSessions`).
+    pub fn list_sessions(&self, project_id: Option<&str>, limit: i64, offset: i64) -> Vec<PmSession> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT {SESSION_COLS} FROM pm_sessions WHERE (?1 IS NULL OR project_id = ?1)
+             ORDER BY started_at DESC LIMIT ?2 OFFSET ?3"
+        )) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map(params![project_id, limit, offset], map_session);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Aggregate session stats, optionally scoped to a project (ports the core of
+    /// Node `getSessionStats`).
+    pub fn session_stats(&self, project_id: Option<&str>) -> SessionStats {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT COUNT(*), COALESCE(SUM(active_minutes),0), COALESCE(SUM(cost_microdollars),0),
+                    COALESCE(SUM(total_input_tokens),0), COALESCE(SUM(total_output_tokens),0),
+                    COALESCE(AVG(active_minutes),0)
+             FROM pm_sessions WHERE (?1 IS NULL OR project_id = ?1)",
+            params![project_id],
+            |r| {
+                Ok(SessionStats {
+                    total_sessions: r.get(0)?,
+                    total_active_minutes: r.get(1)?,
+                    total_cost_microdollars: r.get(2)?,
+                    total_input_tokens: r.get(3)?,
+                    total_output_tokens: r.get(4)?,
+                    avg_active_minutes: r.get(5)?,
+                })
+            },
+        )
+        .unwrap_or_default()
+    }
+
     /// Active (non-revoked) API keys for a workspace. The secret is masked.
     pub fn list_api_keys(&self, workspace_id: &str) -> Vec<PmApiKey> {
         let conn = self.conn.lock().unwrap();
@@ -452,6 +518,55 @@ fn gen_id(conn: &Connection, prefix: &str, bytes: u32) -> String {
         |r| r.get::<_, String>(0),
     )
     .unwrap_or_else(|_| format!("{prefix}00000000"))
+}
+
+/// Aggregate session stats (core of Node `SessionStats`).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SessionStats {
+    pub total_sessions: i64,
+    pub total_active_minutes: f64,
+    pub total_cost_microdollars: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub avg_active_minutes: f64,
+}
+
+const SESSION_COLS: &str = "id, project_id, jsonl_path, jsonl_size, first_prompt, summary, slug, model, \
+    version, git_branch, permission_mode, message_count, user_message_count, assistant_message_count, \
+    total_input_tokens, total_output_tokens, total_cache_creation_tokens, total_cache_read_tokens, \
+    cost_microdollars, started_at, ended_at, active_minutes, compaction_count, pre_compaction_tokens, \
+    created_at, updated_at";
+
+fn map_session(r: &rusqlite::Row) -> rusqlite::Result<PmSession> {
+    Ok(PmSession {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        jsonl_path: r.get(2)?,
+        jsonl_size: r.get::<_, Option<i64>>(3)?.unwrap_or(0),
+        first_prompt: r.get(4)?,
+        summary: r.get(5)?,
+        slug: r.get(6)?,
+        model: r.get(7)?,
+        version: r.get(8)?,
+        git_branch: r.get(9)?,
+        permission_mode: r.get(10)?,
+        message_count: r.get(11)?,
+        user_message_count: r.get(12)?,
+        assistant_message_count: r.get(13)?,
+        total_input_tokens: r.get(14)?,
+        total_output_tokens: r.get(15)?,
+        total_cache_creation_tokens: r.get(16)?,
+        total_cache_read_tokens: r.get(17)?,
+        cost_microdollars: r.get(18)?,
+        started_at: r.get(19)?,
+        ended_at: r.get(20)?,
+        active_minutes: r.get(21)?,
+        compaction_count: r.get(22)?,
+        pre_compaction_tokens: r.get(23)?,
+        created_at: r.get(24)?,
+        updated_at: r.get(25)?,
+    })
 }
 
 /// Column list (and order) shared by `list_projects`/`get_project` ↔ `map_project`.

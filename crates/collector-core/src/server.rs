@@ -110,6 +110,9 @@ pub async fn serve(
         .route("/api/pm/tasks", get(pm_tasks_list).post(pm_tasks_create))
         .route("/api/pm/tasks/{id}", put(pm_tasks_update).delete(pm_tasks_delete))
         .route("/api/pm/tasks/{id}/reorder", put(pm_tasks_reorder))
+        // notes (M5.5 Slice C)
+        .route("/api/pm/notes", get(pm_notes_list).post(pm_notes_create))
+        .route("/api/pm/notes/{id}", put(pm_notes_update).delete(pm_notes_delete))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -1040,6 +1043,90 @@ async fn pm_tasks_reorder(
     let status = v.get("status").and_then(Value::as_str).unwrap_or("todo");
     let sort_order = v.get("sortOrder").and_then(Value::as_f64).unwrap_or(0.0);
     s.pm.reorder_task(&id, status, sort_order);
+    Json(json!({ "ok": true })).into_response()
+}
+
+// ---- pm/ notes (M5.5 Slice C) ----
+
+/// A JSON `tags` value → the stored JSON-array string (`[]` when absent/not an array).
+fn tags_json(v: &Value) -> String {
+    match v.get("tags") {
+        Some(t) if t.is_array() => t.to_string(),
+        _ => "[]".to_string(),
+    }
+}
+
+/// GET /api/pm/notes (?project_id=&pinned=1).
+async fn pm_notes_list(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    // Node: ?pinned=1 → pinned-only; anything else → no filter.
+    let pinned = if q.get("pinned").map(String::as_str) == Some("1") { Some(true) } else { None };
+    let notes = s.pm.list_notes(q.get("project_id").map(String::as_str), pinned);
+    let count = notes.len();
+    Json(json!({ "data": notes, "count": count })).into_response()
+}
+
+/// POST /api/pm/notes — create; 201 with the note, 400 on missing body.
+async fn pm_notes_create(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let note = s.pm.create_note(
+        v.get("projectId").and_then(Value::as_str),
+        v.get("sessionId").and_then(Value::as_str),
+        v.get("title").and_then(Value::as_str).unwrap_or("Untitled"),
+        v.get("content").and_then(Value::as_str).unwrap_or(""),
+        v.get("pinned").and_then(Value::as_bool).unwrap_or(false),
+        &tags_json(&v),
+    );
+    (StatusCode::CREATED, Json(serde_json::to_value(&note).unwrap_or_else(|_| json!({})))).into_response()
+}
+
+/// PUT /api/pm/notes/{id} — partial update; {ok:true}, 400 on missing body.
+async fn pm_notes_update(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let tags = v.get("tags").filter(|t| t.is_array()).map(|t| t.to_string());
+    s.pm.update_note(
+        &id,
+        v.get("title").and_then(Value::as_str),
+        v.get("content").and_then(Value::as_str),
+        v.get("pinned").and_then(Value::as_bool),
+        tags.as_deref(),
+    );
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// DELETE /api/pm/notes/{id}.
+async fn pm_notes_delete(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    s.pm.delete_note(&id);
     Json(json!({ "ok": true })).into_response()
 }
 

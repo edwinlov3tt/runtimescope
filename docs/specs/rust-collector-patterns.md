@@ -173,9 +173,15 @@ re-verified, surfaced these — all closed:
   flagged for "path traversal via `...`"; but `…` is a literal dir name (only `.`/`..`
   are special, both already → `_invalid`), slashes already map to `_`, and the guard is a
   char-for-char match to Node. Locked in with explicit `.`/`..`/`...`/`../..` test cases.
-- **Cosmetic-only gap left as-is:** Node's pm DDL declares `FOREIGN KEY`s but never sets
-  `PRAGMA foreign_keys=ON`, so they're inert; the Rust schema omits them with identical
-  runtime behavior. No fix (would be churn across 5 tables for zero behavioral change).
+- **CORRECTION (Slice C) — FK constraints are NOT inert at the Node runtime.** The
+  capex review concluded the missing Rust FKs were cosmetic because Node "never sets
+  `PRAGMA foreign_keys=ON`." That was wrong: **`better-sqlite3` defaults `foreign_keys=ON`**,
+  so Node enforces every declared FK at runtime, while `rusqlite` defaults OFF. Rust
+  therefore accepts rows with dangling `project_id`/`session_id` where Node 400s — a real
+  behavioral divergence, tracked in roadmap M5.5 for a dedicated pass (enable the pragma +
+  add constraints + propagate create errors, after verifying discovery's insert order is
+  parent-first). Lesson: **verify a library's pragma defaults before declaring a DDL
+  difference cosmetic** — "the code never sets it" ≠ "it's off."
 
 ## Where things live
 

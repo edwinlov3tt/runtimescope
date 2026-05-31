@@ -314,6 +314,25 @@ pub struct PmTask {
     pub completed_at: Option<i64>,
 }
 
+/// A pinned/freeform note (ports Node `PmNote`). `tags` is a JSON-array column
+/// emitted as a real array; `projectId`/`sessionId` are omitted when null.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmNote {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub session_id: Option<String>,
+    pub title: String,
+    pub content: String,
+    pub pinned: bool,
+    #[serde(serialize_with = "serialize_json_string_array")]
+    pub tags: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 /// CapEx summary for a project (ports Node `CapexSummary` / `getCapexSummary`).
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1179,6 +1198,102 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
     }
 
     // ============================================================
+    // Notes (ports Node createNote/updateNote/deleteNote/listNotes)
+    // ============================================================
+
+    /// Insert a note — ports Node `createNote`. `id`/timestamps generated here;
+    /// `tags_json` is a pre-serialized JSON array.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_note(
+        &self,
+        project_id: Option<&str>,
+        session_id: Option<&str>,
+        title: &str,
+        content: &str,
+        pinned: bool,
+        tags_json: &str,
+    ) -> PmNote {
+        let id = self.new_uuid_v4();
+        let now = now_ms();
+        let note = PmNote {
+            id,
+            project_id: project_id.map(String::from),
+            session_id: session_id.map(String::from),
+            title: title.to_string(),
+            content: content.to_string(),
+            pinned,
+            tags: Some(tags_json.to_string()),
+            created_at: now,
+            updated_at: now,
+        };
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO pm_notes (id, project_id, session_id, title, content, pinned, tags, created_at, updated_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                note.id, note.project_id, note.session_id, note.title, note.content,
+                note.pinned as i64, note.tags, note.created_at, note.updated_at
+            ],
+        );
+        note
+    }
+
+    /// Partial-update a note — ports Node `updateNote` (title/content/pinned/tags).
+    pub fn update_note(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        content: Option<&str>,
+        pinned: Option<bool>,
+        tags_json: Option<&str>,
+    ) {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let pinned_i = pinned.map(i64::from);
+        if let Some(v) = title.as_ref() { sets.push("title = ?"); vals.push(v); }
+        if let Some(v) = content.as_ref() { sets.push("content = ?"); vals.push(v); }
+        if let Some(v) = pinned_i.as_ref() { sets.push("pinned = ?"); vals.push(v); }
+        if let Some(v) = tags_json.as_ref() { sets.push("tags = ?"); vals.push(v); }
+        if sets.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        sets.push("updated_at = ?");
+        vals.push(&now);
+        vals.push(&id);
+        let sql = format!("UPDATE pm_notes SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(&sql, rusqlite::params_from_iter(vals));
+    }
+
+    /// Delete a note — ports Node `deleteNote`.
+    pub fn delete_note(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM pm_notes WHERE id = ?1", params![id]);
+    }
+
+    /// List notes (optional project filter; `pinned=Some(true)` → pinned-only),
+    /// ordered `pinned DESC, updated_at DESC` — ports Node `listNotes`.
+    pub fn list_notes(&self, project_id: Option<&str>, pinned: Option<bool>) -> Vec<PmNote> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from("SELECT id, project_id, session_id, title, content, pinned, tags, \
+            created_at, updated_at FROM pm_notes");
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let pinned_i = pinned.map(i64::from);
+        let mut conds: Vec<&str> = Vec::new();
+        if let Some(p) = project_id.as_ref() { conds.push("project_id = ?"); vals.push(p); }
+        if let Some(p) = pinned_i.as_ref() { conds.push("pinned = ?"); vals.push(p); }
+        if !conds.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conds.join(" AND "));
+        }
+        sql.push_str(" ORDER BY pinned DESC, updated_at DESC");
+        let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+        let rows = stmt.query_map(rusqlite::params_from_iter(vals), map_note);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    // ============================================================
     // Workspace write-CRUD (ports Node updateWorkspace/deleteWorkspace)
     // ============================================================
 
@@ -1514,6 +1629,21 @@ fn map_task(r: &rusqlite::Row) -> rusqlite::Result<PmTask> {
     })
 }
 
+/// Column order matches `create_note`/`list_notes` SELECT.
+fn map_note(r: &rusqlite::Row) -> rusqlite::Result<PmNote> {
+    Ok(PmNote {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        session_id: r.get(2)?,
+        title: r.get(3)?,
+        content: r.get(4)?,
+        pinned: r.get::<_, i64>(5)? == 1,
+        tags: r.get(6)?,
+        created_at: r.get(7)?,
+        updated_at: r.get(8)?,
+    })
+}
+
 fn map_workspace(r: &rusqlite::Row) -> rusqlite::Result<PmWorkspace> {
     Ok(PmWorkspace {
         id: r.get(0)?,
@@ -1790,6 +1920,42 @@ mod tests {
         // delete.
         s.delete_task(&t.id);
         assert!(s.list_tasks(None, None).is_empty());
+    }
+
+    #[test]
+    fn note_create_list_update_delete_with_pinned_ordering() {
+        let s = tmp_store();
+        // two notes; second pinned → must sort first (pinned DESC, updated_at DESC).
+        let n1 = s.create_note(Some("proj-n"), None, "First", "body one", false, r#"["x"]"#);
+        let n2 = s.create_note(Some("proj-n"), Some("sess-1"), "Second", "body two", true, "[]");
+
+        let all = s.list_notes(Some("proj-n"), None);
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].id, n2.id, "pinned note sorts first");
+        let v = serde_json::to_value(&all[1]).unwrap();
+        assert_eq!(v["tags"], serde_json::json!(["x"]), "tags emitted as array");
+        assert_eq!(v["title"], "First");
+        assert!(v.get("sessionId").is_none(), "null sessionId omitted");
+
+        // pinned filter returns only the pinned one.
+        let pinned = s.list_notes(Some("proj-n"), Some(true));
+        assert_eq!(pinned.len(), 1);
+        assert_eq!(pinned[0].id, n2.id);
+
+        // project filter isolates.
+        assert!(s.list_notes(Some("other"), None).is_empty());
+
+        // partial update: content + pinned only.
+        s.update_note(&n1.id, None, Some("edited body"), Some(true), None);
+        let updated = s.list_notes(Some("proj-n"), Some(true));
+        assert_eq!(updated.len(), 2, "both pinned now");
+        let e = updated.iter().find(|n| n.id == n1.id).unwrap();
+        assert_eq!(e.content, "edited body");
+        assert!(e.pinned);
+        assert_eq!(e.title, "First", "unset title unchanged");
+
+        s.delete_note(&n2.id);
+        assert_eq!(s.list_notes(Some("proj-n"), None).len(), 1);
     }
 
     #[test]

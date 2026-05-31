@@ -210,6 +210,10 @@ pub struct PmProject {
     pub runtime_apps: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// Optional project category (Node's `category` column, set via the UI). Drives
+    /// the `capex-all` / `categories` dashboard filters.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
 }
 
 /// A parsed/indexed Claude session row (the parser's metrics + file bookkeeping).
@@ -278,6 +282,42 @@ pub struct PmCapexEntry {
     pub period: String,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+/// CapEx summary for a project (ports Node `CapexSummary` / `getCapexSummary`).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapexSummary {
+    pub project_id: String,
+    /// `{ start, end }` only when a start/end filter was supplied (else omitted,
+    /// matching Node's `period: … ? {…} : undefined`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub period: Option<CapexPeriod>,
+    pub total_sessions: i64,
+    pub total_active_minutes: f64,
+    pub total_cost_microdollars: i64,
+    pub capitalizable_cost_microdollars: i64,
+    pub expensed_cost_microdollars: i64,
+    pub confirmed_count: i64,
+    pub unconfirmed_count: i64,
+    pub by_month: Vec<CapexByMonth>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapexPeriod {
+    pub start: String,
+    pub end: String,
+}
+
+/// Per-day rollup row (Node names the field `activeMinutes`; `period` is YYYY-MM-DD).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CapexByMonth {
+    pub period: String,
+    pub capitalizable: i64,
+    pub expensed: i64,
+    pub active_minutes: f64,
 }
 
 /// SHA-256 hex of a raw API token (matches Node `hashApiKey`).
@@ -710,6 +750,236 @@ impl PmStore {
         rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
+    /// Filtered capex list — ports Node `listCapexEntries(projectId, {month, confirmed})`.
+    /// `month` is an exact `period` match (YYYY-MM-DD); `confirmed` filters on the flag.
+    pub fn list_capex_entries_filtered(
+        &self,
+        project_id: &str,
+        month: Option<&str>,
+        confirmed: Option<bool>,
+    ) -> Vec<PmCapexEntry> {
+        let conn = self.conn.lock().unwrap();
+        let confirmed_i = confirmed.map(i64::from);
+        let mut sql = format!("SELECT {CAPEX_COLS} FROM pm_capex_entries WHERE project_id = ?");
+        let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&project_id];
+        if let Some(m) = month.as_ref() {
+            sql.push_str(" AND period = ?");
+            vals.push(m);
+        }
+        if let Some(ci) = confirmed_i.as_ref() {
+            sql.push_str(" AND confirmed = ?");
+            vals.push(ci);
+        }
+        sql.push_str(" ORDER BY period DESC, created_at DESC");
+        let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+        let rows = stmt.query_map(rusqlite::params_from_iter(vals), map_capex);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Partial-update a capex entry — ports Node `updateCapexEntry`. Only the
+    /// supplied fields are written; `adjusted_cost` is recomputed only when BOTH
+    /// `adjustment_factor` and `cost_microdollars` are provided (Node's quirk).
+    /// No-op when nothing is supplied.
+    pub fn update_capex_entry(
+        &self,
+        id: &str,
+        classification: Option<&str>,
+        work_type: Option<&str>,
+        adjustment_factor: Option<f64>,
+        cost_microdollars: Option<i64>,
+        notes: Option<&str>,
+    ) {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if let Some(c) = classification.as_ref() {
+            sets.push("classification = ?");
+            vals.push(c);
+        }
+        if let Some(w) = work_type.as_ref() {
+            sets.push("work_type = ?");
+            vals.push(w);
+        }
+        // js_round half-up to match Node's Math.round on the recompute.
+        let adjusted = match (adjustment_factor, cost_microdollars) {
+            (Some(f), Some(c)) => Some(((c as f64) * f + 0.5).floor() as i64),
+            _ => None,
+        };
+        if let Some(f) = adjustment_factor.as_ref() {
+            sets.push("adjustment_factor = ?");
+            vals.push(f);
+            if let Some(a) = adjusted.as_ref() {
+                sets.push("adjusted_cost_microdollars = ?");
+                vals.push(a);
+            }
+        }
+        if let Some(n) = notes.as_ref() {
+            sets.push("notes = ?");
+            vals.push(n);
+        }
+        if sets.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        sets.push("updated_at = ?");
+        vals.push(&now);
+        vals.push(&id);
+        let sql = format!("UPDATE pm_capex_entries SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(&sql, rusqlite::params_from_iter(vals));
+    }
+
+    /// Mark a capex entry confirmed — ports Node `confirmCapexEntry`.
+    pub fn confirm_capex_entry(&self, id: &str, confirmed_by: Option<&str>) {
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE pm_capex_entries SET confirmed = 1, confirmed_at = ?1, confirmed_by = ?2, updated_at = ?3 WHERE id = ?4",
+            params![now, confirmed_by, now, id],
+        );
+    }
+
+    /// Aggregate capex summary for a project — ports Node `getCapexSummary`.
+    pub fn get_capex_summary(
+        &self,
+        project_id: &str,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+    ) -> CapexSummary {
+        let conn = self.conn.lock().unwrap();
+        let mut where_sql = String::from("project_id = ?");
+        let mut vals: Vec<&dyn rusqlite::ToSql> = vec![&project_id];
+        if let Some(s) = start_date.as_ref() {
+            where_sql.push_str(" AND period >= ?");
+            vals.push(s);
+        }
+        if let Some(e) = end_date.as_ref() {
+            where_sql.push_str(" AND period <= ?");
+            vals.push(e);
+        }
+
+        let totals_sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(active_minutes),0), COALESCE(SUM(adjusted_cost_microdollars),0), \
+             COALESCE(SUM(CASE WHEN classification='capitalizable' THEN adjusted_cost_microdollars ELSE 0 END),0), \
+             COALESCE(SUM(CASE WHEN classification='expensed' THEN adjusted_cost_microdollars ELSE 0 END),0), \
+             COALESCE(SUM(CASE WHEN confirmed=1 THEN 1 ELSE 0 END),0), \
+             COALESCE(SUM(CASE WHEN confirmed=0 THEN 1 ELSE 0 END),0) \
+             FROM pm_capex_entries WHERE {where_sql}"
+        );
+        let totals = conn.query_row(&totals_sql, rusqlite::params_from_iter(vals.iter().copied()), |r| {
+            Ok((
+                r.get::<_, i64>(0)?,
+                r.get::<_, f64>(1)?,
+                r.get::<_, i64>(2)?,
+                r.get::<_, i64>(3)?,
+                r.get::<_, i64>(4)?,
+                r.get::<_, i64>(5)?,
+                r.get::<_, i64>(6)?,
+            ))
+        });
+        let (total_sessions, total_active_minutes, total_cost, cap_cost, exp_cost, confirmed_count, unconfirmed_count) =
+            totals.unwrap_or((0, 0.0, 0, 0, 0, 0, 0));
+
+        let by_month_sql = format!(
+            "SELECT period, \
+             SUM(CASE WHEN classification='capitalizable' THEN adjusted_cost_microdollars ELSE 0 END), \
+             SUM(CASE WHEN classification='expensed' THEN adjusted_cost_microdollars ELSE 0 END), \
+             SUM(active_minutes) \
+             FROM pm_capex_entries WHERE {where_sql} GROUP BY period ORDER BY period ASC"
+        );
+        let by_month = conn
+            .prepare(&by_month_sql)
+            .and_then(|mut stmt| {
+                let rows = stmt.query_map(rusqlite::params_from_iter(vals.iter().copied()), |r| {
+                    Ok(CapexByMonth {
+                        period: r.get(0)?,
+                        capitalizable: r.get(1)?,
+                        expensed: r.get(2)?,
+                        active_minutes: r.get(3)?,
+                    })
+                })?;
+                Ok(rows.flatten().collect::<Vec<_>>())
+            })
+            .unwrap_or_default();
+
+        let period = if start_date.is_some() || end_date.is_some() {
+            Some(CapexPeriod {
+                start: start_date.unwrap_or("").to_string(),
+                end: end_date.unwrap_or("").to_string(),
+            })
+        } else {
+            None
+        };
+
+        CapexSummary {
+            project_id: project_id.to_string(),
+            period,
+            total_sessions,
+            total_active_minutes,
+            total_cost_microdollars: total_cost,
+            capitalizable_cost_microdollars: cap_cost,
+            expensed_cost_microdollars: exp_cost,
+            confirmed_count,
+            unconfirmed_count,
+            by_month,
+        }
+    }
+
+    /// Render a project's capex ledger as CSV — ports Node `exportCapexCsv`.
+    /// NB Node passes `startDate` as the exact `month` filter (not a range) — a
+    /// quirk we replicate for parity.
+    pub fn export_capex_csv(&self, project_id: &str, start_date: Option<&str>) -> String {
+        let entries = self.list_capex_entries_filtered(project_id, start_date, None);
+        // Node quotes only the DATA rows; the header row is the raw `headers.join(',')`.
+        let headers = "Period,Session ID,Session Slug,Date,Model,\
+Active Minutes,Active Hours,Cost (USD),Classification,Work Type,\
+Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
+        let mut out = String::from(headers);
+        for e in &entries {
+            let s = self.get_session(&e.session_id);
+            let slug = s.as_ref().and_then(|s| s.slug.clone()).unwrap_or_default();
+            let model = s.as_ref().and_then(|s| s.model.clone()).unwrap_or_default();
+            let date = s
+                .as_ref()
+                .and_then(|s| chrono::DateTime::from_timestamp_millis(s.started_at))
+                .map(|dt| dt.format("%Y-%m-%d").to_string())
+                .unwrap_or_default();
+            let notes = e.notes.clone().unwrap_or_default().replace('"', "\"\"");
+            let confirmed_by = e.confirmed_by.clone().unwrap_or_default();
+            let row = format!(
+                "\n\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{:.2}\",\"{:.2}\",\"{:.4}\",\"{}\",\"{}\",\"{:.2}\",\"{:.4}\",\"{}\",\"{}\",\"{}\"",
+                e.period,
+                e.session_id,
+                slug,
+                date,
+                model,
+                e.active_minutes,
+                e.active_minutes / 60.0,
+                e.cost_microdollars as f64 / 1_000_000.0,
+                e.classification,
+                e.work_type.clone().unwrap_or_default(),
+                e.adjustment_factor,
+                e.adjusted_cost_microdollars as f64 / 1_000_000.0,
+                if e.confirmed { "Yes" } else { "No" },
+                confirmed_by,
+                notes,
+            );
+            out.push_str(&row);
+        }
+        out
+    }
+
+    /// Distinct non-null project categories, ascending — ports Node `listCategories`.
+    pub fn list_categories(&self) -> Vec<String> {
+        let conn = self.conn.lock().unwrap();
+        let Ok(mut stmt) = conn.prepare(
+            "SELECT DISTINCT category FROM pm_projects WHERE category IS NOT NULL ORDER BY category ASC",
+        ) else {
+            return Vec::new();
+        };
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0));
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
     // ============================================================
     // Workspace write-CRUD (ports Node updateWorkspace/deleteWorkspace)
     // ============================================================
@@ -979,7 +1249,7 @@ fn map_session(r: &rusqlite::Row) -> rusqlite::Result<PmSession> {
 
 /// Column list (and order) shared by `list_projects`/`get_project` ↔ `map_project`.
 const PROJECT_COLS: &str = "id, workspace_id, name, path, claude_project_key, runtimescope_project, \
-                            phase, project_status, sdk_installed, runtime_apps, created_at, updated_at";
+                            phase, project_status, sdk_installed, runtime_apps, created_at, updated_at, category";
 
 fn map_project(r: &rusqlite::Row) -> rusqlite::Result<PmProject> {
     Ok(PmProject {
@@ -995,6 +1265,7 @@ fn map_project(r: &rusqlite::Row) -> rusqlite::Result<PmProject> {
         runtime_apps: r.get(9)?,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
+        category: r.get(12)?,
     })
 }
 
@@ -1190,6 +1461,71 @@ mod tests {
         assert_eq!(after.confirmed_by.as_deref(), Some("edwin"));
         // ...but recomputed metrics still flow through.
         assert_eq!(after.cost_microdollars, 7_777_777);
+    }
+
+    #[test]
+    fn capex_filter_update_confirm_summary_roundtrip() {
+        let s = tmp_store();
+        // Two entries in the same project; different sessions/periods.
+        let mut a = sample_session("sa", "proj-q");
+        a.cost_microdollars = 1_000_000;
+        s.upsert_capex_stub(&a);
+        let mut b = sample_session("sb", "proj-q");
+        b.cost_microdollars = 2_000_000;
+        b.started_at = a.started_at + 86_400_000; // next day → distinct period
+        s.upsert_capex_stub(&b);
+
+        // confirmed filter: none confirmed yet.
+        assert_eq!(s.list_capex_entries_filtered("proj-q", None, Some(true)).len(), 0);
+        assert_eq!(s.list_capex_entries_filtered("proj-q", None, Some(false)).len(), 2);
+
+        // Update entry a: capitalizable, factor 0.5 + cost → adjusted recompute (Math.round half-up).
+        s.update_capex_entry("capex-sa", Some("capitalizable"), Some("feature"), Some(0.5), Some(1_000_001), Some("note"));
+        let ea = s.list_capex_entries_filtered("proj-q", None, None).into_iter().find(|e| e.id == "capex-sa").unwrap();
+        assert_eq!(ea.classification, "capitalizable");
+        assert_eq!(ea.work_type.as_deref(), Some("feature"));
+        assert_eq!(ea.adjustment_factor, 0.5);
+        assert_eq!(ea.adjusted_cost_microdollars, 500_001, "round(1000001*0.5)=500001 (half-up)");
+        assert_eq!(ea.notes.as_deref(), Some("note"));
+
+        // month filter = exact period match.
+        let period_a = crate::pm_discovery::to_period(a.started_at);
+        assert_eq!(s.list_capex_entries_filtered("proj-q", Some(&period_a), None).len(), 1);
+
+        // confirm a.
+        s.confirm_capex_entry("capex-sa", Some("edwin"));
+        assert_eq!(s.list_capex_entries_filtered("proj-q", None, Some(true)).len(), 1);
+
+        // summary aggregates across both: 2 sessions, 1 confirmed, capitalizable=500001.
+        let sum = s.get_capex_summary("proj-q", None, None);
+        assert_eq!(sum.total_sessions, 2);
+        assert_eq!(sum.confirmed_count, 1);
+        assert_eq!(sum.unconfirmed_count, 1);
+        assert_eq!(sum.capitalizable_cost_microdollars, 500_001);
+        // b is still an unconfirmed expensed stub at full cost.
+        assert_eq!(sum.expensed_cost_microdollars, 2_000_000);
+        assert!(sum.period.is_none(), "no date filter → period omitted");
+        assert_eq!(sum.by_month.len(), 2, "two distinct days");
+
+        // date-filtered summary stamps the period.
+        let sum2 = s.get_capex_summary("proj-q", Some("2020-01-01"), None);
+        assert_eq!(sum2.period.as_ref().map(|p| p.start.as_str()), Some("2020-01-01"));
+
+        // CSV export: header + 1 data row when month-filtered to a's period.
+        let csv = s.export_capex_csv("proj-q", Some(&period_a));
+        assert!(csv.starts_with("Period,Session ID,Session Slug,"), "unquoted header (Node parity)");
+        assert!(csv.lines().nth(1).unwrap().starts_with('"'), "data rows are quoted");
+        assert_eq!(csv.lines().count(), 2, "header + 1 row");
+    }
+
+    #[test]
+    fn empty_capex_summary_and_categories() {
+        let s = tmp_store();
+        let sum = s.get_capex_summary("nope", None, None);
+        assert_eq!(sum.total_sessions, 0);
+        assert_eq!(sum.total_cost_microdollars, 0);
+        assert!(sum.by_month.is_empty());
+        assert!(s.list_categories().is_empty(), "no projects → no categories");
     }
 
     #[test]

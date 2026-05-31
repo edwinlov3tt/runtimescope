@@ -258,6 +258,8 @@ fn process_claude_project(key: &str, claude_base: &Path, pm: &PmStore, res: &mut
         runtime_apps: None,
         created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(now),
         updated_at: now,
+        // Preserve a user-set category across re-discovery (discovery never sets it).
+        category: existing.as_ref().and_then(|e| e.category.clone()),
     };
     pm.upsert_project(&project);
     if existing.is_some() {

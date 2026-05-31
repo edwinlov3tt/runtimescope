@@ -96,6 +96,16 @@ pub async fn serve(
         )
         .route("/api/pm/workspaces/{id}/api-keys", post(pm_create_api_key))
         .route("/api/pm/api-keys/{prefix}", axum::routing::delete(pm_revoke_api_key))
+        // capex + categories (M5.5 Slice A)
+        .route("/api/pm/categories", get(pm_categories))
+        .route("/api/pm/capex-all", get(pm_capex_all))
+        .route("/api/pm/capex-report-all", get(pm_capex_report_all))
+        .route("/api/pm/capex-report/{projectId}", get(pm_capex_report))
+        .route("/api/pm/capex/{projectId}", get(pm_capex_list))
+        .route("/api/pm/capex/{projectId}/summary", get(pm_capex_summary))
+        .route("/api/pm/capex/{projectId}/export", get(pm_capex_export))
+        .route("/api/pm/capex/{projectId}/{entryId}", put(pm_capex_update))
+        .route("/api/pm/capex/{projectId}/{entryId}/confirm", post(pm_capex_confirm))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -657,6 +667,257 @@ async fn pm_set_project_workspace(
     }
     s.pm.set_project_workspace(&id, workspace_id);
     Json(json!({ "ok": true })).into_response()
+}
+
+// ---- pm/ capex + categories (M5.5 Slice A) ----
+
+/// A `text/csv` download response with the given attachment filename.
+fn csv_response(filename: &str, body: String) -> Response {
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, "text/csv".to_string()),
+            (header::CONTENT_DISPOSITION, format!("attachment; filename=\"{filename}\"")),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// GET /api/pm/capex/{projectId} (?month=&confirmed=0|1) — ports Node's filtered list.
+async fn pm_capex_list(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let month = q.get("month").map(String::as_str);
+    // Node: '1' → true, '0' → false, anything else → undefined.
+    let confirmed = match q.get("confirmed").map(String::as_str) {
+        Some("1") => Some(true),
+        Some("0") => Some(false),
+        _ => None,
+    };
+    let entries = s.pm.list_capex_entries_filtered(&project_id, month, confirmed);
+    let count = entries.len();
+    Json(json!({ "data": entries, "count": count })).into_response()
+}
+
+/// GET /api/pm/capex/{projectId}/summary (?start_date=&end_date=).
+async fn pm_capex_summary(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let summary = s.pm.get_capex_summary(
+        &project_id,
+        q.get("start_date").map(String::as_str),
+        q.get("end_date").map(String::as_str),
+    );
+    Json(serde_json::to_value(&summary).unwrap_or_else(|_| json!({}))).into_response()
+}
+
+/// PUT /api/pm/capex/{projectId}/{entryId} — partial update; {ok:true}, 400 on no body.
+async fn pm_capex_update(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((_project_id, entry_id)): Path<(String, String)>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    s.pm.update_capex_entry(
+        &entry_id,
+        v.get("classification").and_then(Value::as_str),
+        v.get("workType").and_then(Value::as_str),
+        v.get("adjustmentFactor").and_then(Value::as_f64),
+        v.get("costMicrodollars").and_then(Value::as_i64),
+        v.get("notes").and_then(Value::as_str),
+    );
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// POST /api/pm/capex/{projectId}/{entryId}/confirm.
+async fn pm_capex_confirm(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((_project_id, entry_id)): Path<(String, String)>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    s.pm.confirm_capex_entry(&entry_id, None);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// GET /api/pm/capex/{projectId}/export — CSV (Node passes start_date as the month).
+async fn pm_capex_export(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let csv = s.pm.export_capex_csv(&project_id, q.get("start_date").map(String::as_str));
+    csv_response(&format!("capex-{project_id}.csv"), csv)
+}
+
+/// GET /api/pm/capex-report/{projectId} — Node returns XLSX (exceljs); documented
+/// divergence: we serve the CSV fallback (the path Node itself takes without exceljs).
+async fn pm_capex_report(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(project_id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let csv = s.pm.export_capex_csv(&project_id, q.get("start_date").map(String::as_str));
+    csv_response(&format!("capex-{project_id}.csv"), csv)
+}
+
+/// GET /api/pm/capex-all (?category=) — cross-project JSON aggregation for the
+/// home dashboard. Ports Node's `capex-all` summary/byProject/entries shape.
+async fn pm_capex_all(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let category = q.get("category").map(String::as_str);
+    let projects: Vec<_> = s
+        .pm
+        .list_projects()
+        .into_iter()
+        .filter(|p| category.is_none_or(|c| p.category.as_deref() == Some(c)))
+        .collect();
+
+    let round2 = |mins: f64| (mins / 60.0 * 100.0).round() / 100.0;
+    let (mut total_cost, mut total_cap, mut total_exp, mut total_mins) = (0i64, 0i64, 0i64, 0f64);
+    let (mut total_confirmed, mut total_unconfirmed) = (0i64, 0i64);
+    let mut by_project: Vec<Value> = Vec::new();
+    let mut all_entries: Vec<Value> = Vec::new();
+
+    for project in &projects {
+        let entries = s.pm.list_capex_entries_filtered(&project.id, None, None);
+        let (mut p_cost, mut p_cap, mut p_exp, mut p_mins, mut p_confirmed) = (0i64, 0i64, 0i64, 0f64, 0i64);
+        for e in &entries {
+            let mut ev = serde_json::to_value(e).unwrap_or_else(|_| json!({}));
+            if let Some(m) = ev.as_object_mut() {
+                m.insert("projectName".into(), json!(project.name));
+            }
+            all_entries.push(ev);
+            p_cost += e.adjusted_cost_microdollars;
+            p_mins += e.active_minutes;
+            if e.classification == "capitalizable" {
+                p_cap += e.adjusted_cost_microdollars;
+            } else {
+                p_exp += e.adjusted_cost_microdollars;
+            }
+            if e.confirmed {
+                p_confirmed += 1;
+            }
+        }
+        if !entries.is_empty() {
+            by_project.push(json!({
+                "projectId": project.id,
+                "projectName": project.name,
+                "category": project.category,
+                "totalCost": p_cost,
+                "capitalizable": p_cap,
+                "expensed": p_exp,
+                "activeMinutes": p_mins,
+                "activeHours": round2(p_mins),
+                "confirmed": p_confirmed,
+                "total": entries.len(),
+            }));
+        }
+        total_cost += p_cost;
+        total_cap += p_cap;
+        total_exp += p_exp;
+        total_mins += p_mins;
+        total_confirmed += p_confirmed;
+        total_unconfirmed += entries.len() as i64 - p_confirmed;
+    }
+
+    // Node sorts entries by createdAt DESC.
+    all_entries.sort_by(|a, b| {
+        let av = a.get("createdAt").and_then(Value::as_i64).unwrap_or(0);
+        let bv = b.get("createdAt").and_then(Value::as_i64).unwrap_or(0);
+        bv.cmp(&av)
+    });
+
+    Json(json!({
+        "data": {
+            "summary": {
+                "totalCost": total_cost,
+                "capitalizable": total_cap,
+                "expensed": total_exp,
+                "activeMinutes": total_mins,
+                "activeHours": round2(total_mins),
+                "confirmed": total_confirmed,
+                "unconfirmed": total_unconfirmed,
+                "projectCount": by_project.len(),
+            },
+            "byProject": by_project,
+            "entries": all_entries,
+        }
+    }))
+    .into_response()
+}
+
+/// GET /api/pm/capex-report-all — Node returns an all-projects XLSX; documented
+/// divergence: we serve a CSV concatenation of every (optionally category-filtered)
+/// project's ledger.
+async fn pm_capex_report_all(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let category = q.get("category").map(String::as_str);
+    let start = q.get("start_date").map(String::as_str);
+    let mut csv = String::new();
+    for project in s.pm.list_projects() {
+        if category.is_some_and(|c| project.category.as_deref() != Some(c)) {
+            continue;
+        }
+        let part = s.pm.export_capex_csv(&project.id, start);
+        if !csv.is_empty() {
+            csv.push('\n');
+        }
+        csv.push_str(&part);
+    }
+    csv_response("capex-all-projects.csv", csv)
+}
+
+/// GET /api/pm/categories — distinct project categories.
+async fn pm_categories(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    Json(json!({ "data": s.pm.list_categories() })).into_response()
 }
 
 // ---- WebSocket ----

@@ -192,6 +192,7 @@ pub fn discover_runtimescope_projects(rs_base: &Path, pm: &PmStore) -> Discovery
                 runtime_apps: serde_json::to_string(&vec![project_name.clone()]).ok(),
                 created_at: now,
                 updated_at: now,
+                category: None, // newly-discovered RS project; category is UI-set later
             };
             pm.upsert_project(&project);
             res.projects_discovered += 1;
@@ -329,6 +330,7 @@ mod tests {
             runtime_apps: None,
             created_at: now,
             updated_at: now,
+            category: None,
         };
         pm.upsert_project(&claude);
 

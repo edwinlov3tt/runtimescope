@@ -78,6 +78,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // serve(stdio()) so initialize lands after the transport reader is up.
     eprintln!("[RuntimeScope] MCP server running on stdio");
 
+    // pm/ project discovery (M5): scan ~/.claude/projects for REAL projects (the
+    // over-discovery fix) + index their sessions into pm.db. Backgrounded so it
+    // never delays the MCP transport; a no-op when ~/.claude/projects is absent
+    // (e.g. the conformance harness's temp HOME). Incremental on re-run.
+    {
+        let pm_bg = pm.clone();
+        let claude_base =
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude");
+        tokio::task::spawn_blocking(move || {
+            let r = collector_core::pm_discovery::discover_claude_projects(&claude_base, &pm_bg);
+            if r.projects_discovered > 0 || r.projects_updated > 0 {
+                eprintln!(
+                    "[RuntimeScope] pm discovery: {} new + {} updated project(s), {} new session(s)",
+                    r.projects_discovered, r.projects_updated, r.sessions_discovered
+                );
+            }
+        });
+    }
+
     let service = Mcp::new(store, hub, pm).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())

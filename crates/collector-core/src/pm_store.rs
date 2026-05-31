@@ -45,8 +45,53 @@ CREATE TABLE IF NOT EXISTS pm_projects (
   id TEXT PRIMARY KEY,
   workspace_id TEXT,
   name TEXT NOT NULL,
+  path TEXT,
+  claude_project_key TEXT,
+  runtimescope_project TEXT,
+  phase TEXT NOT NULL DEFAULT 'preliminary',
+  management_authorized INTEGER NOT NULL DEFAULT 0,
+  probable_to_complete INTEGER NOT NULL DEFAULT 0,
+  project_status TEXT NOT NULL DEFAULT 'active',
+  category TEXT,
+  sdk_installed INTEGER NOT NULL DEFAULT 0,
+  runtime_apps TEXT,
   created_at INTEGER NOT NULL DEFAULT 0,
-  updated_at INTEGER NOT NULL DEFAULT 0
+  updated_at INTEGER NOT NULL DEFAULT 0,
+  metadata TEXT
+);
+CREATE TABLE IF NOT EXISTS pm_sessions (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  jsonl_path TEXT NOT NULL,
+  jsonl_size INTEGER,
+  first_prompt TEXT,
+  summary TEXT,
+  slug TEXT,
+  model TEXT,
+  version TEXT,
+  git_branch TEXT,
+  message_count INTEGER NOT NULL DEFAULT 0,
+  user_message_count INTEGER NOT NULL DEFAULT 0,
+  assistant_message_count INTEGER NOT NULL DEFAULT 0,
+  total_input_tokens INTEGER NOT NULL DEFAULT 0,
+  total_output_tokens INTEGER NOT NULL DEFAULT 0,
+  total_cache_creation_tokens INTEGER NOT NULL DEFAULT 0,
+  total_cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cost_microdollars INTEGER NOT NULL DEFAULT 0,
+  started_at INTEGER NOT NULL,
+  ended_at INTEGER,
+  active_minutes REAL NOT NULL DEFAULT 0,
+  compaction_count INTEGER NOT NULL DEFAULT 0,
+  pre_compaction_tokens INTEGER,
+  permission_mode TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pm_sessions_project ON pm_sessions(project_id);
+CREATE TABLE IF NOT EXISTS pm_deleted_projects (
+  path TEXT PRIMARY KEY,
+  name TEXT,
+  deleted_at INTEGER NOT NULL
 );
 ";
 
@@ -73,11 +118,52 @@ pub struct PmApiKey {
     pub expires_at: Option<i64>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct PmProject {
     pub id: String,
     pub workspace_id: Option<String>,
     pub name: String,
+    pub path: Option<String>,
+    pub claude_project_key: Option<String>,
+    pub runtimescope_project: Option<String>,
+    pub phase: String,
+    pub project_status: String,
+    pub sdk_installed: bool,
+    /// JSON-encoded array of runtime app names (mirrors Node's `runtime_apps` TEXT column).
+    pub runtime_apps: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A parsed/indexed Claude session row (the parser's metrics + file bookkeeping).
+#[derive(Clone, Debug, Default)]
+pub struct PmSession {
+    pub id: String,
+    pub project_id: String,
+    pub jsonl_path: String,
+    pub jsonl_size: i64,
+    pub first_prompt: Option<String>,
+    pub summary: Option<String>,
+    pub slug: Option<String>,
+    pub model: Option<String>,
+    pub version: Option<String>,
+    pub git_branch: Option<String>,
+    pub permission_mode: Option<String>,
+    pub message_count: i64,
+    pub user_message_count: i64,
+    pub assistant_message_count: i64,
+    pub total_input_tokens: i64,
+    pub total_output_tokens: i64,
+    pub total_cache_creation_tokens: i64,
+    pub total_cache_read_tokens: i64,
+    pub cost_microdollars: i64,
+    pub started_at: i64,
+    pub ended_at: Option<i64>,
+    pub active_minutes: f64,
+    pub compaction_count: i64,
+    pub pre_compaction_tokens: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 /// SHA-256 hex of a raw API token (matches Node `hashApiKey`).
@@ -158,14 +244,85 @@ impl PmStore {
     /// project counts in list_workspaces.
     pub fn list_projects(&self) -> Vec<PmProject> {
         let conn = self.conn.lock().unwrap();
-        let mut stmt = match conn.prepare("SELECT id, workspace_id, name FROM pm_projects") {
+        let mut stmt = match conn.prepare(&format!("SELECT {PROJECT_COLS} FROM pm_projects")) {
             Ok(s) => s,
             Err(_) => return Vec::new(),
         };
-        let rows = stmt.query_map([], |r| {
-            Ok(PmProject { id: r.get(0)?, workspace_id: r.get(1)?, name: r.get(2)? })
-        });
+        let rows = stmt.query_map([], map_project);
         rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Insert or merge a project. New projects without a workspace go to the
+    /// default; existing keep theirs. `path`/`claude_project_key`/`runtimescope_project`
+    /// COALESCE (new value wins only when non-null); `sdk_installed` is sticky-true.
+    /// Ports Node `upsertProject`.
+    pub fn upsert_project(&self, p: &PmProject) {
+        let conn = self.conn.lock().unwrap();
+        let workspace_id: Option<String> = p.workspace_id.clone().or_else(|| {
+            conn.query_row("SELECT id FROM pm_workspaces WHERE is_default = 1 LIMIT 1", [], |r| r.get(0))
+                .optional()
+                .ok()
+                .flatten()
+        });
+        let phase = if p.phase.is_empty() { "application_development" } else { &p.phase };
+        let status = if p.project_status.is_empty() { "active" } else { &p.project_status };
+        let _ = conn.execute(
+            "INSERT INTO pm_projects (id, workspace_id, name, path, claude_project_key, runtimescope_project,
+               phase, project_status, sdk_installed, runtime_apps, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
+             ON CONFLICT(id) DO UPDATE SET
+               workspace_id = COALESCE(pm_projects.workspace_id, excluded.workspace_id),
+               name = excluded.name,
+               path = COALESCE(excluded.path, pm_projects.path),
+               claude_project_key = COALESCE(excluded.claude_project_key, pm_projects.claude_project_key),
+               runtimescope_project = COALESCE(excluded.runtimescope_project, pm_projects.runtimescope_project),
+               sdk_installed = CASE WHEN excluded.sdk_installed = 1 THEN 1 ELSE pm_projects.sdk_installed END,
+               runtime_apps = COALESCE(excluded.runtime_apps, pm_projects.runtime_apps),
+               updated_at = excluded.updated_at",
+            params![
+                p.id, workspace_id, p.name, p.path, p.claude_project_key, p.runtimescope_project,
+                phase, status, p.sdk_installed as i64, p.runtime_apps, p.created_at, p.updated_at
+            ],
+        );
+    }
+
+    /// Insert or replace a session row (ports Node `upsertSession`).
+    pub fn upsert_session(&self, s: &PmSession) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO pm_sessions (id, project_id, jsonl_path, jsonl_size, first_prompt, summary,
+               slug, model, version, git_branch, permission_mode, message_count, user_message_count,
+               assistant_message_count, total_input_tokens, total_output_tokens, total_cache_creation_tokens,
+               total_cache_read_tokens, cost_microdollars, started_at, ended_at, active_minutes,
+               compaction_count, pre_compaction_tokens, created_at, updated_at)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18,?19,?20,?21,?22,?23,?24,?25,?26)",
+            params![
+                s.id, s.project_id, s.jsonl_path, s.jsonl_size, s.first_prompt, s.summary,
+                s.slug, s.model, s.version, s.git_branch, s.permission_mode, s.message_count,
+                s.user_message_count, s.assistant_message_count, s.total_input_tokens, s.total_output_tokens,
+                s.total_cache_creation_tokens, s.total_cache_read_tokens, s.cost_microdollars, s.started_at,
+                s.ended_at, s.active_minutes, s.compaction_count, s.pre_compaction_tokens, s.created_at, s.updated_at
+            ],
+        );
+    }
+
+    /// The `jsonl_size` of a stored session (for the incremental "unchanged → skip"
+    /// check), or `None` if not yet indexed.
+    pub fn session_jsonl_size(&self, id: &str) -> Option<i64> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT jsonl_size FROM pm_sessions WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .ok()
+            .flatten()
+    }
+
+    /// Has this path been explicitly deleted (the discovery blocklist)?
+    pub fn is_deleted_path(&self, path: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT 1 FROM pm_deleted_projects WHERE path = ?1", params![path], |_| Ok(()))
+            .optional()
+            .map(|o| o.is_some())
+            .unwrap_or(false)
     }
 
     /// Active (non-revoked) API keys for a workspace. The secret is masked.
@@ -272,14 +429,10 @@ impl PmStore {
 
     pub fn get_project(&self, id: &str) -> Option<PmProject> {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT id, workspace_id, name FROM pm_projects WHERE id = ?1",
-            params![id],
-            |r| Ok(PmProject { id: r.get(0)?, workspace_id: r.get(1)?, name: r.get(2)? }),
-        )
-        .optional()
-        .ok()
-        .flatten()
+        conn.query_row(&format!("SELECT {PROJECT_COLS} FROM pm_projects WHERE id = ?1"), params![id], map_project)
+            .optional()
+            .ok()
+            .flatten()
     }
 
     pub fn set_project_workspace(&self, project_id: &str, workspace_id: &str) {
@@ -299,6 +452,27 @@ fn gen_id(conn: &Connection, prefix: &str, bytes: u32) -> String {
         |r| r.get::<_, String>(0),
     )
     .unwrap_or_else(|_| format!("{prefix}00000000"))
+}
+
+/// Column list (and order) shared by `list_projects`/`get_project` ↔ `map_project`.
+const PROJECT_COLS: &str = "id, workspace_id, name, path, claude_project_key, runtimescope_project, \
+                            phase, project_status, sdk_installed, runtime_apps, created_at, updated_at";
+
+fn map_project(r: &rusqlite::Row) -> rusqlite::Result<PmProject> {
+    Ok(PmProject {
+        id: r.get(0)?,
+        workspace_id: r.get(1)?,
+        name: r.get(2)?,
+        path: r.get(3)?,
+        claude_project_key: r.get(4)?,
+        runtimescope_project: r.get(5)?,
+        phase: r.get::<_, Option<String>>(6)?.unwrap_or_default(),
+        project_status: r.get::<_, Option<String>>(7)?.unwrap_or_default(),
+        sdk_installed: r.get::<_, i64>(8)? == 1,
+        runtime_apps: r.get(9)?,
+        created_at: r.get(10)?,
+        updated_at: r.get(11)?,
+    })
 }
 
 fn map_workspace(r: &rusqlite::Row) -> rusqlite::Result<PmWorkspace> {

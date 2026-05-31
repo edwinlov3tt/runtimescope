@@ -18,7 +18,25 @@
 //! This DIVERGES from Node (which would include the noise), so it is gated by the
 //! Rust unit tests below, not the Node-vs-Rust conformance suite.
 
+use crate::pm_session_parser::parse_session_jsonl;
+use crate::pm_store::{PmProject, PmSession, PmStore};
+use serde_json::Value;
 use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+fn now_ms() -> i64 {
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+}
+
+/// Outcome of a discovery pass (ports Node `DiscoveryResult`).
+#[derive(Debug, Default, Clone, PartialEq)]
+pub struct DiscoveryResult {
+    pub projects_discovered: i64,
+    pub projects_updated: i64,
+    pub sessions_discovered: i64,
+    pub sessions_updated: i64,
+    pub errors: Vec<String>,
+}
 
 /// Project-root markers — the presence of any one means "this is a real project
 /// directory," not just a folder someone ran Claude in.
@@ -170,6 +188,151 @@ pub fn resolve_real_project(key: &str) -> Option<PathBuf> {
     }
 }
 
+/// basename of a filesystem path.
+fn basename(path: &str) -> String {
+    path.trim_end_matches('/').rsplit('/').next().unwrap_or(path).to_string()
+}
+
+/// Does `path` have the RuntimeScope SDK installed? package.json deps/devDeps,
+/// else a `node_modules/@runtimescope` directory. (Ports the common-case of Node
+/// `detectSdkInstalled`; the monorepo-workspace scan is a follow-up.)
+pub fn detect_sdk_installed(path: &Path) -> bool {
+    if let Ok(content) = std::fs::read_to_string(path.join("package.json")) {
+        if let Ok(pkg) = serde_json::from_str::<Value>(&content) {
+            for field in ["dependencies", "devDependencies"] {
+                if let Some(deps) = pkg.get(field).and_then(Value::as_object) {
+                    if deps.contains_key("@runtimescope/sdk") || deps.contains_key("@runtimescope/server-sdk") {
+                        return true;
+                    }
+                }
+            }
+        }
+    }
+    path.join("node_modules").join("@runtimescope").exists()
+}
+
+/// Discover Claude Code projects from `<claude_base>/projects/` and index their
+/// sessions into `pm`. Ports `discoverClaudeProjects` + `processClaudeProject` +
+/// `indexSessionsForClaudeProject`, WITH the over-discovery fix: only directories
+/// that [`is_real_project`] (resolve + carry a marker) are registered. (RuntimeScope
+/// project discovery — which needs the ProjectManager port — is a separate pass.)
+pub fn discover_claude_projects(claude_base: &Path, pm: &PmStore) -> DiscoveryResult {
+    let mut res = DiscoveryResult::default();
+    let projects_dir = claude_base.join("projects");
+    let Ok(entries) = std::fs::read_dir(&projects_dir) else {
+        return res; // ~/.claude/projects doesn't exist — nothing to discover
+    };
+    for entry in entries.flatten() {
+        if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            continue;
+        }
+        let key = entry.file_name().to_string_lossy().to_string();
+        process_claude_project(&key, claude_base, pm, &mut res);
+    }
+    res
+}
+
+fn process_claude_project(key: &str, claude_base: &Path, pm: &PmStore, res: &mut DiscoveryResult) {
+    // The over-discovery fix: skip anything that isn't a resolvable real project.
+    let Some(path) = resolve_real_project(key) else { return };
+    let path_str = path.to_string_lossy().to_string();
+    if pm.is_deleted_path(&path_str) || pm.is_deleted_path(key) {
+        return;
+    }
+    let id = slugify_path(&path_str);
+    let now = now_ms();
+    let existing = pm.get_project(&id);
+    let sdk = detect_sdk_installed(&path) || existing.as_ref().map(|e| e.sdk_installed).unwrap_or(false);
+    let project = PmProject {
+        id: id.clone(),
+        workspace_id: None, // upsert assigns the default workspace
+        name: basename(&path_str),
+        path: Some(path_str),
+        claude_project_key: Some(key.to_string()),
+        runtimescope_project: None,
+        phase: "application_development".to_string(),
+        project_status: "active".to_string(),
+        sdk_installed: sdk,
+        runtime_apps: None,
+        created_at: existing.as_ref().map(|e| e.created_at).unwrap_or(now),
+        updated_at: now,
+    };
+    pm.upsert_project(&project);
+    if existing.is_some() {
+        res.projects_updated += 1;
+    } else {
+        res.projects_discovered += 1;
+    }
+    index_sessions(&id, key, claude_base, pm, res);
+}
+
+fn index_sessions(project_id: &str, key: &str, claude_base: &Path, pm: &PmStore, res: &mut DiscoveryResult) {
+    let dir = claude_base.join("projects").join(key);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return };
+    for entry in entries.flatten() {
+        let fname = entry.file_name().to_string_lossy().to_string();
+        if !fname.ends_with(".jsonl") || !entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+            continue;
+        }
+        let session_id = fname.trim_end_matches(".jsonl").to_string();
+        let jsonl_path = dir.join(&fname);
+        let size = std::fs::metadata(&jsonl_path).map(|m| m.len() as i64).unwrap_or(0);
+        let prev = pm.session_jsonl_size(&session_id);
+        if prev == Some(size) {
+            continue; // unchanged — skip (incremental)
+        }
+        let session = build_session(&session_id, project_id, &jsonl_path, size);
+        pm.upsert_session(&session);
+        if prev.is_some() {
+            res.sessions_updated += 1;
+        } else {
+            res.sessions_discovered += 1;
+        }
+    }
+}
+
+/// Full-parse a session JSONL into a `PmSession`. (We always full-parse — Node's
+/// `sessions-index.json` fast-path zeroes token/cost, which is worse data; this
+/// is a deliberate accuracy improvement.) `started_at` falls back to file mtime.
+fn build_session(session_id: &str, project_id: &str, jsonl_path: &Path, size: i64) -> PmSession {
+    let now = now_ms();
+    let file_mtime = std::fs::metadata(jsonl_path)
+        .and_then(|m| m.modified())
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(now);
+    let p = parse_session_jsonl(jsonl_path);
+    PmSession {
+        id: session_id.to_string(),
+        project_id: project_id.to_string(),
+        jsonl_path: jsonl_path.to_string_lossy().to_string(),
+        jsonl_size: size,
+        first_prompt: p.first_prompt,
+        summary: p.summary,
+        slug: p.slug,
+        model: p.model,
+        version: p.version,
+        git_branch: p.git_branch,
+        permission_mode: p.permission_mode,
+        message_count: p.message_count,
+        user_message_count: p.user_message_count,
+        assistant_message_count: p.assistant_message_count,
+        total_input_tokens: p.total_input_tokens,
+        total_output_tokens: p.total_output_tokens,
+        total_cache_creation_tokens: p.total_cache_creation_tokens,
+        total_cache_read_tokens: p.total_cache_read_tokens,
+        cost_microdollars: p.cost_microdollars,
+        started_at: p.started_at.unwrap_or(file_mtime),
+        ended_at: p.ended_at,
+        active_minutes: p.active_minutes,
+        compaction_count: p.compaction_count,
+        pre_compaction_tokens: p.pre_compaction_tokens,
+        created_at: now,
+        updated_at: now,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,6 +424,67 @@ mod tests {
     fn decode_claude_key_unresolvable_is_none() {
         // A key that maps to no real path → None → the project is skipped.
         assert_eq!(decode_claude_key("-no-such-path-anywhere-xyz-12345"), None);
+    }
+
+    fn claude_key_for(path: &Path) -> String {
+        format!("-{}", path.to_str().unwrap().trim_start_matches('/').replace('/', "-"))
+    }
+
+    #[test]
+    fn discover_claude_projects_filters_and_indexes_sessions() {
+        let base = tmp();
+        let pm = PmStore::open(&base.join("pm.db")).unwrap();
+        let claude = base.join("claude");
+
+        // A REAL project (has package.json marker) with one session transcript.
+        let real_src = base.join("my-cool-app"); // hyphen → exercises greedy decode
+        fs::create_dir_all(&real_src).unwrap();
+        fs::write(real_src.join("package.json"), "{}").unwrap();
+        let real_key = claude_key_for(&real_src);
+        let real_proj_dir = claude.join("projects").join(&real_key);
+        fs::create_dir_all(&real_proj_dir).unwrap();
+        fs::write(
+            real_proj_dir.join("sess-1.jsonl"),
+            concat!(
+                "{\"type\":\"user\",\"message\":{\"content\":\"hello\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}\n",
+                "{\"type\":\"assistant\",\"timestamp\":\"2026-01-01T00:01:00.000Z\",\"message\":{\"model\":\"claude-sonnet-4-5\",\"usage\":{\"input_tokens\":1000,\"output_tokens\":500}}}"
+            ),
+        ).unwrap();
+
+        // A SCRATCH dir (no marker) — Node would register it; the fix skips it.
+        let scratch_src = base.join("scratch");
+        fs::create_dir_all(&scratch_src).unwrap();
+        let scratch_key = claude_key_for(&scratch_src);
+        let scratch_proj_dir = claude.join("projects").join(&scratch_key);
+        fs::create_dir_all(&scratch_proj_dir).unwrap();
+        fs::write(scratch_proj_dir.join("sess-x.jsonl"), "{\"type\":\"user\",\"message\":{\"content\":\"hi\"},\"timestamp\":\"2026-01-01T00:00:00.000Z\"}").unwrap();
+
+        let res = discover_claude_projects(&claude, &pm);
+
+        // Only the real project (scratch skipped → the over-discovery fix).
+        assert_eq!(res.projects_discovered, 1, "scratch dir must NOT be discovered");
+        assert_eq!(res.sessions_discovered, 1);
+        let projects = pm.list_projects();
+        assert_eq!(projects.len(), 1);
+        let p = &projects[0];
+        assert_eq!(p.name, "my-cool-app");
+        assert_eq!(p.path.as_deref(), Some(real_src.to_str().unwrap()));
+        assert!(p.workspace_id.is_some(), "assigned to the default workspace");
+        // it counts under the Personal workspace
+        let personal = &pm.list_workspaces()[0];
+        assert_eq!(personal.name, "Personal");
+
+        // The session was parsed + indexed with real metrics.
+        let sz = pm.session_jsonl_size("sess-1");
+        assert!(sz.is_some());
+
+        // Re-running is idempotent: unchanged session is skipped, project updated.
+        let res2 = discover_claude_projects(&claude, &pm);
+        assert_eq!(res2.projects_discovered, 0);
+        assert_eq!(res2.projects_updated, 1);
+        assert_eq!(res2.sessions_discovered, 0);
+        assert_eq!(res2.sessions_updated, 0); // size unchanged → skipped
+        assert_eq!(pm.list_projects().len(), 1);
     }
 
     #[test]

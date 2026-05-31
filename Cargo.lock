@@ -168,6 +168,7 @@ name = "collector-core"
 version = "0.11.0"
 dependencies = [
  "axum",
+ "chrono",
  "futures-util",
  "rusqlite",
  "serde",

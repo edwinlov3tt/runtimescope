@@ -6,7 +6,7 @@
 //! sets these and waits for /readyz).
 
 use collector_core::{
-    data_dir, open_store, port_from_env, serve, CommandHub, PmStore, DEFAULT_HTTP_PORT,
+    data_dir, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore, DEFAULT_HTTP_PORT,
     DEFAULT_WS_PORT, VERSION,
 };
 
@@ -26,6 +26,8 @@ async fn main() -> std::io::Result<()> {
     eprintln!("[RuntimeScope]   HTTP API:  http://127.0.0.1:{http_port}");
 
     // Standalone daemon has no MCP, so the command hub is unused here (sessions
-    // still register; commands simply never get issued). Same serve() either way.
-    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string()).await
+    // still register; commands simply never get issued). Standalone auth mode:
+    // honors RUNTIMESCOPE_AUTH_TOKEN (Node parity, standalone.ts).
+    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string(), AuthMode::Standalone)
+        .await
 }

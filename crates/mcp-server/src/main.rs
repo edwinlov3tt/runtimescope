@@ -10,8 +10,8 @@ mod sidecar;
 mod tools;
 
 use collector_core::{
-    data_dir, open_store, port_from_env, serve, CommandHub, PmStore, StoreHandle, DEFAULT_HTTP_PORT,
-    DEFAULT_WS_PORT, VERSION,
+    data_dir, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore, StoreHandle,
+    DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
 };
 use rmcp::{
     handler::server::{tool::ToolRouter, ServerHandler},
@@ -69,7 +69,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let serve_hub = hub.clone();
     let serve_pm = pm.clone();
     tokio::spawn(async move {
-        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string()).await {
+        // MCP auth mode: config-file-only, ignores RUNTIMESCOPE_AUTH_TOKEN (Node
+        // parity, mcp-server/src/index.ts).
+        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp).await {
             eprintln!("[RuntimeScope] embedded collector failed: {e}");
         }
     });

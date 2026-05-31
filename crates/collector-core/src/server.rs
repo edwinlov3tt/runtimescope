@@ -5,7 +5,7 @@
 //! `ws_port` (default 6767), HTTP API on `http_port` (default 6768). All store
 //! access is async (the store is the dedicated-thread `StoreHandle`).
 
-use crate::auth::AuthManager;
+use crate::auth::{AuthManager, AuthMode};
 use crate::command::CommandHub;
 use crate::event::{
     event_type_of, is_valid_event_type, kind_to_event_type, project_of, EventBatch,
@@ -48,8 +48,9 @@ fn now_ms() -> i64 {
     SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
 }
 
-/// Bind both ports and serve forever. Returns only on bind error. Auth is read
-/// from `RUNTIMESCOPE_AUTH_TOKEN` (off when unset).
+/// Bind both ports and serve forever. Returns only on bind error. Auth is
+/// constructed per `auth_mode` ([`AuthMode::Standalone`] for `collector-server`,
+/// [`AuthMode::Mcp`] for `mcp-server`) so each binary matches its Node reference.
 pub async fn serve(
     store: StoreHandle,
     hub: CommandHub,
@@ -57,12 +58,13 @@ pub async fn serve(
     ws_port: u16,
     http_port: u16,
     version: String,
+    auth_mode: AuthMode,
 ) -> std::io::Result<()> {
     let state = AppState {
         store,
         hub,
         pm,
-        auth: AuthManager::from_env(),
+        auth: AuthManager::for_mode(auth_mode),
         started: Instant::now(),
         version,
     };

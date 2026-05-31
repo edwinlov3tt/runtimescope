@@ -170,6 +170,21 @@ pub struct PmApiKey {
     pub expires_at: Option<i64>,
 }
 
+/// Emit the `runtime_apps` JSON-string column as a real JSON array. Only invoked
+/// for `Some` (None is dropped by `skip_serializing_if`); a malformed/empty
+/// string degrades to `[]`. Mirrors Node's `JSON.parse(row.runtime_apps)` on read.
+fn serialize_runtime_apps<S: serde::Serializer>(
+    v: &Option<String>,
+    s: S,
+) -> Result<S::Ok, S::Error> {
+    use serde::Serialize;
+    let arr: Vec<String> = v
+        .as_deref()
+        .and_then(|j| serde_json::from_str(j).ok())
+        .unwrap_or_default();
+    arr.serialize(s)
+}
+
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PmProject {
@@ -187,7 +202,11 @@ pub struct PmProject {
     pub project_status: String,
     pub sdk_installed: bool,
     /// JSON-encoded array of runtime app names (mirrors Node's `runtime_apps` TEXT column).
-    #[serde(skip_serializing_if = "Option::is_none")]
+    /// Stored as a JSON-string in SQLite but emitted as a real array over HTTP —
+    /// Node `JSON.parse`s it on read and the dashboard consumes `runtimeApps` as
+    /// `string[]` (`.length`, `.map(...)`). Serializing the raw string would
+    /// double-encode it and break those consumers.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_runtime_apps")]
     pub runtime_apps: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -633,9 +652,13 @@ impl PmStore {
                cost_microdollars = excluded.cost_microdollars,
                adjustment_factor = excluded.adjustment_factor,
                adjusted_cost_microdollars = excluded.adjusted_cost_microdollars,
-               confirmed = excluded.confirmed,
-               confirmed_at = excluded.confirmed_at,
-               confirmed_by = excluded.confirmed_by,
+               -- INTENTIONAL DIVERGENCE from Node (pm-store.ts upsertCapexEntry, which
+               -- blindly overwrites these): once a user confirms an entry, re-indexing
+               -- (which always re-stubs confirmed=false) must NOT revert it. Confirmation
+               -- is financial audit state; preserve it once set. Gated by a Rust unit test.
+               confirmed = CASE WHEN pm_capex_entries.confirmed = 1 THEN 1 ELSE excluded.confirmed END,
+               confirmed_at = CASE WHEN pm_capex_entries.confirmed = 1 THEN pm_capex_entries.confirmed_at ELSE excluded.confirmed_at END,
+               confirmed_by = CASE WHEN pm_capex_entries.confirmed = 1 THEN pm_capex_entries.confirmed_by ELSE excluded.confirmed_by END,
                notes = excluded.notes,
                updated_at = excluded.updated_at",
             params![
@@ -1135,6 +1158,59 @@ mod tests {
         assert_eq!(after[0].cost_microdollars, 9_000_000);
         assert_eq!(after[0].adjusted_cost_microdollars, 9_000_000);
         assert_eq!(after[0].active_minutes, 100.0);
+    }
+
+    #[test]
+    fn reindex_does_not_clobber_user_confirmed_capex() {
+        // INTENTIONAL DIVERGENCE from Node: re-stubbing a session (confirmed=false)
+        // must never revert a user's manual confirmation. Once confirmed, the
+        // confirmation flag + metadata are immutable through the stub path, while
+        // the recomputed metrics (cost/minutes/etc.) still update.
+        let s = tmp_store();
+        let sess = sample_session("sess-c", "proj-c");
+        s.upsert_capex_stub(&sess);
+
+        // User confirms the entry (the write path sets confirmed=true + metadata).
+        let mut confirmed = s.list_capex_entries("proj-c")[0].clone();
+        confirmed.confirmed = true;
+        confirmed.confirmed_at = Some(1_704_070_000_000);
+        confirmed.confirmed_by = Some("edwin".to_string());
+        confirmed.classification = "capitalized".to_string();
+        s.upsert_capex_entry(&confirmed);
+
+        // Re-index with fresh metrics (always confirmed=false via the stub).
+        let mut sess2 = sample_session("sess-c", "proj-c");
+        sess2.cost_microdollars = 7_777_777;
+        s.upsert_capex_stub(&sess2);
+
+        let after = &s.list_capex_entries("proj-c")[0];
+        // Confirmation preserved...
+        assert!(after.confirmed, "re-index must not revert confirmed");
+        assert_eq!(after.confirmed_at, Some(1_704_070_000_000));
+        assert_eq!(after.confirmed_by.as_deref(), Some("edwin"));
+        // ...but recomputed metrics still flow through.
+        assert_eq!(after.cost_microdollars, 7_777_777);
+    }
+
+    #[test]
+    fn runtime_apps_serializes_as_array_not_string() {
+        // The dashboard consumes runtimeApps as string[] (.length / .map). The
+        // column stores a JSON-string, so it must be parsed-then-emitted as an
+        // array over HTTP — never double-encoded.
+        let p = PmProject {
+            id: "p1".into(),
+            name: "My Web".into(),
+            runtime_apps: Some(r#"["web","api"]"#.into()),
+            ..Default::default()
+        };
+        let v = serde_json::to_value(&p).unwrap();
+        assert_eq!(v["runtimeApps"], serde_json::json!(["web", "api"]));
+        assert!(v["runtimeApps"].is_array(), "must be a JSON array, not a string");
+
+        // Absent → field omitted entirely (skip_serializing_if).
+        let empty = PmProject { id: "p2".into(), runtime_apps: None, ..Default::default() };
+        let v2 = serde_json::to_value(&empty).unwrap();
+        assert!(v2.get("runtimeApps").is_none());
     }
 
     #[test]

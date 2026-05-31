@@ -20,6 +20,7 @@ pub mod server;
 pub mod store;
 pub mod wal;
 
+pub use auth::AuthMode;
 pub use command::CommandHub;
 pub use pm_project_manager::{discover_runtimescope_projects, ProjectManager};
 pub use pm_store::PmStore;

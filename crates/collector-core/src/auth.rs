@@ -1,13 +1,13 @@
 //! Auth model — `docs/specs/wire-protocol.md` §3 (WS) + §7 (HTTP).
 //!
-//! Off by default; enabled when EITHER `RUNTIMESCOPE_AUTH_TOKEN` is set OR the
-//! global config file (`$HOME/.runtimescope/config.json`) carries an enabled
-//! `auth` section — this mirrors Node, whose MCP server constructs the
-//! `AuthManager` from `projectManager.getGlobalConfig().auth`
-//! (`packages/mcp-server/src/index.ts`), NOT from an env var. HTTP uses
-//! `Authorization: Bearer <token>`; the WS handshake carries `authToken`. The
-//! public-route set (health/readyz/metrics/snippet/dashboard) is reachable
-//! without auth even when enabled; everything else is gated (401).
+//! Off by default. Enablement is **per-binary**, matching Node's two distinct
+//! wirings (see [`AuthMode`]): the standalone `collector-server` honors
+//! `RUNTIMESCOPE_AUTH_TOKEN` (comma-separated, precedence over the config file —
+//! `standalone.ts`), while `mcp-server` is config-file-only and ignores the env
+//! var (`mcp-server/src/index.ts`). HTTP uses `Authorization: Bearer <token>`;
+//! the WS handshake carries `authToken`. The public-route set
+//! (health/readyz/metrics/snippet/dashboard) is reachable without auth even when
+//! enabled; everything else is gated (401).
 //!
 //! Node parity (`packages/collector/src/auth.ts`): `isEnabled` reflects the
 //! configured `enabled` flag; `validate`/`isAuthorized` constant-time-compare
@@ -48,50 +48,84 @@ struct GlobalConfig {
 
 #[derive(Clone)]
 pub struct AuthManager {
-    /// `RUNTIMESCOPE_AUTH_TOKEN`, if set and non-empty.
-    env_token: Option<String>,
-    /// Keys from `config.json`'s `auth.apiKeys` — only populated when the
-    /// config's `auth.enabled` is true (matching Node, which loads keys into
-    /// the manager but gates everything on `enabled`).
-    config_keys: Vec<String>,
-    /// True iff the config's `auth.enabled` flag is set.
-    config_enabled: bool,
+    /// The acceptable token set: the comma-split env tokens (standalone with an
+    /// env token), otherwise the enabled config keys. Empty when auth is off.
+    tokens: Vec<String>,
+    /// True when auth is on (env token present for standalone, or config
+    /// `auth.enabled`).
+    enabled: bool,
+}
+
+/// Which Node entrypoint's auth-wiring to mirror. Node constructs its
+/// `AuthManager` differently per binary, and we reproduce each exactly:
+/// - **Standalone** (`packages/collector/src/standalone.ts`): `RUNTIMESCOPE_AUTH_TOKEN`
+///   (comma-separated) takes precedence over the config file — if set, it supplies
+///   the keys and enables auth, and `config.auth` is ignored.
+/// - **Mcp** (`packages/mcp-server/src/index.ts`): config file only; the env var
+///   is **not** read.
+///
+/// `serve()` threads the mode in so `collector-server` and `mcp-server` each match
+/// their reference instead of sharing one flattened policy.
+#[derive(Clone, Copy, Debug)]
+pub enum AuthMode {
+    /// `collector-server` ↔ Node standalone (env token wins, else config).
+    Standalone,
+    /// `mcp-server` ↔ Node MCP (config file only; env var ignored).
+    Mcp,
 }
 
 impl AuthManager {
-    /// Construct from the environment AND the global config file
-    /// (`$HOME/.runtimescope/config.json`). This is the production entrypoint —
-    /// `server.rs` calls it — and it now honors the config-file `auth` section
-    /// so Rust matches Node's enablement behavior.
+    /// Construct for an [`AuthMode`] against the real data dir.
+    pub fn for_mode(mode: AuthMode) -> Self {
+        match mode {
+            AuthMode::Standalone => Self::from_env_and_dir(crate::data_dir()),
+            AuthMode::Mcp => Self::from_config_and_dir(crate::data_dir()),
+        }
+    }
+
+    /// Standalone construction from the real data dir.
     pub fn from_env() -> Self {
         Self::from_env_and_dir(crate::data_dir())
     }
 
-    /// Same as [`from_env`], but reads the config from an explicit data dir.
-    /// Used by tests (and any caller that wants to point at an isolated dir).
+    /// Standalone (collector-server) construction from an explicit data dir.
+    /// **Env precedence**: a non-empty `RUNTIMESCOPE_AUTH_TOKEN` (comma-separated)
+    /// supplies the acceptable keys and enables auth, and the config-file `auth`
+    /// section is then ignored — mirroring Node `standalone.ts`
+    /// (`authFromEnv?.apiKeys ?? globalConfig.auth?.apiKeys ?? []`).
     pub fn from_env_and_dir(data_dir: impl AsRef<Path>) -> Self {
-        let env_token = std::env::var("RUNTIMESCOPE_AUTH_TOKEN").ok().filter(|s| !s.is_empty());
-        let config = read_global_config(data_dir.as_ref());
-        Self::new(env_token, config)
+        let env_tokens = env_tokens();
+        if !env_tokens.is_empty() {
+            return AuthManager { tokens: env_tokens, enabled: true };
+        }
+        Self::from_config(read_global_config(data_dir.as_ref()))
     }
 
-    fn new(env_token: Option<String>, config: Option<GlobalConfig>) -> Self {
+    /// MCP-server construction from an explicit data dir: config file only — the
+    /// env var is deliberately ignored (Node `mcp-server/src/index.ts` builds the
+    /// `AuthManager` solely from `globalConfig.auth`).
+    pub fn from_config_and_dir(data_dir: impl AsRef<Path>) -> Self {
+        Self::from_config(read_global_config(data_dir.as_ref()))
+    }
+
+    fn from_config(config: Option<GlobalConfig>) -> Self {
         let auth = config.and_then(|c| c.auth);
-        let config_enabled = auth.as_ref().map(|a| a.enabled).unwrap_or(false);
+        let enabled = auth.as_ref().map(|a| a.enabled).unwrap_or(false);
         // Only load keys when config auth is enabled — disabled config keys must
         // never authorize (Node's `validate` short-circuits on `!enabled`).
-        let config_keys = if config_enabled {
+        let tokens = if enabled {
             auth.map(|a| a.api_keys.into_iter().map(|e| e.key).filter(|k| !k.is_empty()).collect())
                 .unwrap_or_default()
         } else {
             Vec::new()
         };
-        AuthManager { env_token, config_keys, config_enabled }
+        AuthManager { tokens, enabled }
     }
 
-    /// Enabled if the config's `auth.enabled` is true OR an env token is set.
+    /// Enabled when an env token is set (standalone) or the config's `auth.enabled`
+    /// is true — per the [`AuthMode`] this manager was built with.
     pub fn enabled(&self) -> bool {
-        self.config_enabled || self.env_token.is_some()
+        self.enabled
     }
 
     /// True if the presented token is acceptable. When auth is off, everything
@@ -103,7 +137,7 @@ impl AuthManager {
     pub fn authorized(&self, presented: Option<&str>) -> bool {
         use subtle::ConstantTimeEq;
 
-        if !self.enabled() {
+        if !self.enabled {
             return true;
         }
 
@@ -115,22 +149,46 @@ impl AuthManager {
         let mut ok = false;
         // ct_eq is constant-time over the byte content for equal-length slices;
         // an unequal length short-circuits (length isn't secret). We OR across
-        // all candidates (env token + every config key) without short-circuit.
-        if let Some(expected) = &self.env_token {
-            ok |= bool::from(p.ct_eq(expected.as_bytes()));
-        }
-        for expected in &self.config_keys {
+        // every acceptable token without short-circuit, so timing is independent
+        // of which (if any) key matched.
+        for expected in &self.tokens {
             ok |= bool::from(p.ct_eq(expected.as_bytes()));
         }
         ok
     }
 
-    /// Pull the bearer token out of an `Authorization` header value.
+    /// Pull the bearer token out of an `Authorization` header value. Mirrors
+    /// Node's `/^Bearer\s+(\S+)$/i` (`packages/collector/src/auth.ts`):
+    /// case-insensitive `Bearer`, one-or-more whitespace, then a single run of
+    /// non-whitespace to end-of-string. A token with surrounding or internal
+    /// whitespace (e.g. `"Bearer abc "`) does NOT match — Node returns null there.
     pub fn extract_bearer(header: Option<&str>) -> Option<&str> {
-        header
-            .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
-            .map(str::trim)
+        let h = header?;
+        // First 6 bytes must be "Bearer" (ASCII → byte 6 is a char boundary).
+        if !h.get(..6).is_some_and(|p| p.eq_ignore_ascii_case("Bearer")) {
+            return None;
+        }
+        let rest = &h[6..];
+        if !rest.starts_with(char::is_whitespace) {
+            return None; // require the `\s+` separator
+        }
+        let tok = rest.trim_start();
+        if tok.is_empty() || tok.contains(char::is_whitespace) {
+            return None; // `\S+$` — no internal/trailing whitespace
+        }
+        Some(tok)
     }
+}
+
+/// Parse `RUNTIMESCOPE_AUTH_TOKEN` into the comma-separated token set Node
+/// `standalone.ts` builds (`split(',').map(trim).filter(Boolean)`).
+fn env_tokens() -> Vec<String> {
+    std::env::var("RUNTIMESCOPE_AUTH_TOKEN")
+        .unwrap_or_default()
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 /// Read + parse `<data_dir>/config.json`. Missing file or parse error yields
@@ -225,7 +283,10 @@ mod tests {
     }
 
     #[test]
-    fn env_token_and_config_key_both_authorize() {
+    fn standalone_env_token_takes_precedence_over_config() {
+        // Node standalone: `authFromEnv?.apiKeys ?? config…` — when an env token
+        // is set, the config `auth` is IGNORED entirely (env precedence), so a
+        // config-only key must NOT authorize.
         let _env = EnvGuard::set("env-token-xyz");
         let dir = tmp_dir("env-and-cfg");
         write_config(
@@ -236,8 +297,46 @@ mod tests {
         let mgr = AuthManager::from_env_and_dir(&dir);
         assert!(mgr.enabled());
         assert!(mgr.authorized(Some("env-token-xyz")), "env token authorizes");
-        assert!(mgr.authorized(Some("cfg-key-123")), "config key authorizes");
+        assert!(!mgr.authorized(Some("cfg-key-123")), "config key ignored when env token set (precedence)");
         assert!(!mgr.authorized(Some("nope")));
+    }
+
+    #[test]
+    fn standalone_env_token_is_comma_split() {
+        // Node standalone splits RUNTIMESCOPE_AUTH_TOKEN on ',' (with trim) into
+        // multiple acceptable keys.
+        let _env = EnvGuard::set(" tok-a , tok-b ,, tok-c ");
+        let dir = tmp_dir("env-csv");
+        let mgr = AuthManager::from_env_and_dir(&dir);
+        assert!(mgr.enabled());
+        assert!(mgr.authorized(Some("tok-a")), "first env token authorizes");
+        assert!(mgr.authorized(Some("tok-b")), "second env token authorizes");
+        assert!(mgr.authorized(Some("tok-c")), "third env token authorizes");
+        assert!(!mgr.authorized(Some("tok-d")));
+        // The raw comma-joined string is NOT a single valid token.
+        assert!(!mgr.authorized(Some("tok-a,tok-b")));
+    }
+
+    #[test]
+    fn mcp_mode_ignores_env_token_and_uses_config_only() {
+        // Node MCP server (index.ts) constructs AuthManager from config ONLY; the
+        // env var is never read. So an env token must neither enable nor authorize.
+        let _env = EnvGuard::set("env-token-xyz");
+        let dir = tmp_dir("mcp-config-only");
+        write_config(
+            &dir,
+            r#"{ "auth": { "enabled": true, "apiKeys": [ { "key": "cfg-key-123", "label": "x", "createdAt": 0 } ] } }"#,
+        );
+        let mgr = AuthManager::from_config_and_dir(&dir);
+        assert!(mgr.enabled(), "config enabled → auth on");
+        assert!(mgr.authorized(Some("cfg-key-123")), "config key authorizes in MCP mode");
+        assert!(!mgr.authorized(Some("env-token-xyz")), "env token must NOT authorize in MCP mode");
+
+        // And with no config + an env token, MCP auth stays OFF (env ignored).
+        let dir2 = tmp_dir("mcp-no-config");
+        let mgr2 = AuthManager::from_config_and_dir(&dir2);
+        assert!(!mgr2.enabled(), "MCP mode ignores the env token → auth off");
+        assert!(mgr2.authorized(Some("env-token-xyz")), "auth off → everything passes");
     }
 
     #[test]
@@ -271,9 +370,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_bearer_handles_case_and_trim() {
+    fn extract_bearer_matches_node_regex() {
+        // /^Bearer\s+(\S+)$/i
         assert_eq!(AuthManager::extract_bearer(Some("Bearer abc")), Some("abc"));
-        assert_eq!(AuthManager::extract_bearer(Some("bearer abc ")), Some("abc"));
+        assert_eq!(AuthManager::extract_bearer(Some("BEARER abc")), Some("abc"), "case-insensitive scheme");
+        assert_eq!(AuthManager::extract_bearer(Some("Bearer   abc")), Some("abc"), "\\s+ collapses multiple spaces");
+        // Surrounding/internal whitespace in the token → no match (Node returns null).
+        assert_eq!(AuthManager::extract_bearer(Some("Bearer abc ")), None, "trailing space → no match");
+        assert_eq!(AuthManager::extract_bearer(Some("Bearer a b")), None, "internal space → no match");
+        assert_eq!(AuthManager::extract_bearer(Some("Bearer")), None, "no separator → no match");
+        assert_eq!(AuthManager::extract_bearer(Some("Bearer ")), None, "empty token → no match");
         assert_eq!(AuthManager::extract_bearer(Some("Basic abc")), None);
         assert_eq!(AuthManager::extract_bearer(None), None);
     }

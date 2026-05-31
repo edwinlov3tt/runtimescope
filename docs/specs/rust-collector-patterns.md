@@ -145,6 +145,38 @@ harness — swap with `RUNTIMESCOPE_COLLECTOR_CMD` / `RUNTIMESCOPE_MCP_CMD`.
   are stricter than Node's `shell:true` + unvalidated paths. The gated parity paths stay
   identical; the divergence is documented + Rust-side unit-tested. Treat tool inputs as untrusted.
 
+## M5 pm/ review findings (audit-style adversarial pass)
+
+A 4-area review (auth / RS-discovery / capex / write-CRUD), each finding independently
+re-verified, surfaced these — all closed:
+
+- **Don't blindly port a data-loss bug.** Node's `upsertCapexEntry` overwrites
+  `confirmed`/`confirmed_at`/`confirmed_by` on every conflict; re-indexing a session
+  (which always re-stubs `confirmed=false`) silently reverts a user's manual capex
+  confirmation. The Rust `ON CONFLICT` now guards those three with `CASE WHEN
+  pm_capex_entries.confirmed = 1 THEN … END` — once confirmed, immutable through the
+  stub path; recomputed metrics still flow. **Intentional divergence**, Rust-unit-tested
+  (`reindex_does_not_clobber_user_confirmed_capex`). Confirmation is financial audit state.
+- **A JSON-string column must be parsed before it crosses the wire.** `runtime_apps`
+  is stored as a JSON string in SQLite; Node `JSON.parse`s it on read and the dashboard
+  consumes `runtimeApps` as `string[]` (`.length`, `.map`). Serializing the raw
+  `Option<String>` double-encoded it (`"[\"web\"]"`), breaking the dashboard. Fixed with
+  a `serialize_with` that emits the array (test `runtime_apps_serializes_as_array_not_string`).
+- **Per-binary auth wiring must be reproduced per binary, not flattened.** Node has two
+  distinct policies: standalone honors `RUNTIMESCOPE_AUTH_TOKEN` (comma-split, precedence
+  over config); MCP is config-file-only and ignores the env var. The Rust port had
+  collapsed both into one shared `from_env()`. Now `serve()` takes an `AuthMode`
+  (`Standalone`/`Mcp`); env tokens are comma-split with config-precedence, and the bearer
+  parser matches Node's `/^Bearer\s+(\S+)$/i` exactly (rejects surrounding/internal
+  whitespace). 5 auth unit tests pin each rule. This is **parity**, not divergence.
+- **Verified false-positive — keep parity, don't over-harden.** `get_project_dir` was
+  flagged for "path traversal via `...`"; but `…` is a literal dir name (only `.`/`..`
+  are special, both already → `_invalid`), slashes already map to `_`, and the guard is a
+  char-for-char match to Node. Locked in with explicit `.`/`..`/`...`/`../..` test cases.
+- **Cosmetic-only gap left as-is:** Node's pm DDL declares `FOREIGN KEY`s but never sets
+  `PRAGMA foreign_keys=ON`, so they're inert; the Rust schema omits them with identical
+  runtime behavior. No fix (would be churn across 5 tables for zero behavioral change).
+
 ## Where things live
 
 | Add a… | Where |

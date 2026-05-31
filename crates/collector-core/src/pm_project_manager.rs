@@ -361,7 +361,15 @@ mod tests {
         // Node regex [^a-zA-Z0-9_.-] preserves '.' and '-': '/' → '_'.
         assert_eq!(pman.get_project_dir("../etc"), base.join("projects").join(".._etc"));
         assert_eq!(pman.get_project_dir(".."), base.join("projects").join("_invalid"));
+        assert_eq!(pman.get_project_dir("."), base.join("projects").join("_invalid"));
+        assert_eq!(pman.get_project_dir(""), base.join("projects").join("_invalid"));
         assert_eq!(pman.get_project_dir("a/b"), base.join("projects").join("a_b"));
         assert_eq!(pman.get_project_dir("ok-name_1.2"), base.join("projects").join("ok-name_1.2"));
+        // "..." is NOT a traversal sequence (only "." / ".." are special path
+        // components) — it's a literal dir name, exactly as Node treats it. The
+        // join stays under projects/, so no escape. Slashes are already mapped to
+        // '_' above, so a traversal segment can never be reconstructed.
+        assert_eq!(pman.get_project_dir("..."), base.join("projects").join("..."));
+        assert_eq!(pman.get_project_dir("../.."), base.join("projects").join(".._.."));
     }
 }

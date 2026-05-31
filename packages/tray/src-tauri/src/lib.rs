@@ -16,7 +16,9 @@
 
 mod collector_client;
 
+use std::path::PathBuf;
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -119,6 +121,13 @@ pub struct AppState {
     /// icon unable to dismiss the panel. A std Mutex (not tokio) because the
     /// event handlers that touch it are synchronous closures.
     last_focus_hide: std::sync::Mutex<Option<Instant>>,
+    /// Set to true right before an explicit, user-initiated quit (the tray
+    /// menu's "Quit" item or the dropdown's "Quit RuntimeScope (Tray)"
+    /// button). The `RunEvent::ExitRequested` handler blocks *implicit* exits
+    /// to keep the menu-bar app alive when its window closes — but it must NOT
+    /// block the explicit quit, or the app can never be quit and the tray icon
+    /// never disappears. This flag tells the two apart.
+    quitting: AtomicBool,
 }
 
 impl AppState {
@@ -129,8 +138,18 @@ impl AppState {
             cached_latest_version: Mutex::new(None),
             gate: Arc::new(PollGate::default()),
             last_focus_hide: std::sync::Mutex::new(None),
+            quitting: AtomicBool::new(false),
         }
     }
+}
+
+/// Mark the app as intentionally quitting, then ask Tauri to exit. Centralizes
+/// the "set the flag before exit" sequence both quit affordances share.
+fn request_quit(app: &AppHandle) {
+    app.state::<Arc<AppState>>()
+        .quitting
+        .store(true, Ordering::SeqCst);
+    app.exit(0);
 }
 
 /// Window is considered "just dismissed by clicking the tray icon" if a
@@ -286,6 +305,137 @@ async fn health_snapshot(
     Ok(cached)
 }
 
+// --- Locating the `runtimescope` CLI from a GUI-launched app ---
+//
+// When the tray is launched from Finder / Applications (not a terminal), it
+// inherits launchd's *minimal* PATH — `/usr/bin:/bin:/usr/sbin:/sbin` — which
+// misses Homebrew, npm-global, and Node version-manager (nvm/volta/asdf) bin
+// dirs. A bare `Command::new("runtimescope")` then fails with "No such file or
+// directory", so Restart / Quit Service / Update Now silently break in
+// production even though they work when tested from a terminal that has the
+// full PATH. (Lesson mirrored from getagentseal/codeburn's CodeburnCLI.swift.)
+//
+// Two things must be fixed, not one:
+//   1. Resolve an ABSOLUTE path to the `runtimescope` bin.
+//   2. Augment the child's PATH with the dirs we searched — because the
+//      `runtimescope` bin is a `#!/usr/bin/env node` script. Even invoked by
+//      absolute path, its shebang re-resolves `node` via PATH, so `node` must
+//      be discoverable (for nvm it lives in the same bin dir as the CLI).
+
+/// Candidate directories that may hold the `runtimescope` bin (and, for nvm,
+/// the matching `node`), in priority order. Pure-ish: only reads HOME/NVM_DIR
+/// env + the nvm versions dir, so it degrades gracefully when none exist.
+fn runtimescope_search_dirs() -> Vec<PathBuf> {
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    // Homebrew (Apple Silicon + Intel) and the conventional npm-global prefix.
+    dirs.push(PathBuf::from("/opt/homebrew/bin"));
+    dirs.push(PathBuf::from("/usr/local/bin"));
+
+    if let Some(home) = std::env::var_os("HOME").map(PathBuf::from) {
+        dirs.push(home.join(".volta/bin"));
+        dirs.push(home.join(".asdf/shims"));
+        dirs.push(home.join(".npm-global/bin"));
+        // pnpm global + Bun — static single dirs, so they're cheap to include.
+        dirs.push(home.join(".local/share/pnpm"));
+        dirs.push(home.join(".bun/bin"));
+
+        // nvm: $NVM_DIR/versions/node/<version>/bin — include every version dir
+        // that actually has a `runtimescope`, newest first. The version dirs are
+        // named `v22.19.0`, `v9.5.0`, etc., so a LEXICAL sort is wrong
+        // (`v10` < `v9`); parse the numeric major.minor.patch and sort on that.
+        let nvm_dir = std::env::var_os("NVM_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| home.join(".nvm"));
+        if let Ok(entries) = std::fs::read_dir(nvm_dir.join("versions/node")) {
+            let mut versioned: Vec<(Vec<u32>, PathBuf)> = entries
+                .flatten()
+                .filter_map(|e| {
+                    let dir = e.path();
+                    let bin = dir.join("bin");
+                    if !is_executable(&bin.join("runtimescope")) {
+                        return None;
+                    }
+                    let key = dir
+                        .file_name()
+                        .and_then(|n| n.to_str())
+                        .map(parse_node_version)
+                        .unwrap_or_default();
+                    Some((key, bin))
+                })
+                .collect();
+            // Newest first. Vec<u32> compares element-wise, so [22,19,0] > [9,5,0].
+            versioned.sort_by(|a, b| b.0.cmp(&a.0));
+            dirs.extend(versioned.into_iter().map(|(_, bin)| bin));
+        }
+    }
+
+    dirs
+}
+
+/// Parse an nvm node-version dir name (`v22.19.0`, `v9.5.0`, `v20.0.0-rc.1`)
+/// into a numeric `[major, minor, patch]` sort key. Pre-release suffixes are
+/// dropped (good enough for "pick the newest" — we don't run pre-releases).
+fn parse_node_version(name: &str) -> Vec<u32> {
+    name.trim_start_matches('v')
+        .split('-')
+        .next()
+        .unwrap_or("")
+        .split('.')
+        .map(|s| s.parse::<u32>().unwrap_or(0))
+        .collect()
+}
+
+#[cfg(unix)]
+fn is_executable(path: &std::path::Path) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    std::fs::metadata(path)
+        .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn is_executable(path: &std::path::Path) -> bool {
+    path.is_file()
+}
+
+/// Join `extra_dirs` ahead of `existing` PATH into a single PATH value. Pure —
+/// unit-tested. Empty dirs are skipped; no dedup (harmless, and keeps order).
+fn augment_path(extra_dirs: &[PathBuf], existing: Option<&str>) -> String {
+    let mut parts: Vec<String> = extra_dirs
+        .iter()
+        .map(|d| d.to_string_lossy().into_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if let Some(existing) = existing {
+        if !existing.is_empty() {
+            parts.push(existing.to_string());
+        }
+    }
+    parts.join(":")
+}
+
+/// Build a `Command` that invokes the `runtimescope` CLI by absolute path (when
+/// found) with a PATH augmented so its node shebang resolves. Falls back to the
+/// bare name `runtimescope` when nothing is found (so a terminal-launched tray,
+/// which has a full PATH, still works).
+fn runtimescope_command() -> Command {
+    let dirs = runtimescope_search_dirs();
+    let program = dirs
+        .iter()
+        .map(|d| d.join("runtimescope"))
+        .find(|p| is_executable(p))
+        .map(|p| p.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "runtimescope".to_string());
+
+    let mut cmd = Command::new(program);
+    cmd.env(
+        "PATH",
+        augment_path(&dirs, std::env::var("PATH").ok().as_deref()),
+    );
+    cmd
+}
+
 #[tauri::command]
 fn service_action(action: String) -> Result<(), String> {
     let sub = match action.as_str() {
@@ -294,10 +444,16 @@ fn service_action(action: String) -> Result<(), String> {
         "stop" => "stop",
         other => return Err(format!("unknown service action: {other}")),
     };
-    let status = Command::new("runtimescope")
+    let status = runtimescope_command()
         .args(["service", sub])
         .status()
-        .map_err(|e| format!("failed to spawn runtimescope: {e}"))?;
+        .map_err(|e| {
+            format!(
+                "failed to spawn runtimescope: {e}. Is the runtimescope CLI installed \
+                 and on PATH? (npm i -g runtimescope, brew install runtimescope, or a \
+                 version-manager install via nvm/volta/asdf)"
+            )
+        })?;
     if !status.success() {
         return Err(format!(
             "runtimescope service {sub} exited with status {}",
@@ -323,13 +479,15 @@ fn open_logs() -> Result<(), String> {
 
 #[tauri::command]
 async fn quit_tray(app: AppHandle) -> Result<(), String> {
-    app.exit(0);
+    request_quit(&app);
     Ok(())
 }
 
 fn open_path(target: &str) -> Result<(), String> {
+    // Absolute path on macOS so this works under the minimal Finder/launchd PATH
+    // (same reason as the runtimescope resolver). `/usr/bin/open` always exists.
     #[cfg(target_os = "macos")]
-    let cmd = "open";
+    let cmd = "/usr/bin/open";
     #[cfg(target_os = "linux")]
     let cmd = "xdg-open";
     #[cfg(target_os = "windows")]
@@ -481,7 +639,7 @@ pub fn run() {
                     .show_menu_on_left_click(false)
                     .on_menu_event(move |app, event: MenuEvent| {
                         if event.id().as_ref() == "quit" {
-                            app.exit(0);
+                            request_quit(app);
                         }
                     })
                     .on_tray_icon_event({
@@ -536,11 +694,67 @@ pub fn run() {
         })
         .build(tauri::generate_context!())
         .expect("failed to build Tauri application")
-        .run(|_app, event| {
-            // Keep the process alive when all windows close — the tray icon
-            // is the real entry point.
+        .run(|app, event| {
+            // Keep the process alive when the window closes — the tray icon
+            // is the real entry point. But honor an explicit user quit:
+            // `request_quit` sets the `quitting` flag first, so we only block
+            // *implicit* exits here. Without this guard the app could never be
+            // quit and the tray icon would never disappear.
             if let RunEvent::ExitRequested { api, .. } = event {
-                api.prevent_exit();
+                if !app.state::<Arc<AppState>>().quitting.load(Ordering::SeqCst) {
+                    api.prevent_exit();
+                }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn augment_path_prepends_extra_dirs_then_existing() {
+        let dirs = vec![PathBuf::from("/opt/homebrew/bin"), PathBuf::from("/a/b")];
+        let got = augment_path(&dirs, Some("/usr/bin:/bin"));
+        assert_eq!(got, "/opt/homebrew/bin:/a/b:/usr/bin:/bin");
+    }
+
+    #[test]
+    fn augment_path_handles_no_existing_path() {
+        let dirs = vec![PathBuf::from("/opt/homebrew/bin")];
+        assert_eq!(augment_path(&dirs, None), "/opt/homebrew/bin");
+        assert_eq!(augment_path(&dirs, Some("")), "/opt/homebrew/bin");
+    }
+
+    #[test]
+    fn augment_path_skips_empty_dirs() {
+        let dirs = vec![PathBuf::from(""), PathBuf::from("/x")];
+        assert_eq!(augment_path(&dirs, Some("/usr/bin")), "/x:/usr/bin");
+    }
+
+    #[test]
+    fn parse_node_version_is_numeric_not_lexical() {
+        assert_eq!(parse_node_version("v22.19.0"), vec![22, 19, 0]);
+        assert_eq!(parse_node_version("v9.5.0"), vec![9, 5, 0]);
+        // The whole point: v10/v22/v100 must sort ABOVE v9 numerically, which
+        // lexical string sort gets wrong.
+        let v9 = parse_node_version("v9.5.0");
+        let v10 = parse_node_version("v10.1.0");
+        let v22 = parse_node_version("v22.19.0");
+        let v100 = parse_node_version("v100.0.0");
+        assert!(v10 > v9);
+        assert!(v22 > v10);
+        assert!(v100 > v22);
+        // Pre-release suffix is dropped.
+        assert_eq!(parse_node_version("v20.0.0-rc.1"), vec![20, 0, 0]);
+    }
+
+    #[test]
+    fn search_dirs_always_includes_homebrew_and_usr_local() {
+        // These are unconditional, so the resolver works even with no HOME-based
+        // managers present — covers the plain Homebrew/npm-global install case.
+        let dirs = runtimescope_search_dirs();
+        assert!(dirs.contains(&PathBuf::from("/opt/homebrew/bin")));
+        assert!(dirs.contains(&PathBuf::from("/usr/local/bin")));
+    }
 }

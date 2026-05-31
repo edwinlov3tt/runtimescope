@@ -243,6 +243,28 @@ These are explicit hooks left in the code or surfaced during this phase. **They 
 
 ---
 
+## 8.1 Post-ship fixes (owner smoke-test feedback, 2026-05-31)
+
+Three defects surfaced when the owner installed and ran the `.dmg`. All fixed in `packages/tray/src-tauri/src/lib.rs`; the workspace stays at 0.10.13 and the tray at 0.1.0 (no version bump).
+
+**1. Duplicate tray icon.** The icon was registered twice — declaratively in `tauri.conf.json`'s `trayIcon` block *and* programmatically via `TrayIconBuilder`. Removed the declarative block; the programmatic one (which carries the click handler + menu) is canonical.
+
+**2. App would not quit / icon never left the menu bar.** The `.run()` handler called `api.prevent_exit()` on **every** `RunEvent::ExitRequested`. That guard keeps a menu-bar app alive when its window closes, but `app.exit(0)` (both quit paths) *is* an `ExitRequested`, so quit was unconditionally blocked. Fix: a `quitting: AtomicBool` on `AppState`; both quit affordances route through `request_quit()` which sets the flag before `app.exit(0)`; the run handler only calls `prevent_exit()` when the flag is false. Implicit (window-close) exits still keep the app alive; explicit quit now terminates and removes the icon.
+
+**3. Service buttons (Restart / Quit Service / Update Now) silently failed from a Finder launch.** A Finder/launchd launch hands the app a minimal PATH (`/usr/bin:/bin:/usr/sbin:/sbin`) that omits Homebrew, the npm-global prefix, and Node version-manager bin dirs — so `Command::new("runtimescope")` couldn't resolve. (Lesson mirrored from getagentseal/codeburn's `CodeburnCLI.swift`.) Fix is two-part because the `runtimescope` bin is a `#!/usr/bin/env node` script:
+   - `runtimescope_search_dirs()` builds a priority list — `/opt/homebrew/bin`, `/usr/local/bin`, and (when `HOME` set) `~/.volta/bin`, `~/.asdf/shims`, `~/.npm-global/bin`, `~/.local/share/pnpm`, `~/.bun/bin`, plus every `$NVM_DIR/versions/node/<ver>/bin` holding an executable `runtimescope` (sorted **numerically** by parsed `major.minor.patch`, newest first — lexical sort got `v10`/`v9` wrong).
+   - `runtimescope_command()` resolves the CLI by **absolute path** and **prepends those dirs to the child's PATH**, so the shebang re-resolves `node` from the matching version-manager bin dir.
+   - Falls back to the bare name `runtimescope` (under the augmented PATH) when nothing is found, preserving terminal-launch behavior. Service args are a hardcoded allowlist (`restart`/`update`/`stop`) — no user input reaches `Command::args`, so not injectable. `open_path()` also hardened to absolute `/usr/bin/open` on macOS.
+
+   **Verified on the owner's machine:** `runtimescope` lives at `~/.nvm/versions/node/v22.19.0/bin/` and is absent from the minimal PATH (bug reproduced); the resolver finds it with `node` in the same dir (fix confirmed). Covered by 7 Rust unit tests (`augment_path`, `parse_node_version` numeric ordering, search-dir invariants).
+
+   A 4-lens adversarial review (workflow) returned **SHIP, no must-fix**. Deferred follow-ups (none block v0.1):
+   - Broaden install-manager coverage to fnm / mise multi-version globbing and a custom `npm config prefix` (only matters if the owner migrates off nvm).
+   - Persisted resolved-CLI-path cache (CodeBurn parity) — perf only, negligible at this scale.
+   - Optional `RUNTIMESCOPE_BIN` dev-override env var (with an arg allowlist, à la CodeBurn) for testing local debug builds.
+
+---
+
 ## 9. Reviewer / handoff pointer
 
 The handoff doc that picks this up will be at [`../handoffs/phase-wire-protocol-lock-handoff.md`](../handoffs/) (not yet written). Phase Wire-Protocol-Lock is ~2-3d per the master phase plan ([`../roadmap/MASTER_PHASE_PLAN.md`](../roadmap/MASTER_PHASE_PLAN.md)) and inherits:

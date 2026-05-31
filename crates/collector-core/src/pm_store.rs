@@ -344,6 +344,33 @@ impl PmStore {
             .unwrap_or(false)
     }
 
+    /// Resolve a raw `tk_…` API token to its (non-revoked, non-expired) workspace
+    /// — the WS-handshake auth path. Hashes the token (SHA-256) and looks it up;
+    /// best-effort bumps `last_used_at`. Ports Node `getWorkspaceByApiKey`.
+    pub fn get_workspace_by_api_key(&self, raw: &str) -> Option<PmWorkspace> {
+        if raw.is_empty() {
+            return None;
+        }
+        let hash = hash_api_key(raw);
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap();
+        let ws = conn
+            .query_row(
+                "SELECT w.id, w.name, w.slug, w.description, w.is_default, w.created_at, w.updated_at
+                 FROM pm_api_keys k JOIN pm_workspaces w ON w.id = k.workspace_id
+                 WHERE k.key = ?1 AND k.revoked_at IS NULL AND (k.expires_at IS NULL OR k.expires_at > ?2)",
+                params![hash, now],
+                map_workspace,
+            )
+            .optional()
+            .ok()
+            .flatten();
+        if ws.is_some() {
+            let _ = conn.execute("UPDATE pm_api_keys SET last_used_at = ?2 WHERE key = ?1", params![hash, now]);
+        }
+        ws
+    }
+
     pub fn get_session(&self, id: &str) -> Option<PmSession> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(&format!("SELECT {SESSION_COLS} FROM pm_sessions WHERE id = ?1"), params![id], map_session)
@@ -637,6 +664,22 @@ mod tests {
         // Duplicate slug (the default's "personal") is rejected.
         let err = s.create_workspace("Personal", None, None).unwrap_err();
         assert_eq!(err, "Workspace with slug \"personal\" already exists");
+    }
+
+    #[test]
+    fn get_workspace_by_api_key_validates_token() {
+        let s = tmp_store();
+        let ws_id = s.list_workspaces()[0].id.clone();
+        let k = s.create_api_key(&ws_id, "auth", None).unwrap();
+        // valid raw token → its workspace
+        let resolved = s.get_workspace_by_api_key(&k.key).expect("valid key resolves");
+        assert_eq!(resolved.id, ws_id);
+        // bogus / empty → None
+        assert!(s.get_workspace_by_api_key("tk_not_a_real_key").is_none());
+        assert!(s.get_workspace_by_api_key("").is_none());
+        // expired key → None
+        let expired = s.create_api_key(&ws_id, "old", Some(1)).unwrap(); // expires_at = 1ms epoch (past)
+        assert!(s.get_workspace_by_api_key(&expired.key).is_none());
     }
 
     #[test]

@@ -524,7 +524,13 @@ fn parse_authed_handshake(s: &AppState, text: &str) -> Option<HandshakePayload> 
         return None;
     }
     let h = serde_json::from_value::<HandshakePayload>(m.payload).ok()?;
-    if s.auth.authorized(h.auth_token.as_deref()) {
+    // Accept EITHER the global token (RUNTIMESCOPE_AUTH_TOKEN / config) OR a valid
+    // workspace-scoped API key (`tk_…` from the workspaces API) — matching Node's
+    // two-layer auth. A valid workspace key bypasses the global check.
+    let token = h.auth_token.as_deref();
+    let ok = s.auth.authorized(token)
+        || token.is_some_and(|t| s.pm.get_workspace_by_api_key(t).is_some());
+    if ok {
         Some(h)
     } else {
         None

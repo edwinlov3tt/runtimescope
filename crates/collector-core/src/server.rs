@@ -106,6 +106,10 @@ pub async fn serve(
         .route("/api/pm/capex/{projectId}/export", get(pm_capex_export))
         .route("/api/pm/capex/{projectId}/{entryId}", put(pm_capex_update))
         .route("/api/pm/capex/{projectId}/{entryId}/confirm", post(pm_capex_confirm))
+        // tasks (M5.5 Slice B)
+        .route("/api/pm/tasks", get(pm_tasks_list).post(pm_tasks_create))
+        .route("/api/pm/tasks/{id}", put(pm_tasks_update).delete(pm_tasks_delete))
+        .route("/api/pm/tasks/{id}/reorder", put(pm_tasks_reorder))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -918,6 +922,125 @@ async fn pm_categories(State(s): State<AppState>, headers: HeaderMap) -> Respons
         return unauthorized();
     }
     Json(json!({ "data": s.pm.list_categories() })).into_response()
+}
+
+// ---- pm/ tasks (M5.5 Slice B) ----
+
+/// A JSON `labels` value → the stored JSON-array string (`[]` when absent/not an array).
+fn labels_json(v: &Value) -> String {
+    match v.get("labels") {
+        Some(l) if l.is_array() => l.to_string(),
+        _ => "[]".to_string(),
+    }
+}
+
+/// GET /api/pm/tasks (?project_id=&status=).
+async fn pm_tasks_list(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let tasks = s.pm.list_tasks(q.get("project_id").map(String::as_str), q.get("status").map(String::as_str));
+    let count = tasks.len();
+    Json(json!({ "data": tasks, "count": count })).into_response()
+}
+
+/// POST /api/pm/tasks — create; 201 with the task, 400 on missing body/title.
+async fn pm_tasks_create(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    // Node relies on the NOT NULL title constraint to 400; we guard explicitly.
+    let Some(title) = v.get("title").and_then(Value::as_str) else {
+        return bad_request("title required");
+    };
+    let task = s.pm.create_task(
+        v.get("projectId").and_then(Value::as_str),
+        title,
+        v.get("description").and_then(Value::as_str),
+        v.get("status").and_then(Value::as_str).unwrap_or("todo"),
+        v.get("priority").and_then(Value::as_str).unwrap_or("medium"),
+        &labels_json(&v),
+        v.get("source").and_then(Value::as_str).unwrap_or("manual"),
+        v.get("sourceRef").and_then(Value::as_str),
+        v.get("sortOrder").and_then(Value::as_f64),
+        v.get("assignedTo").and_then(Value::as_str),
+        v.get("dueDate").and_then(Value::as_str),
+    );
+    (StatusCode::CREATED, Json(serde_json::to_value(&task).unwrap_or_else(|_| json!({})))).into_response()
+}
+
+/// PUT /api/pm/tasks/{id} — partial update; {ok:true}, 400 on missing body.
+async fn pm_tasks_update(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    // labels: present-and-array → re-serialize; absent → leave unchanged.
+    let labels = v.get("labels").filter(|l| l.is_array()).map(|l| l.to_string());
+    s.pm.update_task(
+        &id,
+        v.get("title").and_then(Value::as_str),
+        v.get("description").and_then(Value::as_str),
+        v.get("status").and_then(Value::as_str),
+        v.get("priority").and_then(Value::as_str),
+        labels.as_deref(),
+        v.get("sortOrder").and_then(Value::as_f64),
+        v.get("assignedTo").and_then(Value::as_str),
+        v.get("dueDate").and_then(Value::as_str),
+        v.get("completedAt").and_then(Value::as_i64),
+    );
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// DELETE /api/pm/tasks/{id}.
+async fn pm_tasks_delete(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    s.pm.delete_task(&id);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// PUT /api/pm/tasks/{id}/reorder — body { status, sortOrder }; 400 on missing body.
+async fn pm_tasks_reorder(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let status = v.get("status").and_then(Value::as_str).unwrap_or("todo");
+    let sort_order = v.get("sortOrder").and_then(Value::as_f64).unwrap_or(0.0);
+    s.pm.reorder_task(&id, status, sort_order);
+    Json(json!({ "ok": true })).into_response()
 }
 
 // ---- WebSocket ----

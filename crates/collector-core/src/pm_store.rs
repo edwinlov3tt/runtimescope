@@ -170,10 +170,10 @@ pub struct PmApiKey {
     pub expires_at: Option<i64>,
 }
 
-/// Emit the `runtime_apps` JSON-string column as a real JSON array. Only invoked
-/// for `Some` (None is dropped by `skip_serializing_if`); a malformed/empty
-/// string degrades to `[]`. Mirrors Node's `JSON.parse(row.runtime_apps)` on read.
-fn serialize_runtime_apps<S: serde::Serializer>(
+/// Emit a JSON-string column (e.g. `runtime_apps`, task `labels`) as a real JSON
+/// array. A `None`/malformed/empty string degrades to `[]`. Mirrors Node, which
+/// `JSON.parse`s these columns on read (and the dashboard consumes them as arrays).
+fn serialize_json_string_array<S: serde::Serializer>(
     v: &Option<String>,
     s: S,
 ) -> Result<S::Ok, S::Error> {
@@ -206,7 +206,7 @@ pub struct PmProject {
     /// Node `JSON.parse`s it on read and the dashboard consumes `runtimeApps` as
     /// `string[]` (`.length`, `.map(...)`). Serializing the raw string would
     /// double-encode it and break those consumers.
-    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_runtime_apps")]
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "serialize_json_string_array")]
     pub runtime_apps: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
@@ -284,6 +284,36 @@ pub struct PmCapexEntry {
     pub updated_at: i64,
 }
 
+/// A kanban task (ports Node `PmTask`). `labels` is a JSON-array column emitted
+/// as a real array (always present, default `[]`); the other `Option` fields are
+/// omitted when null (Node's `?? undefined`).
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmTask {
+    pub id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub title: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    pub status: String,
+    pub priority: String,
+    #[serde(serialize_with = "serialize_json_string_array")]
+    pub labels: Option<String>,
+    pub source: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+    pub sort_order: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub assigned_to: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub due_date: Option<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completed_at: Option<i64>,
+}
+
 /// CapEx summary for a project (ports Node `CapexSummary` / `getCapexSummary`).
 #[derive(Clone, Debug, Default, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -323,6 +353,30 @@ pub struct CapexByMonth {
 /// SHA-256 hex of a raw API token (matches Node `hashApiKey`).
 pub fn hash_api_key(raw: &str) -> String {
     format!("{:x}", Sha256::digest(raw.as_bytes()))
+}
+
+/// Format 32 random lowercase-hex chars as a RFC-4122 UUID **v4** (version nibble
+/// forced to `4`, variant nibble to `{8,9,a,b}`) — matches `crypto.randomUUID()`'s
+/// shape so consumers that validate the UUID form accept Rust-minted task ids.
+fn uuid_v4_from_hex(hex: &str) -> String {
+    let c: Vec<char> = hex.chars().collect();
+    if c.len() < 32 {
+        return hex.to_string();
+    }
+    let variant = {
+        let v = c[16].to_digit(16).unwrap_or(0);
+        std::char::from_digit((v & 0x3) | 0x8, 16).unwrap_or('8')
+    };
+    let s: String = (0..32).map(|i| c[i]).collect();
+    format!(
+        "{}-{}-4{}-{}{}-{}",
+        &s[0..8],
+        &s[8..12],
+        &s[13..16], // version forced to '4' via the literal above
+        variant,
+        &s[17..20],
+        &s[20..32],
+    )
 }
 
 /// Node's slug derivation: lowercase, runs of non-`[a-z0-9-]` → a single `-`,
@@ -981,6 +1035,150 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
     }
 
     // ============================================================
+    // Tasks (ports Node createTask/updateTask/deleteTask/listTasks/reorderTask)
+    // ============================================================
+
+    /// A fresh UUID v4 string, sourced from SQLite `randomblob(16)` (no RNG dep,
+    /// matching the `ws_`/`tk_` id pattern). Mirrors Node's `crypto.randomUUID()`.
+    fn new_uuid_v4(&self) -> String {
+        let conn = self.conn.lock().unwrap();
+        let hex: String = conn
+            .query_row("SELECT lower(hex(randomblob(16)))", [], |r| r.get(0))
+            .unwrap_or_default();
+        uuid_v4_from_hex(&hex)
+    }
+
+    /// Insert a task — ports Node `createTask`. `id`/`created_at`/`updated_at` are
+    /// generated here; `sort_order` defaults to "now" when not supplied (Node's
+    /// `data.sortOrder ?? now`). `labels_json` is a pre-serialized JSON array.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_task(
+        &self,
+        project_id: Option<&str>,
+        title: &str,
+        description: Option<&str>,
+        status: &str,
+        priority: &str,
+        labels_json: &str,
+        source: &str,
+        source_ref: Option<&str>,
+        sort_order: Option<f64>,
+        assigned_to: Option<&str>,
+        due_date: Option<&str>,
+    ) -> PmTask {
+        let id = self.new_uuid_v4();
+        let now = now_ms();
+        let sort_order = sort_order.unwrap_or(now as f64);
+        let task = PmTask {
+            id,
+            project_id: project_id.map(String::from),
+            title: title.to_string(),
+            description: description.map(String::from),
+            status: status.to_string(),
+            priority: priority.to_string(),
+            labels: Some(labels_json.to_string()),
+            source: source.to_string(),
+            source_ref: source_ref.map(String::from),
+            sort_order,
+            assigned_to: assigned_to.map(String::from),
+            due_date: due_date.map(String::from),
+            created_at: now,
+            updated_at: now,
+            completed_at: None,
+        };
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO pm_tasks (id, project_id, title, description, status, priority, labels, \
+             source, source_ref, sort_order, assigned_to, due_date, created_at, updated_at, completed_at) \
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+            params![
+                task.id, task.project_id, task.title, task.description, task.status, task.priority,
+                task.labels, task.source, task.source_ref, task.sort_order, task.assigned_to,
+                task.due_date, task.created_at, task.updated_at, task.completed_at
+            ],
+        );
+        task
+    }
+
+    /// Partial-update a task — ports Node `updateTask`. Only provided fields are
+    /// written; `labels` is a pre-serialized JSON array. No-op when nothing is set.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_task(
+        &self,
+        id: &str,
+        title: Option<&str>,
+        description: Option<&str>,
+        status: Option<&str>,
+        priority: Option<&str>,
+        labels_json: Option<&str>,
+        sort_order: Option<f64>,
+        assigned_to: Option<&str>,
+        due_date: Option<&str>,
+        completed_at: Option<i64>,
+    ) {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if let Some(v) = title.as_ref() { sets.push("title = ?"); vals.push(v); }
+        if let Some(v) = description.as_ref() { sets.push("description = ?"); vals.push(v); }
+        if let Some(v) = status.as_ref() { sets.push("status = ?"); vals.push(v); }
+        if let Some(v) = priority.as_ref() { sets.push("priority = ?"); vals.push(v); }
+        if let Some(v) = labels_json.as_ref() { sets.push("labels = ?"); vals.push(v); }
+        if let Some(v) = sort_order.as_ref() { sets.push("sort_order = ?"); vals.push(v); }
+        if let Some(v) = assigned_to.as_ref() { sets.push("assigned_to = ?"); vals.push(v); }
+        if let Some(v) = due_date.as_ref() { sets.push("due_date = ?"); vals.push(v); }
+        if let Some(v) = completed_at.as_ref() { sets.push("completed_at = ?"); vals.push(v); }
+        if sets.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        sets.push("updated_at = ?");
+        vals.push(&now);
+        vals.push(&id);
+        let sql = format!("UPDATE pm_tasks SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(&sql, rusqlite::params_from_iter(vals));
+    }
+
+    /// Delete a task — ports Node `deleteTask`.
+    pub fn delete_task(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM pm_tasks WHERE id = ?1", params![id]);
+    }
+
+    /// List tasks (optional project/status filter), `sort_order ASC` — ports Node `listTasks`.
+    pub fn list_tasks(&self, project_id: Option<&str>, status: Option<&str>) -> Vec<PmTask> {
+        let conn = self.conn.lock().unwrap();
+        let mut sql = String::from("SELECT id, project_id, title, description, status, priority, labels, \
+            source, source_ref, sort_order, assigned_to, due_date, created_at, updated_at, completed_at \
+            FROM pm_tasks");
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        let mut conds: Vec<&str> = Vec::new();
+        if let Some(p) = project_id.as_ref() { conds.push("project_id = ?"); vals.push(p); }
+        if let Some(s) = status.as_ref() { conds.push("status = ?"); vals.push(s); }
+        if !conds.is_empty() {
+            sql.push_str(" WHERE ");
+            sql.push_str(&conds.join(" AND "));
+        }
+        sql.push_str(" ORDER BY sort_order ASC");
+        let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+        let rows = stmt.query_map(rusqlite::params_from_iter(vals), map_task);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    /// Move a task to a new status/order — ports Node `reorderTask`. Sets
+    /// `completed_at` when moving to `done` (COALESCE: keeps an existing value otherwise).
+    pub fn reorder_task(&self, id: &str, status: &str, sort_order: f64) {
+        let now = now_ms();
+        let completed_at: Option<i64> = if status == "done" { Some(now) } else { None };
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE pm_tasks SET status = ?1, sort_order = ?2, updated_at = ?3, \
+             completed_at = COALESCE(?4, completed_at) WHERE id = ?5",
+            params![status, sort_order, now, completed_at, id],
+        );
+    }
+
+    // ============================================================
     // Workspace write-CRUD (ports Node updateWorkspace/deleteWorkspace)
     // ============================================================
 
@@ -1294,6 +1492,28 @@ fn map_capex(r: &rusqlite::Row) -> rusqlite::Result<PmCapexEntry> {
     })
 }
 
+/// Column order matches `create_task`/`list_tasks` SELECT.
+fn map_task(r: &rusqlite::Row) -> rusqlite::Result<PmTask> {
+    Ok(PmTask {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        title: r.get(2)?,
+        description: r.get(3)?,
+        status: r.get(4)?,
+        priority: r.get(5)?,
+        labels: r.get(6)?,
+        // Node defaults a null `source` to 'manual' on read.
+        source: r.get::<_, Option<String>>(7)?.unwrap_or_else(|| "manual".to_string()),
+        source_ref: r.get(8)?,
+        sort_order: r.get(9)?,
+        assigned_to: r.get(10)?,
+        due_date: r.get(11)?,
+        created_at: r.get(12)?,
+        updated_at: r.get(13)?,
+        completed_at: r.get(14)?,
+    })
+}
+
 fn map_workspace(r: &rusqlite::Row) -> rusqlite::Result<PmWorkspace> {
     Ok(PmWorkspace {
         id: r.get(0)?,
@@ -1516,6 +1736,60 @@ mod tests {
         assert!(csv.starts_with("Period,Session ID,Session Slug,"), "unquoted header (Node parity)");
         assert!(csv.lines().nth(1).unwrap().starts_with('"'), "data rows are quoted");
         assert_eq!(csv.lines().count(), 2, "header + 1 row");
+    }
+
+    #[test]
+    fn uuid_v4_from_hex_forces_version_and_variant() {
+        // version nibble → '4'; variant nibble (idx 16, here 'f'=15) → (15&3)|8 = 'b'.
+        let id = uuid_v4_from_hex("0123456789abcdeffedcba9876543210");
+        assert_eq!(id, "01234567-89ab-4def-bedc-ba9876543210");
+        // shape matches a UUID v4 regex.
+        let parts: Vec<&str> = id.split('-').collect();
+        assert_eq!(parts.iter().map(|p| p.len()).collect::<Vec<_>>(), vec![8, 4, 4, 4, 12]);
+        assert!(parts[2].starts_with('4'));
+        assert!(matches!(parts[3].chars().next().unwrap(), '8' | '9' | 'a' | 'b'));
+    }
+
+    #[test]
+    fn task_create_list_update_reorder_delete() {
+        let s = tmp_store();
+        // create with defaults + labels.
+        let t = s.create_task(
+            Some("proj-t"), "Write tests", Some("desc"), "todo", "high",
+            r#"["a","b"]"#, "manual", None, Some(5.0), None, None,
+        );
+        assert_eq!(t.title, "Write tests");
+        assert_eq!(t.status, "todo");
+        assert_eq!(t.priority, "high");
+        assert!(t.completed_at.is_none());
+
+        // listed back; labels serialize as a real array; filters work.
+        let listed = s.list_tasks(Some("proj-t"), None);
+        assert_eq!(listed.len(), 1);
+        let v = serde_json::to_value(&listed[0]).unwrap();
+        assert_eq!(v["labels"], serde_json::json!(["a", "b"]));
+        assert_eq!(v["sortOrder"], serde_json::json!(5.0));
+        assert!(v["id"].as_str().unwrap().len() == 36, "uuid id");
+        assert_eq!(s.list_tasks(Some("proj-t"), Some("done")).len(), 0, "status filter");
+        assert_eq!(s.list_tasks(Some("other"), None).len(), 0, "project filter");
+
+        // partial update: title + status only.
+        s.update_task(&t.id, Some("Renamed"), None, Some("in_progress"), None, None, None, None, None, None);
+        let after = &s.list_tasks(None, None)[0];
+        assert_eq!(after.title, "Renamed");
+        assert_eq!(after.status, "in_progress");
+        assert_eq!(after.priority, "high", "unset field unchanged");
+
+        // reorder to done stamps completed_at.
+        s.reorder_task(&t.id, "done", 1.0);
+        let done = &s.list_tasks(None, None)[0];
+        assert_eq!(done.status, "done");
+        assert_eq!(done.sort_order, 1.0);
+        assert!(done.completed_at.is_some(), "done → completed_at set");
+
+        // delete.
+        s.delete_task(&t.id);
+        assert!(s.list_tasks(None, None).is_empty());
     }
 
     #[test]

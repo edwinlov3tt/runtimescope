@@ -12,6 +12,7 @@
 pub mod auth;
 pub mod command;
 pub mod event;
+pub mod pm_discovery;
 pub mod pm_session_parser;
 pub mod pm_store;
 pub mod server;

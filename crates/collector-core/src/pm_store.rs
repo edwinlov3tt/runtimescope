@@ -318,7 +318,12 @@ mod tests {
     use super::*;
 
     fn tmp_store() -> PmStore {
-        let dir = std::env::temp_dir().join(format!("pmstore-{}-{}", std::process::id(), now_ms()));
+        // Unique per call — ms resolution collides when tests run in parallel.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("pmstore-{}-{nanos}-{seq}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         PmStore::open(&dir.join("pm.db")).unwrap()
     }

@@ -368,19 +368,20 @@ mod tests {
     use std::io::Write;
 
     fn parse(jsonl: &str) -> ParsedSession {
-        let dir = std::env::temp_dir().join(format!("psp-{}-{}", std::process::id(), now_ms()));
+        // Unique per call so parallel tests never share a fixture path.
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static SEQ: AtomicU64 = AtomicU64::new(0);
+        let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let dir = std::env::temp_dir().join(format!("psp-{}-{nanos}-{seq}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("fix-{}.jsonl", rand_suffix(jsonl)));
+        let path = dir.join("fix.jsonl");
         let mut f = File::create(&path).unwrap();
         f.write_all(jsonl.as_bytes()).unwrap();
         drop(f);
         let r = parse_session_jsonl(&path);
-        let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_dir_all(&dir);
         r
-    }
-    // tiny content-derived suffix so concurrent test fixtures don't collide
-    fn rand_suffix(s: &str) -> u64 {
-        s.bytes().fold(1469598103934665603u64, |h, b| (h ^ b as u64).wrapping_mul(1099511628211))
     }
 
     // ---- pricing + cost (Node-captured) ----

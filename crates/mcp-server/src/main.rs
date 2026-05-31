@@ -87,12 +87,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let pm_bg = pm.clone();
         let claude_base =
             std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude");
+        let rs_base = data_dir();
         tokio::task::spawn_blocking(move || {
+            // Claude projects (~/.claude/projects, filtered) + RuntimeScope projects
+            // (~/.runtimescope/projects). Both no-op when absent.
             let r = collector_core::pm_discovery::discover_claude_projects(&claude_base, &pm_bg);
-            if r.projects_discovered > 0 || r.projects_updated > 0 {
+            let r2 = collector_core::discover_runtimescope_projects(&rs_base, &pm_bg);
+            let projects = r.projects_discovered + r.projects_updated + r2.projects_discovered + r2.projects_updated;
+            if projects > 0 {
                 eprintln!(
-                    "[RuntimeScope] pm discovery: {} new + {} updated project(s), {} new session(s)",
-                    r.projects_discovered, r.projects_updated, r.sessions_discovered
+                    "[RuntimeScope] pm discovery: {} claude + {} rs new project(s), {} new session(s)",
+                    r.projects_discovered, r2.projects_discovered, r.sessions_discovered
                 );
             }
         });

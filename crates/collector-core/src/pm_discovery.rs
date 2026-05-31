@@ -285,6 +285,8 @@ fn index_sessions(project_id: &str, key: &str, claude_base: &Path, pm: &PmStore,
         }
         let session = build_session(&session_id, project_id, &jsonl_path, size);
         pm.upsert_session(&session);
+        // Node's indexSessions calls upsertCapexStub right after upsertSession.
+        pm.upsert_capex_stub(&session);
         if prev.is_some() {
             res.sessions_updated += 1;
         } else {

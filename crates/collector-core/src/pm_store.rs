@@ -89,6 +89,55 @@ CREATE TABLE IF NOT EXISTS pm_sessions (
   updated_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_pm_sessions_project ON pm_sessions(project_id);
+CREATE TABLE IF NOT EXISTS pm_capex_entries (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  session_id TEXT NOT NULL,
+  classification TEXT NOT NULL DEFAULT 'expensed',
+  work_type TEXT,
+  active_minutes REAL NOT NULL DEFAULT 0,
+  cost_microdollars INTEGER NOT NULL DEFAULT 0,
+  adjustment_factor REAL NOT NULL DEFAULT 1.0,
+  adjusted_cost_microdollars INTEGER NOT NULL DEFAULT 0,
+  confirmed INTEGER NOT NULL DEFAULT 0,
+  confirmed_at INTEGER,
+  confirmed_by TEXT,
+  notes TEXT,
+  period TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_pm_capex_project ON pm_capex_entries(project_id);
+CREATE INDEX IF NOT EXISTS idx_pm_capex_period ON pm_capex_entries(period);
+CREATE INDEX IF NOT EXISTS idx_pm_capex_confirmed ON pm_capex_entries(confirmed);
+CREATE TABLE IF NOT EXISTS pm_notes (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  session_id TEXT,
+  title TEXT NOT NULL,
+  content TEXT NOT NULL DEFAULT '',
+  pinned INTEGER NOT NULL DEFAULT 0,
+  tags TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS pm_tasks (
+  id TEXT PRIMARY KEY,
+  project_id TEXT,
+  title TEXT NOT NULL,
+  description TEXT,
+  status TEXT NOT NULL DEFAULT 'todo',
+  priority TEXT NOT NULL DEFAULT 'medium',
+  labels TEXT,
+  source TEXT DEFAULT 'manual',
+  source_ref TEXT,
+  sort_order REAL NOT NULL DEFAULT 0,
+  assigned_to TEXT,
+  due_date TEXT,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  completed_at INTEGER
+);
 CREATE TABLE IF NOT EXISTS pm_deleted_projects (
   path TEXT PRIMARY KEY,
   name TEXT,
@@ -181,6 +230,33 @@ pub struct PmSession {
     pub compaction_count: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pre_compaction_tokens: Option<i64>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A CapEx (capital-expenditure) ledger entry for a session (ports Node
+/// `PmCapexEntry`). Stubs default to `expensed`/unconfirmed with a 1.0 factor.
+#[derive(Clone, Debug, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PmCapexEntry {
+    pub id: String,
+    pub project_id: String,
+    pub session_id: String,
+    pub classification: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub work_type: Option<String>,
+    pub active_minutes: f64,
+    pub cost_microdollars: i64,
+    pub adjustment_factor: f64,
+    pub adjusted_cost_microdollars: i64,
+    pub confirmed: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed_at: Option<i64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub confirmed_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub notes: Option<String>,
+    pub period: String,
     pub created_at: i64,
     pub updated_at: i64,
 }
@@ -535,6 +611,288 @@ impl PmStore {
             params![project_id, workspace_id, now_ms()],
         );
     }
+
+    // ============================================================
+    // CapEx
+    // ============================================================
+
+    /// Insert/merge a CapEx ledger entry (ports Node `upsertCapexEntry`). On
+    /// conflict, refreshes everything except `project_id`/`session_id`/`period`/
+    /// `created_at` (those are stable for a given session stub).
+    pub fn upsert_capex_entry(&self, e: &PmCapexEntry) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO pm_capex_entries (id, project_id, session_id, classification, work_type,
+               active_minutes, cost_microdollars, adjustment_factor, adjusted_cost_microdollars,
+               confirmed, confirmed_at, confirmed_by, notes, period, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)
+             ON CONFLICT(id) DO UPDATE SET
+               classification = excluded.classification,
+               work_type = excluded.work_type,
+               active_minutes = excluded.active_minutes,
+               cost_microdollars = excluded.cost_microdollars,
+               adjustment_factor = excluded.adjustment_factor,
+               adjusted_cost_microdollars = excluded.adjusted_cost_microdollars,
+               confirmed = excluded.confirmed,
+               confirmed_at = excluded.confirmed_at,
+               confirmed_by = excluded.confirmed_by,
+               notes = excluded.notes,
+               updated_at = excluded.updated_at",
+            params![
+                e.id, e.project_id, e.session_id, e.classification, e.work_type,
+                e.active_minutes, e.cost_microdollars, e.adjustment_factor, e.adjusted_cost_microdollars,
+                e.confirmed as i64, e.confirmed_at, e.confirmed_by, e.notes, e.period, e.created_at, e.updated_at
+            ],
+        );
+    }
+
+    /// Create/refresh the CapEx stub for a freshly-indexed session — mirrors Node
+    /// `upsertCapexStub`: id `capex-<sessionId>`, `expensed`, unconfirmed, 1.0
+    /// factor (so `adjustedCost == cost`), period = `YYYY-MM-DD` from `startedAt`.
+    pub fn upsert_capex_stub(&self, session: &PmSession) {
+        let now = now_ms();
+        let entry = PmCapexEntry {
+            id: format!("capex-{}", session.id),
+            project_id: session.project_id.clone(),
+            session_id: session.id.clone(),
+            classification: "expensed".to_string(),
+            work_type: None,
+            active_minutes: session.active_minutes,
+            cost_microdollars: session.cost_microdollars,
+            adjustment_factor: 1.0,
+            adjusted_cost_microdollars: session.cost_microdollars,
+            confirmed: false,
+            confirmed_at: None,
+            confirmed_by: None,
+            notes: None,
+            period: crate::pm_discovery::to_period(session.started_at),
+            created_at: now,
+            updated_at: now,
+        };
+        self.upsert_capex_entry(&entry);
+    }
+
+    /// CapEx entries for a project, period-DESC then created_at-DESC (ports the
+    /// core of Node `listCapexEntries`). Used by the capex-stub test.
+    pub fn list_capex_entries(&self, project_id: &str) -> Vec<PmCapexEntry> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(&format!(
+            "SELECT {CAPEX_COLS} FROM pm_capex_entries WHERE project_id = ?1
+             ORDER BY period DESC, created_at DESC"
+        )) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map(params![project_id], map_capex);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
+    // ============================================================
+    // Workspace write-CRUD (ports Node updateWorkspace/deleteWorkspace)
+    // ============================================================
+
+    /// Patch a workspace's `name`/`slug`/`description` (only the provided fields).
+    /// Bumps `updated_at`. No-op when nothing is supplied. Ports Node `updateWorkspace`.
+    pub fn update_workspace(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        slug: Option<&str>,
+        description: Option<&str>,
+    ) {
+        let mut sets: Vec<&str> = Vec::new();
+        let mut vals: Vec<&dyn rusqlite::ToSql> = Vec::new();
+        if let Some(n) = name.as_ref() {
+            sets.push("name = ?");
+            vals.push(n);
+        }
+        if let Some(sl) = slug.as_ref() {
+            sets.push("slug = ?");
+            vals.push(sl);
+        }
+        if let Some(d) = description.as_ref() {
+            sets.push("description = ?");
+            vals.push(d);
+        }
+        if sets.is_empty() {
+            return;
+        }
+        let now = now_ms();
+        sets.push("updated_at = ?");
+        vals.push(&now);
+        vals.push(&id);
+        let sql = format!("UPDATE pm_workspaces SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(&sql, rusqlite::params_from_iter(vals));
+    }
+
+    /// Delete a workspace, reassigning its projects to the default and wiping its
+    /// API keys. Rejects deleting the default. Ports Node `deleteWorkspace`.
+    pub fn delete_workspace(&self, id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        let is_default: Option<i64> = conn
+            .query_row("SELECT is_default FROM pm_workspaces WHERE id = ?1", params![id], |r| r.get(0))
+            .optional()
+            .map_err(|e| e.to_string())?;
+        // Node: getWorkspace(id) → if !ws return (silent no-op).
+        let Some(is_default) = is_default else { return Ok(()) };
+        if is_default == 1 {
+            return Err("Cannot delete the default workspace".to_string());
+        }
+        let default_id: String = conn
+            .query_row("SELECT id FROM pm_workspaces WHERE is_default = 1 LIMIT 1", [], |r| r.get(0))
+            .map_err(|e| e.to_string())?;
+        conn.execute(
+            "UPDATE pm_projects SET workspace_id = ?1 WHERE workspace_id = ?2",
+            params![default_id, id],
+        )
+        .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM pm_api_keys WHERE workspace_id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        conn.execute("DELETE FROM pm_workspaces WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    // ============================================================
+    // API-key write-CRUD (ports Node revokeApiKey/findApiKeyByPrefix)
+    // ============================================================
+
+    /// Revoke an API key by its public prefix (`tk_########`). Ports Node `revokeApiKey`.
+    pub fn revoke_api_key(&self, prefix: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE pm_api_keys SET revoked_at = ?2 WHERE key_prefix = ?1",
+            params![prefix, now_ms()],
+        );
+    }
+
+    /// Look up a non-revoked API key by its public prefix (for per-workspace authz
+    /// on the revoke route). Ports Node `findApiKeyByPrefix`. The raw secret is
+    /// never returned (it's the hash); `key` is blank.
+    pub fn find_api_key_by_prefix(&self, prefix: &str) -> Option<PmApiKey> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT workspace_id, label, created_at, expires_at, key_prefix, key_last4
+             FROM pm_api_keys WHERE key_prefix = ?1 AND revoked_at IS NULL LIMIT 1",
+            params![prefix],
+            |r| {
+                Ok(PmApiKey {
+                    key: String::new(),
+                    key_prefix: r.get::<_, Option<String>>(4)?.unwrap_or_default(),
+                    key_last4: r.get::<_, Option<String>>(5)?.unwrap_or_default(),
+                    workspace_id: r.get(0)?,
+                    label: r.get(1)?,
+                    created_at: r.get(2)?,
+                    expires_at: r.get(3)?,
+                })
+            },
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    // ============================================================
+    // Project write-CRUD (ports Node updateProject/deleteProject)
+    // ============================================================
+
+    /// Patch a project's mutable PM fields (only the provided ones), bumping
+    /// `updated_at`. Mirrors the subset Node's `updateProject` sets that round-trip
+    /// through our `PmProject` shape: name, phase, projectStatus, sdkInstalled,
+    /// runtimeApps, runtimescopeProject. No-op when nothing is supplied.
+    #[allow(clippy::too_many_arguments)]
+    pub fn update_project(
+        &self,
+        id: &str,
+        name: Option<&str>,
+        phase: Option<&str>,
+        project_status: Option<&str>,
+        sdk_installed: Option<bool>,
+        runtime_apps: Option<&str>,
+        runtimescope_project: Option<&str>,
+        management_authorized: Option<bool>,
+        probable_to_complete: Option<bool>,
+    ) {
+        let mut sets: Vec<String> = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(v) = name {
+            sets.push("name = ?".into());
+            vals.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = phase {
+            sets.push("phase = ?".into());
+            vals.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = project_status {
+            sets.push("project_status = ?".into());
+            vals.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = sdk_installed {
+            sets.push("sdk_installed = ?".into());
+            vals.push(Box::new(v as i64));
+        }
+        if let Some(v) = runtime_apps {
+            sets.push("runtime_apps = ?".into());
+            vals.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = runtimescope_project {
+            sets.push("runtimescope_project = ?".into());
+            vals.push(Box::new(v.to_string()));
+        }
+        if let Some(v) = management_authorized {
+            sets.push("management_authorized = ?".into());
+            vals.push(Box::new(v as i64));
+        }
+        if let Some(v) = probable_to_complete {
+            sets.push("probable_to_complete = ?".into());
+            vals.push(Box::new(v as i64));
+        }
+        if sets.is_empty() {
+            return;
+        }
+        sets.push("updated_at = ?".into());
+        vals.push(Box::new(now_ms()));
+        vals.push(Box::new(id.to_string()));
+        let sql = format!("UPDATE pm_projects SET {} WHERE id = ?", sets.join(", "));
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(&sql, rusqlite::params_from_iter(vals.iter().map(|b| &**b)));
+    }
+
+    /// Delete a project + blocklist its path/claudeProjectKey so discovery won't
+    /// re-import, then cascade-delete its capex/notes/tasks/sessions rows. No-op
+    /// if the project doesn't exist. Ports Node `deleteProject`.
+    pub fn delete_project(&self, id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let row: Option<(Option<String>, Option<String>, String)> = conn
+            .query_row(
+                "SELECT path, claude_project_key, name FROM pm_projects WHERE id = ?1",
+                params![id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .optional()
+            .ok()
+            .flatten();
+        let Some((path, claude_key, name)) = row else { return };
+        let now = now_ms();
+        if let Some(p) = path.as_ref() {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO pm_deleted_projects (path, name, deleted_at) VALUES (?1, ?2, ?3)",
+                params![p, name, now],
+            );
+        }
+        if let Some(k) = claude_key.as_ref() {
+            let _ = conn.execute(
+                "INSERT OR REPLACE INTO pm_deleted_projects (path, name, deleted_at) VALUES (?1, ?2, ?3)",
+                params![k, name, now],
+            );
+        }
+        let _ = conn.execute("DELETE FROM pm_capex_entries WHERE project_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM pm_notes WHERE project_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM pm_tasks WHERE project_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM pm_sessions WHERE project_id = ?1", params![id]);
+        let _ = conn.execute("DELETE FROM pm_projects WHERE id = ?1", params![id]);
+    }
 }
 
 /// Generate a `<prefix><n bytes hex>` id via SQLite's `randomblob` CSPRNG.
@@ -614,6 +972,31 @@ fn map_project(r: &rusqlite::Row) -> rusqlite::Result<PmProject> {
         runtime_apps: r.get(9)?,
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
+    })
+}
+
+const CAPEX_COLS: &str = "id, project_id, session_id, classification, work_type, active_minutes, \
+    cost_microdollars, adjustment_factor, adjusted_cost_microdollars, confirmed, confirmed_at, \
+    confirmed_by, notes, period, created_at, updated_at";
+
+fn map_capex(r: &rusqlite::Row) -> rusqlite::Result<PmCapexEntry> {
+    Ok(PmCapexEntry {
+        id: r.get(0)?,
+        project_id: r.get(1)?,
+        session_id: r.get(2)?,
+        classification: r.get(3)?,
+        work_type: r.get(4)?,
+        active_minutes: r.get(5)?,
+        cost_microdollars: r.get(6)?,
+        adjustment_factor: r.get(7)?,
+        adjusted_cost_microdollars: r.get(8)?,
+        confirmed: r.get::<_, i64>(9)? == 1,
+        confirmed_at: r.get(10)?,
+        confirmed_by: r.get(11)?,
+        notes: r.get(12)?,
+        period: r.get(13)?,
+        created_at: r.get(14)?,
+        updated_at: r.get(15)?,
     })
 }
 
@@ -698,6 +1081,157 @@ mod tests {
         assert_eq!(keys[0].key_prefix, k.key_prefix);
         // Unknown workspace is rejected.
         assert!(s.create_api_key("ws_nope", "x", None).is_err());
+    }
+
+    fn sample_session(id: &str, project_id: &str) -> PmSession {
+        PmSession {
+            id: id.to_string(),
+            project_id: project_id.to_string(),
+            jsonl_path: "/tmp/x.jsonl".to_string(),
+            started_at: 1_704_067_200_000, // 2024-01-01T00:00:00Z (period via LOCAL tz)
+            active_minutes: 42.5,
+            cost_microdollars: 1_234_567,
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn upsert_capex_stub_defaults_match_node() {
+        let s = tmp_store();
+        let sess = sample_session("sess-abc", "proj-1");
+        s.upsert_capex_stub(&sess);
+
+        let entries = s.list_capex_entries("proj-1");
+        assert_eq!(entries.len(), 1);
+        let e = &entries[0];
+        // id is `capex-<sessionId>` (Node: `capex-${session.id}`)
+        assert_eq!(e.id, "capex-sess-abc");
+        assert_eq!(e.session_id, "sess-abc");
+        assert_eq!(e.project_id, "proj-1");
+        // Node stub defaults
+        assert_eq!(e.classification, "expensed");
+        assert!(!e.confirmed);
+        assert!(e.confirmed_at.is_none());
+        assert!(e.confirmed_by.is_none());
+        assert!(e.work_type.is_none());
+        assert!(e.notes.is_none());
+        assert_eq!(e.adjustment_factor, 1.0);
+        // factor 1.0 → adjusted == cost == session.costMicrodollars
+        assert_eq!(e.cost_microdollars, 1_234_567);
+        assert_eq!(e.adjusted_cost_microdollars, 1_234_567);
+        assert_eq!(e.active_minutes, 42.5);
+        // period is YYYY-MM-DD (to_period uses LOCAL tz, like Node toPeriod)
+        let expected_period = crate::pm_discovery::to_period(sess.started_at);
+        assert_eq!(e.period, expected_period);
+        assert_eq!(expected_period.len(), 10); // YYYY-MM-DD
+
+        // Idempotent re-stub with new metrics overwrites cost/adjusted but keeps id.
+        let mut sess2 = sample_session("sess-abc", "proj-1");
+        sess2.cost_microdollars = 9_000_000;
+        sess2.active_minutes = 100.0;
+        s.upsert_capex_stub(&sess2);
+        let after = s.list_capex_entries("proj-1");
+        assert_eq!(after.len(), 1, "same id → upsert, not insert");
+        assert_eq!(after[0].cost_microdollars, 9_000_000);
+        assert_eq!(after[0].adjusted_cost_microdollars, 9_000_000);
+        assert_eq!(after[0].active_minutes, 100.0);
+    }
+
+    #[test]
+    fn update_workspace_patches_provided_fields_only() {
+        let s = tmp_store();
+        let ws = s.create_workspace("Old Name", Some("old-slug"), Some("desc")).unwrap();
+        // Patch only the name; slug + description unchanged.
+        s.update_workspace(&ws.id, Some("New Name"), None, None);
+        let got = s.list_workspaces().into_iter().find(|w| w.id == ws.id).unwrap();
+        assert_eq!(got.name, "New Name");
+        assert_eq!(got.slug, "old-slug");
+        assert_eq!(got.description.as_deref(), Some("desc"));
+    }
+
+    #[test]
+    fn delete_workspace_rejects_default_and_reassigns_projects() {
+        let s = tmp_store();
+        let default_id = s.list_workspaces()[0].id.clone();
+        // Default rejected.
+        assert_eq!(
+            s.delete_workspace(&default_id).unwrap_err(),
+            "Cannot delete the default workspace"
+        );
+        // Create a workspace + a project in it + a key.
+        let ws = s.create_workspace("Temp", None, None).unwrap();
+        let mut proj = PmProject {
+            id: "p1".into(),
+            name: "p1".into(),
+            workspace_id: Some(ws.id.clone()),
+            phase: "application_development".into(),
+            project_status: "active".into(),
+            ..Default::default()
+        };
+        proj.created_at = now_ms();
+        proj.updated_at = now_ms();
+        s.upsert_project(&proj);
+        s.create_api_key(&ws.id, "k", None).unwrap();
+        // Delete → project reassigned to default, keys gone, workspace gone.
+        s.delete_workspace(&ws.id).unwrap();
+        assert!(s.list_workspaces().iter().all(|w| w.id != ws.id));
+        let p = s.get_project("p1").unwrap();
+        assert_eq!(p.workspace_id.as_deref(), Some(default_id.as_str()));
+        assert!(s.list_api_keys(&ws.id).is_empty());
+        // Deleting an unknown workspace is a silent no-op (matches Node).
+        assert!(s.delete_workspace("ws_nope").is_ok());
+    }
+
+    #[test]
+    fn revoke_api_key_by_prefix_hides_from_list() {
+        let s = tmp_store();
+        let ws_id = s.list_workspaces()[0].id.clone();
+        let k = s.create_api_key(&ws_id, "ci", None).unwrap();
+        assert_eq!(s.list_api_keys(&ws_id).len(), 1);
+        // findApiKeyByPrefix resolves the workspace for authz, raw secret masked.
+        let found = s.find_api_key_by_prefix(&k.key_prefix).unwrap();
+        assert_eq!(found.workspace_id, ws_id);
+        assert_eq!(found.key, "");
+        // Revoke → disappears from list + find returns None.
+        s.revoke_api_key(&k.key_prefix);
+        assert!(s.list_api_keys(&ws_id).is_empty());
+        assert!(s.find_api_key_by_prefix(&k.key_prefix).is_none());
+    }
+
+    #[test]
+    fn update_and_delete_project() {
+        let s = tmp_store();
+        let mut proj = PmProject {
+            id: "p1".into(),
+            name: "Original".into(),
+            path: Some("/tmp/p1".into()),
+            claude_project_key: Some("-tmp-p1".into()),
+            phase: "application_development".into(),
+            project_status: "active".into(),
+            ..Default::default()
+        };
+        proj.created_at = now_ms();
+        proj.updated_at = now_ms();
+        s.upsert_project(&proj);
+        // Seed a capex stub so cascade-delete is observable.
+        s.upsert_capex_stub(&sample_session("s1", "p1"));
+        assert_eq!(s.list_capex_entries("p1").len(), 1);
+
+        // Patch phase + status only.
+        s.update_project("p1", None, Some("maintenance"), Some("paused"), None, None, None, None, None);
+        let g = s.get_project("p1").unwrap();
+        assert_eq!(g.phase, "maintenance");
+        assert_eq!(g.project_status, "paused");
+        assert_eq!(g.name, "Original"); // untouched
+
+        // Delete → gone, capex cascaded, path + key blocklisted.
+        s.delete_project("p1");
+        assert!(s.get_project("p1").is_none());
+        assert!(s.list_capex_entries("p1").is_empty());
+        assert!(s.is_deleted_path("/tmp/p1"));
+        assert!(s.is_deleted_path("-tmp-p1"));
+        // Deleting again is a no-op.
+        s.delete_project("p1");
     }
 
     #[test]

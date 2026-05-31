@@ -21,7 +21,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post},
+    routing::{get, post, put},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -80,10 +80,20 @@ pub async fn serve(
         // pm/ project-manager surface (M5)
         .route("/api/pm/discover", post(pm_discover))
         .route("/api/pm/projects", get(pm_projects))
-        .route("/api/pm/projects/{id}", get(pm_project_by_id))
+        .route(
+            "/api/pm/projects/{id}",
+            get(pm_project_by_id).put(pm_update_project).delete(pm_delete_project),
+        )
+        .route("/api/pm/projects/{id}/workspace", put(pm_set_project_workspace))
         .route("/api/pm/sessions", get(pm_sessions))
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
-        .route("/api/pm/workspaces", get(pm_workspaces))
+        .route("/api/pm/workspaces", get(pm_workspaces).post(pm_create_workspace))
+        .route(
+            "/api/pm/workspaces/{id}",
+            get(pm_workspace_by_id).put(pm_update_workspace).delete(pm_delete_workspace),
+        )
+        .route("/api/pm/workspaces/{id}/api-keys", post(pm_create_api_key))
+        .route("/api/pm/api-keys/{prefix}", axum::routing::delete(pm_revoke_api_key))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -339,9 +349,21 @@ async fn pm_discover(State(s): State<AppState>, headers: HeaderMap) -> Response 
     }
     let pm = s.pm.clone();
     let claude_base = std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude");
-    let result = tokio::task::spawn_blocking(move || pm_discovery::discover_claude_projects(&claude_base, &pm))
-        .await
-        .unwrap_or_default();
+    let rs_base = crate::data_dir();
+    let result = tokio::task::spawn_blocking(move || {
+        // Claude-project discovery (the over-discovery-filtered scan) + the
+        // RuntimeScope-project discovery (~/.runtimescope/projects), summed.
+        let mut r = pm_discovery::discover_claude_projects(&claude_base, &pm);
+        let r2 = crate::discover_runtimescope_projects(&rs_base, &pm);
+        r.projects_discovered += r2.projects_discovered;
+        r.projects_updated += r2.projects_updated;
+        r.sessions_discovered += r2.sessions_discovered;
+        r.sessions_updated += r2.sessions_updated;
+        r.errors.extend(r2.errors);
+        r
+    })
+    .await
+    .unwrap_or_default();
     Json(result).into_response()
 }
 
@@ -404,6 +426,235 @@ async fn pm_workspaces(State(s): State<AppState>, headers: HeaderMap) -> Respons
     // No auth-key→workspace context here → return all (admin-equivalent), matching
     // Node's no-caller path. Per-workspace filtering arrives with the API-key auth path.
     Json(json!({ "data": s.pm.list_workspaces() })).into_response()
+}
+
+// ---- pm/ write routes (M5 fast-follow: capex-and-write-crud) ----
+//
+// All gated by `http_authorized`. In the embedded MCP path auth is disabled,
+// which Node treats as the admin/local-trust caller (`isAdmin = !authEnabled`),
+// so the admin-only routes (create/delete workspace) pass exactly as in Node.
+// Per-workspace (`tk_`-scoped) authz refinement is a follow-up; here auth-on
+// gates the whole surface like the existing read routes.
+
+fn bad_request(msg: &str) -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": msg }))).into_response()
+}
+
+/// POST /api/pm/workspaces — create a workspace (Node: admin-only). 201 + the
+/// workspace JSON; 400 on missing name / duplicate slug.
+async fn pm_create_workspace(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Missing body");
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let name = parsed.get("name").and_then(Value::as_str);
+    let Some(name) = name else {
+        return bad_request("Missing name");
+    };
+    let slug = parsed.get("slug").and_then(Value::as_str);
+    let description = parsed.get("description").and_then(Value::as_str);
+    match s.pm.create_workspace(name, slug, description) {
+        Ok(ws) => (StatusCode::CREATED, Json(serde_json::to_value(&ws).unwrap())).into_response(),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// GET /api/pm/workspaces/{id} — single workspace; 404 when absent.
+async fn pm_workspace_by_id(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.pm.list_workspaces().into_iter().find(|w| w.id == id) {
+        Some(ws) => Json(serde_json::to_value(&ws).unwrap()).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Workspace not found" }))).into_response(),
+    }
+}
+
+/// PUT /api/pm/workspaces/{id} — patch name/slug/description; returns the updated
+/// workspace (Node returns `getWorkspace(id)`); 404 when absent, 400 on bad body.
+async fn pm_update_workspace(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.pm.list_workspaces().iter().all(|w| w.id != id) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Workspace not found" }))).into_response();
+    }
+    if body.is_empty() {
+        return bad_request("Missing body");
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    s.pm.update_workspace(
+        &id,
+        parsed.get("name").and_then(Value::as_str),
+        parsed.get("slug").and_then(Value::as_str),
+        parsed.get("description").and_then(Value::as_str),
+    );
+    match s.pm.list_workspaces().into_iter().find(|w| w.id == id) {
+        Some(ws) => Json(serde_json::to_value(&ws).unwrap()).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "Workspace not found" }))).into_response(),
+    }
+}
+
+/// DELETE /api/pm/workspaces/{id} — reassign projects + wipe keys (Node:
+/// admin-only). `{ ok: true }`; 400 when targeting the default.
+async fn pm_delete_workspace(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.pm.delete_workspace(&id) {
+        Ok(()) => Json(json!({ "ok": true })).into_response(),
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// POST /api/pm/workspaces/{id}/api-keys — mint a workspace-scoped `tk_` key.
+/// 201 + the raw secret ONCE (Node returns `{ key, keyPrefix, keyLast4, ... }`);
+/// 404 when the workspace is absent, 400 on missing label.
+async fn pm_create_api_key(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.pm.list_workspaces().iter().all(|w| w.id != id) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Workspace not found" }))).into_response();
+    }
+    if body.is_empty() {
+        return bad_request("Missing body");
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let Some(label) = parsed.get("label").and_then(Value::as_str) else {
+        return bad_request("Missing label");
+    };
+    let expires_at = parsed.get("expires_at").and_then(Value::as_i64);
+    match s.pm.create_api_key(&id, label, expires_at) {
+        Ok(k) => {
+            // Mirror Node's create response shape exactly (raw `key` appears once).
+            let mut body = json!({
+                "key": k.key,
+                "keyPrefix": k.key_prefix,
+                "keyLast4": k.key_last4,
+                "workspaceId": k.workspace_id,
+                "label": k.label,
+                "createdAt": k.created_at,
+            });
+            if let Some(e) = k.expires_at {
+                body.as_object_mut().unwrap().insert("expiresAt".into(), json!(e));
+            }
+            (StatusCode::CREATED, Json(body)).into_response()
+        }
+        Err(e) => bad_request(&e),
+    }
+}
+
+/// DELETE /api/pm/api-keys/{prefix} — revoke by public prefix. `{ ok: true }`;
+/// 404 when no live key has that prefix.
+async fn pm_revoke_api_key(State(s): State<AppState>, headers: HeaderMap, Path(prefix): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.pm.find_api_key_by_prefix(&prefix).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Key not found" }))).into_response();
+    }
+    s.pm.revoke_api_key(&prefix);
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// PUT /api/pm/projects/{id} — patch the project's mutable PM fields. `{ ok: true }`
+/// (Node returns the same); 400 on bad JSON.
+async fn pm_update_project(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    // runtimeApps is a JSON array on the wire → store the JSON-encoded text (mirrors
+    // Node's `runtime_apps` TEXT column; empty array → null is Node's rule but here
+    // we only set when provided).
+    let runtime_apps_json = parsed.get("runtimeApps").and_then(|v| v.as_array()).map(|_| {
+        serde_json::to_string(parsed.get("runtimeApps").unwrap()).unwrap_or_default()
+    });
+    s.pm.update_project(
+        &id,
+        parsed.get("name").and_then(Value::as_str),
+        parsed.get("phase").and_then(Value::as_str),
+        parsed.get("projectStatus").and_then(Value::as_str),
+        parsed.get("sdkInstalled").and_then(Value::as_bool),
+        runtime_apps_json.as_deref(),
+        parsed.get("runtimescopeProject").and_then(Value::as_str),
+        parsed.get("managementAuthorized").and_then(Value::as_bool),
+        parsed.get("probableToComplete").and_then(Value::as_bool),
+    );
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// DELETE /api/pm/projects/{id} — blocklist + cascade-delete. 404 when absent;
+/// `{ ok: true, deleted: <name> }` (matches Node).
+async fn pm_delete_project(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Project not found" }))).into_response();
+    };
+    s.pm.delete_project(&id);
+    Json(json!({ "ok": true, "deleted": project.name })).into_response()
+}
+
+/// PUT /api/pm/projects/{id}/workspace — move a project between workspaces.
+/// `{ ok: true }`; 400 missing body/workspace_id, 404 unknown project.
+async fn pm_set_project_workspace(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if body.is_empty() {
+        return bad_request("Missing body");
+    }
+    let Ok(parsed) = serde_json::from_str::<Value>(&body) else {
+        return bad_request("Invalid JSON");
+    };
+    let Some(workspace_id) = parsed.get("workspace_id").and_then(Value::as_str) else {
+        return bad_request("Missing workspace_id");
+    };
+    if s.pm.get_project(&id).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Project not found" }))).into_response();
+    }
+    if s.pm.list_workspaces().iter().all(|w| w.id != workspace_id) {
+        return bad_request(&format!("Workspace {workspace_id} does not exist"));
+    }
+    s.pm.set_project_workspace(&id, workspace_id);
+    Json(json!({ "ok": true })).into_response()
 }
 
 // ---- WebSocket ----

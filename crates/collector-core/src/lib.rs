@@ -13,6 +13,7 @@ pub mod auth;
 pub mod command;
 pub mod event;
 pub mod pm_discovery;
+pub mod pm_project_manager;
 pub mod pm_session_parser;
 pub mod pm_store;
 pub mod server;
@@ -20,6 +21,7 @@ pub mod store;
 pub mod wal;
 
 pub use command::CommandHub;
+pub use pm_project_manager::{discover_runtimescope_projects, ProjectManager};
 pub use pm_store::PmStore;
 pub use server::serve;
 pub use store::StoreHandle;

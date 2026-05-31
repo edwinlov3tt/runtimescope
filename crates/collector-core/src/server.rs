@@ -113,6 +113,14 @@ pub async fn serve(
         // notes (M5.5 Slice C)
         .route("/api/pm/notes", get(pm_notes_list).post(pm_notes_create))
         .route("/api/pm/notes/{id}", put(pm_notes_update).delete(pm_notes_delete))
+        // memory + rules (M5.5 Slice D)
+        .route("/api/pm/memory/{projectId}", get(pm_memory_list))
+        .route(
+            "/api/pm/memory/{projectId}/{filename}",
+            get(pm_memory_get).put(pm_memory_put).delete(pm_memory_delete),
+        )
+        .route("/api/pm/rules/{projectId}", get(pm_rules_all))
+        .route("/api/pm/rules/{projectId}/{scope}", get(pm_rules_get).put(pm_rules_put))
         .fallback(not_found)
         .with_state(state.clone());
 
@@ -1130,6 +1138,229 @@ async fn pm_notes_delete(State(s): State<AppState>, headers: HeaderMap, Path(id)
     Json(json!({ "ok": true })).into_response()
 }
 
+// ---- pm/ memory files + rules (M5.5 Slice D) ----
+
+/// Strip path separators and `..` to block traversal — ports Node `sanitizeFilename`
+/// (`name.replace(/[/\\]/g,'').replace(/\.\./g,'')`, applied in that order).
+fn sanitize_filename(name: &str) -> String {
+    name.replace(['/', '\\'], "").replace("..", "")
+}
+
+fn home_dir() -> String {
+    std::env::var("HOME").unwrap_or_default()
+}
+
+/// `<home>/.claude/projects/<claudeProjectKey>/memory`.
+fn memory_dir(key: &str) -> std::path::PathBuf {
+    std::path::Path::new(&home_dir()).join(".claude").join("projects").join(key).join("memory")
+}
+
+fn not_found_json(msg: &str) -> Response {
+    (StatusCode::NOT_FOUND, Json(json!({ "error": msg }))).into_response()
+}
+
+/// GET /api/pm/memory/{projectId} — list `*.md` memory files. No project / no
+/// claudeProjectKey / unreadable dir → `{ data: [], count: 0 }` (Node parity).
+async fn pm_memory_list(State(s): State<AppState>, headers: HeaderMap, Path(project_id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let empty = || Json(json!({ "data": [], "count": 0 })).into_response();
+    let Some(key) = s.pm.get_project(&project_id).and_then(|p| p.claude_project_key) else {
+        return empty();
+    };
+    let dir = memory_dir(&key);
+    let Ok(entries) = std::fs::read_dir(&dir) else { return empty() };
+    let mut data: Vec<Value> = Vec::new();
+    for e in entries.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        if !name.ends_with(".md") {
+            continue;
+        }
+        if let Ok(content) = std::fs::read_to_string(dir.join(&name)) {
+            let size = content.len();
+            data.push(json!({ "filename": name, "content": content, "sizeBytes": size }));
+        }
+    }
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// GET /api/pm/memory/{projectId}/{filename} — read one memory file.
+async fn pm_memory_get(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, filename)): Path<(String, String)>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(key) = s.pm.get_project(&project_id).and_then(|p| p.claude_project_key) else {
+        return not_found_json("Project not found");
+    };
+    let filename = sanitize_filename(&filename);
+    match std::fs::read_to_string(memory_dir(&key).join(&filename)) {
+        Ok(content) => {
+            let size = content.len();
+            Json(json!({ "filename": filename, "content": content, "sizeBytes": size })).into_response()
+        }
+        Err(_) => not_found_json("File not found"),
+    }
+}
+
+/// PUT /api/pm/memory/{projectId}/{filename} — write a memory file.
+async fn pm_memory_put(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, filename)): Path<(String, String)>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    // Node checks project (404) before body (400).
+    let Some(key) = s.pm.get_project(&project_id).and_then(|p| p.claude_project_key) else {
+        return not_found_json("Project not found");
+    };
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let content = match serde_json::from_str::<Value>(&body) {
+        Ok(v) => v.get("content").and_then(Value::as_str).unwrap_or("").to_string(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    };
+    let filename = sanitize_filename(&filename);
+    let dir = memory_dir(&key);
+    if let Err(e) = std::fs::create_dir_all(&dir).and_then(|_| std::fs::write(dir.join(&filename), content)) {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
+/// DELETE /api/pm/memory/{projectId}/{filename}.
+async fn pm_memory_delete(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, filename)): Path<(String, String)>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(key) = s.pm.get_project(&project_id).and_then(|p| p.claude_project_key) else {
+        return not_found_json("Project not found");
+    };
+    let filename = sanitize_filename(&filename);
+    match std::fs::remove_file(memory_dir(&key).join(&filename)) {
+        Ok(_) => Json(json!({ "ok": true })).into_response(),
+        Err(_) => not_found_json("File not found"),
+    }
+}
+
+/// The CLAUDE.md path at each scope — ports Node `getRulesPaths`.
+fn rules_paths(claude_project_key: Option<&str>, project_path: Option<&str>) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+    let home = home_dir();
+    let global = std::path::Path::new(&home).join(".claude").join("CLAUDE.md");
+    let project = match claude_project_key {
+        Some(k) => std::path::Path::new(&home).join(".claude").join("projects").join(k).join("CLAUDE.md"),
+        None => std::path::Path::new(project_path.unwrap_or("")).join(".claude").join("CLAUDE.md"),
+    };
+    let local = match project_path {
+        Some(p) => std::path::Path::new(p).join("CLAUDE.md"),
+        None => std::path::Path::new(&home).join("CLAUDE.md"),
+    };
+    (global, project, local)
+}
+
+/// `{ path, content, exists }` for a rule file — ports Node `readRuleFile`.
+fn read_rule_file(path: &std::path::Path) -> Value {
+    match std::fs::read_to_string(path) {
+        Ok(content) => json!({ "path": path.to_string_lossy(), "content": content, "exists": true }),
+        Err(_) => json!({ "path": path.to_string_lossy(), "content": "", "exists": false }),
+    }
+}
+
+const RULE_SCOPES: [&str; 3] = ["global", "project", "local"];
+
+/// GET /api/pm/rules/{projectId} — all three scopes.
+async fn pm_rules_all(State(s): State<AppState>, headers: HeaderMap, Path(project_id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&project_id) else {
+        return not_found_json("Project not found");
+    };
+    let (global, project_p, local) = rules_paths(project.claude_project_key.as_deref(), project.path.as_deref());
+    Json(json!({
+        "global": read_rule_file(&global),
+        "project": read_rule_file(&project_p),
+        "local": read_rule_file(&local),
+    }))
+    .into_response()
+}
+
+fn rule_path_for_scope(scope: &str, project: &crate::pm_store::PmProject) -> std::path::PathBuf {
+    let (global, project_p, local) = rules_paths(project.claude_project_key.as_deref(), project.path.as_deref());
+    match scope {
+        "global" => global,
+        "project" => project_p,
+        _ => local,
+    }
+}
+
+/// GET /api/pm/rules/{projectId}/{scope} — one scope. Invalid scope → 400 (before
+/// the project lookup, matching Node).
+async fn pm_rules_get(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, scope)): Path<(String, String)>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if !RULE_SCOPES.contains(&scope.as_str()) {
+        return bad_request("Invalid scope. Must be: global, project, or local");
+    }
+    let Some(project) = s.pm.get_project(&project_id) else {
+        return not_found_json("Project not found");
+    };
+    Json(read_rule_file(&rule_path_for_scope(&scope, &project))).into_response()
+}
+
+/// PUT /api/pm/rules/{projectId}/{scope} — write a scope's CLAUDE.md.
+async fn pm_rules_put(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path((project_id, scope)): Path<(String, String)>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if !RULE_SCOPES.contains(&scope.as_str()) {
+        return bad_request("Invalid scope");
+    }
+    let Some(project) = s.pm.get_project(&project_id) else {
+        return not_found_json("Project not found");
+    };
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let content = match serde_json::from_str::<Value>(&body) {
+        Ok(v) => v.get("content").and_then(Value::as_str).unwrap_or("").to_string(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
+    };
+    let path = rule_path_for_scope(&scope, &project);
+    let write = path
+        .parent()
+        .map(std::fs::create_dir_all)
+        .unwrap_or(Ok(()))
+        .and_then(|_| std::fs::write(&path, content));
+    if let Err(e) = write {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
+    }
+    Json(json!({ "ok": true })).into_response()
+}
+
 // ---- WebSocket ----
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl IntoResponse {
@@ -1258,5 +1489,40 @@ fn parse_authed_handshake(s: &AppState, text: &str) -> Option<HandshakePayload> 
         Some(h)
     } else {
         None
+    }
+}
+
+#[cfg(test)]
+mod slice_d_tests {
+    use super::{rules_paths, sanitize_filename};
+
+    #[test]
+    fn sanitize_filename_strips_separators_and_dotdot() {
+        // Ports Node: replace([/\\]) then replace(..) — applied in that order.
+        assert_eq!(sanitize_filename("notes.md"), "notes.md");
+        assert_eq!(sanitize_filename("../../etc/passwd"), "etcpasswd"); // slashes + .. gone
+        assert_eq!(sanitize_filename("a/b\\c"), "abc");
+        assert_eq!(sanitize_filename(".."), "");
+        assert_eq!(sanitize_filename("..."), "."); // one ".." removed, leaving "."
+        assert_eq!(sanitize_filename("foo..bar"), "foobar");
+        // No way to reconstruct a traversal segment: result has no '/' or '\' and no "..".
+        let s = sanitize_filename("..\\..//x");
+        assert!(!s.contains('/') && !s.contains('\\') && !s.contains(".."));
+    }
+
+    #[test]
+    fn rules_paths_match_node_scopes() {
+        std::env::set_var("HOME", "/tmp/rs-home");
+        // With a claudeProjectKey + path.
+        let (g, p, l) = rules_paths(Some("-Users-me-proj"), Some("/Users/me/proj"));
+        assert!(g.ends_with(".claude/CLAUDE.md"));
+        assert_eq!(p, std::path::Path::new("/tmp/rs-home/.claude/projects/-Users-me-proj/CLAUDE.md"));
+        assert_eq!(l, std::path::Path::new("/Users/me/proj/CLAUDE.md"));
+        // No key → project scope falls back to <path>/.claude/CLAUDE.md.
+        let (_, p2, _) = rules_paths(None, Some("/Users/me/proj"));
+        assert_eq!(p2, std::path::Path::new("/Users/me/proj/.claude/CLAUDE.md"));
+        // No path → local scope falls back to <home>/CLAUDE.md.
+        let (_, _, l2) = rules_paths(Some("k"), None);
+        assert_eq!(l2, std::path::Path::new("/tmp/rs-home/CLAUDE.md"));
     }
 }

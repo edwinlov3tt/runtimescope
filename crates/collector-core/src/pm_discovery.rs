@@ -291,7 +291,13 @@ fn index_sessions(project_id: &str, key: &str, claude_base: &Path, pm: &PmStore,
         }
         let session_id = fname.trim_end_matches(".jsonl").to_string();
         let jsonl_path = dir.join(&fname);
-        let size = std::fs::metadata(&jsonl_path).map(|m| m.len() as i64).unwrap_or(0);
+        // If the file vanished between read_dir and stat, skip it — do NOT fall
+        // back to size 0, which would re-parse an absent file and clobber the
+        // stored session's metrics with zeros (audit finding).
+        let size = match std::fs::metadata(&jsonl_path) {
+            Ok(m) => m.len() as i64,
+            Err(_) => continue,
+        };
         let prev = pm.session_jsonl_size(&session_id);
         if prev == Some(size) {
             continue; // unchanged — skip (incremental)

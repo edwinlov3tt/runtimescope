@@ -59,7 +59,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
     // First-run cutover guard: back up legacy Node-era data before opening the
     // stores (or leave it with RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1) — M6 Slice D.
-    collector_core::migration::first_run_guard(&data_dir());
+    // Abort if the backup failed rather than run on a half-migrated store.
+    collector_core::migration::first_run_guard(&data_dir()).map_err(std::io::Error::other)?;
     let store = open_store().await?;
     let hub = CommandHub::new();
     // pm/ store (M5): separate pm.db alongside the event store's collector.db.

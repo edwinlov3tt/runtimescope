@@ -17,7 +17,8 @@ async fn main() -> std::io::Result<()> {
 
     // First-run cutover guard: before opening the stores, back up any legacy
     // Node-era data (incompatible schema) — or leave it with PRESERVE=1 (M6 Slice D).
-    collector_core::migration::first_run_guard(&data_dir());
+    // Abort if the backup failed rather than run on a half-migrated store.
+    collector_core::migration::first_run_guard(&data_dir()).map_err(std::io::Error::other)?;
 
     let store = open_store()
         .await

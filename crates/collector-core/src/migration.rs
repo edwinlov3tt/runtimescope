@@ -21,95 +21,132 @@ const LEGACY_FILES: &[&str] = &[
     "pm.db", "pm.db-shm", "pm.db-wal",
 ];
 
-/// Run once at collector startup, BEFORE opening the stores. Best-effort: never
-/// panics, never blocks startup.
-pub fn first_run_guard(data_dir: &Path) {
+/// Run once at collector startup, BEFORE opening the stores. Returns `Err` only
+/// when a required backup FAILED — the caller should then abort rather than start
+/// on un-migrated, incompatible Node data.
+pub fn first_run_guard(data_dir: &Path) -> Result<(), String> {
     let marker = data_dir.join(MARKER);
     if marker.exists() {
-        return; // already handled on a prior run
+        return Ok(()); // already handled on a prior run
     }
     let collector_db = data_dir.join("collector.db");
     if !collector_db.exists() {
-        write_marker(data_dir); // fresh install — nothing to migrate
-        return;
+        claim_marker(data_dir); // fresh install — nothing to migrate
+        return Ok(());
     }
     if !is_node_era(&collector_db) {
         // Already a Rust-format store (e.g. created by a pre-marker Rust build) —
         // adopt it silently; do NOT back up live data.
-        write_marker(data_dir);
-        return;
+        claim_marker(data_dir);
+        return Ok(());
     }
 
-    // Genuine Node-era data is present.
-    let preserve = std::env::var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA").as_deref() == Ok("1");
-    if preserve {
+    // Genuine Node-era data. Atomically claim the migration so two binaries
+    // starting concurrently don't both back up (→ split state). Loser skips.
+    if !claim_marker(data_dir) {
+        return Ok(()); // another process is performing the cutover
+    }
+
+    if std::env::var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA").as_deref() == Ok("1") {
         eprintln!(
             "[RuntimeScope] ⚠ Legacy Node-era data found in {} and RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1 \
              is set — leaving it untouched and opening as-is. The Rust store schema differs from Node's, \
              so this may misbehave; unset the variable to back the old data up and start fresh.",
             data_dir.display()
         );
-    } else {
-        match backup_legacy(data_dir) {
-            Ok(dest) => eprintln!(
+        return Ok(());
+    }
+
+    match backup_legacy(data_dir) {
+        Ok(dest) => {
+            eprintln!(
                 "[RuntimeScope] ⚠ Found legacy Node-era data — the Rust port uses an incompatible store. \
                  Moved it to {} and started fresh. (Set RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1 to leave the \
                  old files in place instead.)",
                 dest.display()
-            ),
-            Err(e) => eprintln!(
-                "[RuntimeScope] ⚠ Found legacy Node-era data but could not back it up ({e}); proceeding \
-                 on a possibly-incompatible store."
-            ),
+            );
+            Ok(())
+        }
+        Err(e) => {
+            // Backing up failed → do NOT run on a half-migrated / incompatible
+            // store. Clear the marker so a fixed retry re-runs the cutover.
+            let _ = std::fs::remove_file(&marker);
+            Err(format!(
+                "legacy Node-era data backup failed: {e}. Move ~/.runtimescope/collector.db & pm.db aside \
+                 manually (or set RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1), then restart."
+            ))
         }
     }
-    write_marker(data_dir);
 }
 
-fn write_marker(data_dir: &Path) {
+/// Atomically claim the data dir via the marker (`create_new` — only the first
+/// process succeeds). Returns true iff THIS call created it. Non-migration paths
+/// ignore the bool (a concurrent fresh-install just means the other wrote it).
+fn claim_marker(data_dir: &Path) -> bool {
     let _ = std::fs::create_dir_all(data_dir);
-    let _ = std::fs::write(data_dir.join(MARKER), b"v1\n");
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(data_dir.join(MARKER)) {
+        Ok(mut f) => {
+            use std::io::Write;
+            let _ = f.write_all(b"v1\n");
+            true
+        }
+        Err(_) => false, // already existed (another process / prior run)
+    }
 }
 
-/// True iff `collector.db`'s `events.session_id` column is `NOT NULL` — the Node
-/// schema. Rust made it nullable, so a Rust-written db returns false. Any
-/// open/read failure → false (don't misclassify as legacy).
+/// True iff `collector.db`'s `events.session_id` column is `NOT NULL` (the Node
+/// schema; Rust made it nullable). Data-safety bias: a file that **exists but
+/// won't open/read** (locked by a running Node collector, WAL-mode read quirks,
+/// corruption) is treated as legacy → backed up, never silently overwritten. A
+/// genuinely-Rust store is short-circuited earlier by the marker, so this can't
+/// false-positive a live Rust db.
 fn is_node_era(db: &Path) -> bool {
-    let Ok(conn) = rusqlite::Connection::open_with_flags(
-        db,
-        rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-    ) else {
-        return false;
+    if !db.exists() {
+        return false; // absent ≠ legacy
+    }
+    // Open read-WRITE (not read-only): a WAL-mode db can't always be opened
+    // read-only without creating the -shm, so a read-only open could spuriously
+    // fail on a perfectly good Node db and mis-skip the backup (data loss). We
+    // only read the schema. If it won't open at all → treat as legacy (back up).
+    let Ok(conn) = rusqlite::Connection::open(db) else {
+        return true;
     };
-    // PRAGMA table_info(events) → (cid, name, type, notnull, dflt_value, pk).
-    let Ok(mut stmt) = conn.prepare("PRAGMA table_info(events)") else { return false };
+    let Ok(mut stmt) = conn.prepare("PRAGMA table_info(events)") else { return true };
     let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(1)?, r.get::<_, i64>(3)?))) else {
-        return false;
+        return true;
     };
     for (name, notnull) in rows.flatten() {
         if name == "session_id" {
             return notnull == 1;
         }
     }
-    false
+    false // no events table → empty/foreign db, not Node-era legacy data
 }
 
-/// Move the legacy db files into a timestamped `legacy-backup-<secs>/` dir
-/// (best-effort per file). Returns the backup dir.
-fn backup_legacy(data_dir: &Path) -> std::io::Result<PathBuf> {
+/// Move the legacy db files into a timestamped `legacy-backup-<secs>/` dir.
+/// Returns `Err` listing any file that could NOT be moved — a partial move is a
+/// split state the caller must surface, not silently accept.
+fn backup_legacy(data_dir: &Path) -> Result<PathBuf, String> {
     let ts = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let dest = data_dir.join(format!("legacy-backup-{ts}"));
-    std::fs::create_dir_all(&dest)?;
+    std::fs::create_dir_all(&dest).map_err(|e| e.to_string())?;
+    let mut errors = Vec::new();
     for name in LEGACY_FILES {
         let src = data_dir.join(name);
         if src.exists() {
-            let _ = std::fs::rename(&src, dest.join(name));
+            if let Err(e) = std::fs::rename(&src, dest.join(name)) {
+                errors.push(format!("{name}: {e}"));
+            }
         }
     }
-    Ok(dest)
+    if errors.is_empty() {
+        Ok(dest)
+    } else {
+        Err(format!("{} file(s) could not be moved: {}", errors.len(), errors.join("; ")))
+    }
 }
 
 #[cfg(test)]
@@ -145,7 +182,7 @@ mod tests {
     #[test]
     fn fresh_install_writes_marker_no_backup() {
         let d = tmp();
-        first_run_guard(&d);
+        first_run_guard(&d).expect("guard ok");
         assert!(d.join(MARKER).exists());
         assert!(std::fs::read_dir(&d).unwrap().flatten().all(|e| !e.file_name().to_string_lossy().starts_with("legacy-backup")));
     }
@@ -156,7 +193,7 @@ mod tests {
         let d = tmp();
         make_db(&d, false); // Rust schema (session_id nullable)
         std::env::remove_var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA");
-        first_run_guard(&d);
+        first_run_guard(&d).expect("guard ok");
         assert!(d.join(MARKER).exists());
         assert!(d.join("collector.db").exists(), "Rust-era db must NOT be moved");
         assert!(!has_backup(&d), "no backup for an already-Rust store");
@@ -169,7 +206,7 @@ mod tests {
         make_db(&d, true); // Node schema (session_id NOT NULL)
         std::fs::write(d.join("pm.db"), b"x").unwrap();
         std::env::remove_var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA");
-        first_run_guard(&d);
+        first_run_guard(&d).expect("guard ok");
         assert!(d.join(MARKER).exists());
         assert!(!d.join("collector.db").exists(), "legacy collector.db moved aside");
         assert!(!d.join("pm.db").exists(), "legacy pm.db moved aside");
@@ -182,7 +219,7 @@ mod tests {
         let d = tmp();
         make_db(&d, true);
         std::env::set_var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA", "1");
-        first_run_guard(&d);
+        first_run_guard(&d).expect("guard ok");
         std::env::remove_var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA");
         assert!(d.join(MARKER).exists());
         assert!(d.join("collector.db").exists(), "PRESERVE=1 leaves the db in place");
@@ -194,7 +231,7 @@ mod tests {
         let d = tmp();
         make_db(&d, true);
         std::fs::write(d.join(MARKER), b"v1\n").unwrap(); // pretend a prior run handled it
-        first_run_guard(&d);
+        first_run_guard(&d).expect("guard ok");
         assert!(d.join("collector.db").exists(), "marker present → no action");
         assert!(!has_backup(&d));
     }

@@ -115,7 +115,7 @@ enum Cmd {
         label: Option<String>,
         created_at: i64,
         metrics: Value,
-        reply: oneshot::Sender<i64>,
+        reply: oneshot::Sender<Result<i64, String>>,
     },
     SessionHistory { project: String, limit: usize, reply: oneshot::Sender<Vec<SnapshotRow>> },
 }
@@ -180,7 +180,8 @@ impl StoreHandle {
                         let mut stored = 0usize;
                         for ev in &events {
                             match insert_event(&conn, &project, ev) {
-                                Ok(_) => stored += 1,
+                                Ok(true) => stored += 1,  // newly inserted
+                                Ok(false) => {}           // dedup / empty event_id — not newly stored
                                 Err(e) => {
                                     eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
                                     err.get_or_insert(format!("SQLite: {e}"));
@@ -283,15 +284,17 @@ impl StoreHandle {
                         let _ = reply.send(count_events_for_sessions(&conn, &sids));
                     }
                     Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply } => {
-                        let id = conn
+                        // Surface the insert error instead of swallowing it to id=0 —
+                        // the caller must not report "snapshot saved" on a failed write.
+                        let result = conn
                             .execute(
                                 "INSERT INTO snapshots (session_id, project, label, created_at, metrics)
                                  VALUES (?1, ?2, ?3, ?4, ?5)",
                                 rusqlite::params![session_id, project, label, created_at, metrics.to_string()],
                             )
                             .map(|_| conn.last_insert_rowid())
-                            .unwrap_or(0);
-                        let _ = reply.send(id);
+                            .map_err(|e| e.to_string());
+                        let _ = reply.send(result);
                     }
                     Cmd::SessionHistory { project, limit, reply } => {
                         let _ = reply.send(query_session_history(&conn, &project, limit));
@@ -390,13 +393,13 @@ impl StoreHandle {
         label: Option<String>,
         created_at: i64,
         metrics: Value,
-    ) -> i64 {
+    ) -> Result<i64, String> {
         let (reply, rx) = oneshot::channel();
         let cmd = Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply };
         if self.tx.send(cmd).await.is_err() {
-            return 0;
+            return Err("store channel closed".to_string());
         }
-        rx.await.unwrap_or(0)
+        rx.await.unwrap_or_else(|_| Err("store reply dropped".to_string()))
     }
 
     /// The latest snapshot per session for a project, newest-first (`limit` rows).

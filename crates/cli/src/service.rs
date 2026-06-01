@@ -121,10 +121,13 @@ fn wait_for_collector_ready(timeout: std::time::Duration) -> bool {
 /// (no node). KeepAlive restarts on crash but not clean exit; 256 MB RSS ceiling.
 pub fn build_launchd_plist(collector: &str) -> String {
     let h = home();
-    let h = h.to_string_lossy();
     let logs = logs_dir();
-    let out_log = logs.join("collector.out.log");
-    let err_log = logs.join("collector.err.log");
+    // Escape XML element content — a path with & < > (e.g. HOME=/Users/a&b) would
+    // otherwise corrupt the plist (Node has the same unescaped-interpolation bug).
+    let collector = xml_escape(collector);
+    let h = xml_escape(&h.to_string_lossy());
+    let out = xml_escape(&logs.join("collector.out.log").to_string_lossy());
+    let err = xml_escape(&logs.join("collector.err.log").to_string_lossy());
     format!(
         r#"<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -176,10 +179,14 @@ pub fn build_launchd_plist(collector: &str) -> String {
   </dict>
 </dict>
 </plist>
-"#,
-        out = out_log.to_string_lossy(),
-        err = err_log.to_string_lossy(),
+"#
     )
+}
+
+/// Escape XML element content (`&`, `<`, `>`) so a path with those characters
+/// doesn't corrupt the plist. Order matters — `&` first.
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
 }
 
 fn install_launchd() -> Result<(), String> {

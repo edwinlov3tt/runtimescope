@@ -454,10 +454,16 @@ impl Mcp {
         });
 
         // Persist the snapshot so get_session_history / compare can read it back.
-        let snapshot_id = self
+        // Surface a persistence failure in the summary instead of claiming "saved".
+        let snapshot = self
             .store
             .save_snapshot(session_id.clone(), app_name.clone(), Some(label.clone()), created_at, metrics.clone())
             .await;
+        let snapshot_id = *snapshot.as_ref().unwrap_or(&0);
+        let snapshot_note = match &snapshot {
+            Ok(_) => format!("Snapshot saved as \"{label}\"."),
+            Err(e) => format!("⚠ Snapshot NOT persisted ({e})."),
+        };
 
         let high = issues.iter().filter(|i| i.severity == "high").count();
         let medium = issues.iter().filter(|i| i.severity == "medium").count();
@@ -473,7 +479,7 @@ impl Mcp {
             components.len()
         );
         let summary = format!(
-            "QA Check complete. Snapshot saved as \"{label}\". {metrics_summary}. {issues_summary}"
+            "QA Check complete. {snapshot_note} {metrics_summary}. {issues_summary}"
         );
 
         let data = json!({

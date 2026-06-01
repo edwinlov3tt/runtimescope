@@ -69,6 +69,24 @@ struct ManagedProc {
 /// like Node's `managedProcesses` map) — but persisted to `pm.db` so a restart
 /// re-attaches instead of orphaning.
 type ProcMap = Arc<Mutex<HashMap<String, ManagedProc>>>;
+/// Project ids whose dev-server is mid-spawn — an atomic reservation so two
+/// concurrent POSTs can't both pass the "already running?" check and double-spawn.
+type StartingSet = Arc<Mutex<std::collections::HashSet<String>>>;
+
+/// Releases a dev-server start reservation on every exit path (success or any
+/// early return), so a failed/panicking start never wedges the project as
+/// permanently "starting".
+struct StartGuard {
+    set: StartingSet,
+    id: String,
+}
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        if let Ok(mut s) = self.set.lock() {
+            s.remove(&self.id);
+        }
+    }
+}
 
 #[derive(Clone)]
 struct AppState {
@@ -79,6 +97,7 @@ struct AppState {
     started: Instant,
     version: String,
     dev_servers: ProcMap,
+    dev_starting: StartingSet,
     /// Whether `/api/processes` + `/api/ports` serve live ps/lsof data. True for
     /// mcp-server (Node `new ProcessMonitor(store)`), false for the standalone
     /// collector-server (Node passes no monitor → those routes return empty).
@@ -107,6 +126,7 @@ pub async fn serve(
     // whose process group is still alive, prune the dead rows so GET stays honest
     // (the fix for Node's in-memory map that lies "stopped" after a restart).
     let dev_servers: ProcMap = Arc::new(Mutex::new(HashMap::new()));
+    let dev_starting: StartingSet = Arc::new(Mutex::new(std::collections::HashSet::new()));
     reattach_dev_servers(&pm, &dev_servers);
 
     let state = AppState {
@@ -117,6 +137,7 @@ pub async fn serve(
         started: Instant::now(),
         version,
         dev_servers,
+        dev_starting,
         process_monitor: process_monitor_enabled,
     };
 
@@ -409,8 +430,18 @@ async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String
     }
     let accepted = accepted_events.len();
     if accepted > 0 {
+        // Surface a persistence failure as 500 instead of a false 200 (audit #5:
+        // "an ack that returns success while the write failed is silent data
+        // loss"). This is an intended improvement over Node, whose `addEvent` is
+        // void and returns 200 even when the write fails. The happy path is
+        // unchanged, so conformance stays green.
         if let Err(e) = s.store.add_batch(project, accepted_events).await {
             eprintln!("[RuntimeScope] POST /api/events: durability error: {e}");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "error": "Failed to persist events", "code": "DURABILITY_ERROR" })),
+            )
+                .into_response();
         }
     }
     let status = if accepted > 0 { StatusCode::OK } else { StatusCode::TOO_MANY_REQUESTS };
@@ -1904,6 +1935,23 @@ async fn pm_dev_server_post(State(s): State<AppState>, headers: HeaderMap, Path(
         return bad_request("Project has no filesystem path");
     };
 
+    // Atomically reserve the start so two concurrent POSTs for the same project
+    // can't both pass the "already running?" check and double-spawn (TOCTOU). The
+    // first to insert wins; the rest 409. The guard releases the reservation on
+    // every exit path below.
+    {
+        let mut starting = s.dev_starting.lock().unwrap();
+        if starting.contains(&id) {
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "Dev server already starting", "data": { "status": "starting" } })),
+            )
+                .into_response();
+        }
+        starting.insert(id.clone());
+    }
+    let _start_guard = StartGuard { set: s.dev_starting.clone(), id: id.clone() };
+
     // Already running? (Node: process.kill(existing.pid, 0) → 409.) A stale dead
     // entry is pruned so a fresh start succeeds.
     if let Some(mp) = s.dev_servers.lock().unwrap().get(&id).cloned() {
@@ -2826,6 +2874,7 @@ mod slice_g_dev_server_tests {
             started: Instant::now(),
             version: crate::VERSION.to_string(),
             dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
             process_monitor: false,
         };
         let app = Router::new()

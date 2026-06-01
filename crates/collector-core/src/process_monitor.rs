@@ -48,16 +48,19 @@ pub fn detect_process_type(command: &str) -> &'static str {
     }
 }
 
-/// Whole-word match (`\bword\b`): alphanumeric boundaries on both sides.
+/// Whole-word match (`\bword\b`). Boundaries are checked on the adjacent **char**
+/// (Unicode `is_alphanumeric`), not the raw byte — a byte-level check treats a
+/// multibyte char's continuation byte as a non-alnum boundary, so `word("ánode",
+/// "node")` would falsely match (audit finding). The needle is ASCII, so every
+/// `find` offset is a char boundary → the slices below are panic-safe.
 fn word(haystack: &str, needle: &str) -> bool {
-    let b = haystack.as_bytes();
     let mut from = 0;
     while let Some(rel) = haystack[from..].find(needle) {
         let s = from + rel;
         let e = s + needle.len();
-        let before = s == 0 || !b[s - 1].is_ascii_alphanumeric();
-        let after = e == b.len() || !b[e].is_ascii_alphanumeric();
-        if before && after {
+        let before_ok = haystack[..s].chars().next_back().is_none_or(|c| !c.is_alphanumeric());
+        let after_ok = haystack[e..].chars().next().is_none_or(|c| !c.is_alphanumeric());
+        if before_ok && after_ok {
             return true;
         }
         from = s + 1;
@@ -230,6 +233,18 @@ mod tests {
     #[test]
     fn classifier_drops_a_known_non_dev_command() {
         assert_eq!(detect_process_type("login -pf user"), "unknown");
+    }
+
+    #[test]
+    fn word_match_is_panic_safe_on_multibyte_commands() {
+        // Audit flagged a possible non-char-boundary slice panic. It can't happen:
+        // the needles are ASCII, so every `find` offset (and offset+1) lands on a
+        // char boundary. Exercise multibyte command lines to prove no panic.
+        assert_eq!(detect_process_type("café python -m http.server"), "python");
+        assert_eq!(detect_process_type("/usr/bin/日本語/node server.js"), "node");
+        assert_eq!(detect_process_type("emoji🚀 deno run x.ts"), "deno");
+        assert_eq!(detect_process_type("ünïcödë only"), "unknown");
+        assert!(!word("ánode", "node"), "multibyte prefix, not a whole word → no match, no panic");
     }
 
     // Deterministic detection proof: bind a real listening socket in THIS process

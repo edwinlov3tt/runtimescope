@@ -160,3 +160,59 @@ break it**. Report findings as `{severity, file:line, evidence, repro, Node-ref,
 
 **The bar: each reviewer must surface at least one concrete, reproducible concern (bug, gap, or edge case) or
 explicitly justify why their subsystem is genuinely clean. "LGTM" is not an acceptable review.**
+
+## 10. First bug-hunt — findings & resolution (round 1, automated adversarial pass)
+
+A 6-subsystem adversarial workflow (each finding independently re-verified) returned **16 confirmed
+findings; no subsystem came back clean.** Resolution (commit follows this doc):
+
+**FIXED (10):**
+- **CRITICAL — `POST /api/events` returned 200 on a failed persist** (`server.rs`). Now returns 500
+  `DURABILITY_ERROR`. Intended improvement over Node (whose `addEvent` is void + also 200s on failure);
+  happy-path unchanged → conformance still 132/132.
+- **CRITICAL — migration `is_node_era` could mis-skip backup → data loss.** A read-only open of a WAL-mode
+  Node db can spuriously fail (needs `-shm`); the old code returned false (= "Rust-era, don't back up") on
+  any failure. Now: open read-write (handles WAL); **a file that exists but won't open is treated as legacy
+  and backed up** (data-safety bias; a genuinely-Rust store is short-circuited by the marker first).
+- **HIGH — migration backup failures were swallowed** → split state. `backup_legacy` now returns `Err`
+  listing un-moved files; `first_run_guard` returns `Result`; **both binaries abort** rather than start on a
+  half-migrated store (clearing the marker so a fixed retry re-runs).
+- **HIGH — concurrent `first_run_guard` (two binaries) could double-back-up.** Marker is now claimed
+  atomically (`create_new`); the loser skips.
+- **HIGH — `SaveSnapshot` swallowed the INSERT error** (`store.rs`) → QA check reported "saved" on failure.
+  Now threads `Result`; the tool surfaces "⚠ Snapshot NOT persisted".
+- **HIGH — discovery clobbered a session with zeros** if its JSONL vanished between `read_dir` and `stat`
+  (`pm_discovery.rs`). Now skips the session on a metadata error.
+- **HIGH — dev-server start race (TOCTOU)** → two concurrent same-project POSTs could double-spawn
+  (`server.rs`). Now an atomic `dev_starting` reservation (+ Drop guard to release on every path); the
+  second POST gets 409 "already starting".
+- **HIGH/divergence — launchd plist XML injection** (`cli/service.rs`): a path with `& < >` corrupted the
+  plist. Now `xml_escape`d (fixes a latent Node bug too).
+- **HIGH — `add_batch` counted deduped/empty events as stored** (`store.rs`). `Ok(true)`/`Ok(false)` split;
+  return value is now honest (it was discarded in the POST handler, so impact was low — fixed anyway).
+- **`word()` multibyte boundary bug** (`process_monitor.rs`) — surfaced by a regression test written to
+  *disprove* the audit's (incorrect) panic claim. Byte-level alnum boundary checks treated a multibyte char
+  adjacent to the needle as a word boundary → `word("ánode","node")` falsely matched → process
+  mis-classification. Now char-aware (`is_alphanumeric` on the adjacent char).
+
+**DISMISSED after independent scrutiny (be skeptical of the audit too):**
+- **WAL-truncate-failure → error:** the proposed fix would make a successful, durable persist return 500
+  (the data IS in SQLite; truncate is best-effort cleanup, and next-boot replay is safe). Current
+  log-and-ack-Ok is correct.
+- **`word()` panic:** the needles are ASCII so every `find` offset is a char boundary — it cannot panic
+  (proven by the regression test). The finding was directionally right (multibyte) but wrong on mechanism
+  (it's a false-match, not a panic — fixed above).
+
+**DEFERRED — dev-server / process-monitor hardening follow-up (real, lower-probability, need coherent design):**
+- **`kill_process` / re-attach PID & pgid reuse** — after a reboot a stored pgid can be reused; killing by a
+  bare pid/pgid could hit the wrong process. Mitigation: verify process-command identity before
+  killing, and don't trust a persisted pgid across a reboot (compare boot time). *Round-2 must design this.*
+- **`lsof` NAME parsing** assumes a single-token last column; `lsof -F` (NUL-delimited field output) is robust.
+- **Migration mixed-state** (Node-era `pm.db` but Rust-era/absent `collector.db`) — deliberately NOT
+  auto-handled: a reliable Node-vs-Rust `pm.db` signal doesn't exist without risking a false-positive backup
+  of a live Rust `pm.db`, so the guard keys off `collector.db` (safe + correct for the common cases). A user
+  who manually deleted only `collector.db` keeps their Node `pm.db` un-backed-up — documented residual.
+
+**Note for round 2:** this was ONE automated pass and it found real bugs in every subsystem — including in
+code written the same session. Assume it missed some. The deferred items + the un-gated paths (§5) are the
+priority hunting grounds. Independent human/instance review still required before M7 sign-off.

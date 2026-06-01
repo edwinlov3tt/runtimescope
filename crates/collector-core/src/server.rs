@@ -125,6 +125,11 @@ pub async fn serve(
         .route("/readyz", get(readyz))
         .route("/api/health", get(health))
         .route("/metrics", get(metrics))
+        // embedded dashboard SPA (M6 Slice A) — public; /assets/* because Vite
+        // emits absolute asset paths.
+        .route("/dashboard", get(serve_dashboard))
+        .route("/dashboard/{*rest}", get(serve_dashboard))
+        .route("/assets/{*rest}", get(serve_dashboard))
         // gated
         .route("/api/sessions", get(sessions))
         .route("/api/projects", get(projects))
@@ -443,6 +448,74 @@ async fn not_found(uri: Uri) -> impl IntoResponse {
         StatusCode::NOT_FOUND,
         Json(json!({ "error": "Not found", "path": uri.path() })),
     )
+}
+
+// ---- embedded dashboard SPA (M6 Slice A) ----
+//
+// The built dashboard (`packages/dashboard/dist`) is compiled into the binary, so
+// the collector serves `/dashboard` with no `packages/dashboard` on disk. Ports
+// Node `http-server.ts:897-955`: `/dashboard[/…]` + `/assets/*` (Vite emits
+// absolute `/assets/...` paths) → embedded file; an extensionless `/dashboard`
+// route falls back to `index.html` for client-side routing; index.html is
+// no-cache, hashed assets cache-forever. Path traversal is inherently safe —
+// only embedded keys resolve. Public (no auth), like health/metrics.
+
+#[derive(rust_embed::RustEmbed)]
+#[folder = "../../packages/dashboard/dist/"]
+struct DashboardAssets;
+
+fn dashboard_content_type(path: &str) -> &'static str {
+    match path.rsplit('.').next().unwrap_or("").to_ascii_lowercase().as_str() {
+        "html" => "text/html; charset=utf-8",
+        "js" | "mjs" => "application/javascript; charset=utf-8",
+        "css" => "text/css; charset=utf-8",
+        "json" => "application/json; charset=utf-8",
+        "svg" => "image/svg+xml",
+        "png" => "image/png",
+        "jpg" | "jpeg" => "image/jpeg",
+        "ico" => "image/x-icon",
+        "woff" => "font/woff",
+        "woff2" => "font/woff2",
+        _ => "application/octet-stream",
+    }
+}
+
+async fn serve_dashboard(uri: Uri) -> Response {
+    let path = uri.path();
+    let is_asset = path.starts_with("/assets/");
+    let rel: String = if is_asset {
+        path[1..].to_string() // "/assets/x" → "assets/x"
+    } else if path == "/dashboard" || path == "/dashboard/" {
+        "index.html".to_string()
+    } else {
+        path["/dashboard/".len()..].to_string() // "/dashboard/<route>" → "<route>"
+    };
+    let has_ext = rel.rsplit('/').next().map(|f| f.contains('.')).unwrap_or(false);
+
+    // Exact embedded file, else SPA fallback to index.html for an extensionless
+    // non-asset route, else 404.
+    let (served, file) = match DashboardAssets::get(&rel) {
+        Some(f) => (rel.clone(), Some(f)),
+        None if !has_ext && !is_asset => ("index.html".to_string(), DashboardAssets::get("index.html")),
+        None => (rel.clone(), None),
+    };
+    let Some(file) = file else {
+        return (StatusCode::NOT_FOUND, "Not found").into_response();
+    };
+    let cache = if served.ends_with("index.html") {
+        "no-cache"
+    } else {
+        "public, max-age=31536000, immutable"
+    };
+    (
+        StatusCode::OK,
+        [
+            (header::CONTENT_TYPE, dashboard_content_type(&served)),
+            (header::CACHE_CONTROL, cache),
+        ],
+        file.data.into_owned(),
+    )
+        .into_response()
 }
 
 // ---- pm/ project-manager routes (M5) ----

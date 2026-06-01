@@ -15,6 +15,11 @@ futures-util = "0.3"
 subtle = "2"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Embed the built dashboard SPA (packages/dashboard/dist) into the binary so the
+# collector serves /dashboard with no packages/dashboard on disk (M6 Slice A).
+# `debug-embed` forces compile-time embedding in debug builds too (the
+# conformance harness runs the debug binary from arbitrary CWDs).
+rust-embed = { version = "8", features = ["debug-embed"] }
 
 # Unix-only: process-group signalling for the dev-server lifecycle (group-kill
 # the whole tree on stop; ESRCH detection for the "already exited" path).

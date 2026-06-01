@@ -137,10 +137,26 @@ Slices (independent; tables for tasks/notes/capex already exist in `pm_store.rs`
 
 ## Milestone 6 — `cli` + curl-install + dashboard embed (serial, ~0.5 wk)
 
-- [ ] Port `service.ts` shell-outs (incl. the new `service stop`) to `std::process::Command`.
-- [ ] **New:** `install.sh` + self-update against signed GitHub Releases; `~/.runtimescope/bin` layout; `runtimescope` on PATH.
-- [ ] `include_bytes!` the dashboard build output; verify `/dashboard` serves with no `packages/dashboard` on disk.
-- [ ] First-run data-wipe warning + `RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1`.
+Scoping + current state: [`../handoffs/m6-tee-up.md`](../handoffs/m6-tee-up.md). **Decisions (user, 2026-06-01):**
+start with Slice A (dashboard embed); CLI = **essential set** (service install/stop/start/restart/status +
+dashboard + version — defer the doctor/mcp-doctor diagnostics); curl-install + self-update + signed
+releases = **fast-follow after v0.11.0 ships**.
+
+- [x] **Slice A — dashboard embed DONE.** `rust-embed` (with `debug-embed`) compiles
+  `packages/dashboard/dist` into `collector-core`; `serve_dashboard` ports Node `http-server.ts:897-955`
+  — `/dashboard[/…]` + `/assets/*` (Vite absolute paths) → embedded file, extensionless `/dashboard`
+  routes fall back to `index.html` (SPA client routing), Node's exact content-type map, index.html
+  no-cache / hashed assets cache-forever. Public route; path traversal inherently safe (only embedded
+  keys resolve). **Verified serving from `/tmp` with no `packages/dashboard` reachable** (the embed
+  guarantee). Gated by `dashboard-embed.conformance.test.ts` (4 cases: shell/asset/SPA-fallback/404)
+  green vs Node AND Rust → **132/132**. (Release prereq: `npm run build -w packages/dashboard` before
+  the Rust build so the dist is present to embed.)
+- [ ] **Slice B — CLI essential set:** port `service.ts` (launchd/systemd install/stop/start/restart/status,
+  argv no-shell) + `dashboard` (open browser) + `--version` to `crates/cli`; verify by a real install
+  cycle (integration, not conformance). Defer doctor/mcp-doctor diagnostics.
+- [ ] **Slice D — first-run data-wipe warning** + `RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1`.
+- [ ] **Fast-follow (post-v0.11.0):** `install.sh` + self-update vs signed GitHub Releases; `~/.runtimescope/bin`
+  layout; `runtimescope` on PATH; the signed-release CI workflow.
 
 **Team?** No — small, integration-flavored, owner-facing.
 

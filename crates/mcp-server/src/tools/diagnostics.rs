@@ -391,7 +391,7 @@ impl Mcp {
         };
         let all_session: Vec<Value> = self
             .store
-            .timeline(pid, None)
+            .timeline(pid, None, None, None)
             .await
             .into_iter()
             .filter(|e| e.get("sessionId").and_then(Value::as_str) == Some(session_id.as_str()))

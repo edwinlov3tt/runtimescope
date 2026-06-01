@@ -229,7 +229,13 @@ async fn events_by_kind(
         let types = q.get("event_types").map(|s| {
             s.split(',').map(|t| t.trim().to_string()).filter(|t| !t.is_empty()).collect::<Vec<_>>()
         });
-        let data = s.store.timeline(project, types).await;
+        // since_seconds → cutoff = now - since*1000 (Node: Date.now() - sinceSeconds*1000).
+        let since_ms = q
+            .get("since_seconds")
+            .and_then(|v| v.parse::<i64>().ok())
+            .map(|secs| now_ms() - secs * 1000);
+        let session_id = q.get("session_id").filter(|v| !v.is_empty()).map(String::as_str);
+        let data = s.store.timeline(project, types, since_ms, session_id).await;
         let count = data.len();
         return Json(json!({ "data": data, "count": count })).into_response();
     }

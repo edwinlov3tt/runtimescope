@@ -296,6 +296,56 @@ describe('http ingest + routes', () => {
     expect(tl.count).toBe(2);
   });
 
+  it('GET /api/events/timeline?session_id= filters the merged stream to one session', async () => {
+    collector = await spawnCollector();
+    await collector.ready();
+
+    const sA = `http-${randomBytes(6).toString('hex')}`;
+    const sB = `http-${randomBytes(6).toString('hex')}`;
+    const base = Date.now();
+    const proj = `${PROJECT}_tlsession`;
+    await postEvents(collector.httpPort, {
+      sessionId: sA, appName: 'http-tls-a', projectId: proj,
+      events: [netEvent(sA, 0, base + 0), consoleEvent(sA, 0, base + 1)],
+    });
+    await postEvents(collector.httpPort, {
+      sessionId: sB, appName: 'http-tls-b', projectId: proj,
+      events: [netEvent(sB, 0, base + 2)],
+    });
+
+    const tl = await fetch(
+      `http://127.0.0.1:${collector.httpPort}/api/events/timeline?project_id=${proj}&session_id=${sA}`,
+    ).then((r) => r.json()) as { data: Array<{ sessionId: string; eventId: string }>; count: number };
+
+    // Only session A's events (Node matchesSessionFilter = exact match) — none of B's.
+    expect(tl.data.every((e) => e.sessionId === sA)).toBe(true);
+    expect(tl.data.some((e) => e.sessionId === sB)).toBe(false);
+    expect(tl.count).toBe(tl.data.length);
+  });
+
+  it('GET /api/events/timeline?since_seconds= excludes events older than the cutoff', async () => {
+    collector = await spawnCollector();
+    await collector.ready();
+
+    const sessionId = `http-${randomBytes(6).toString('hex')}`;
+    const now = Date.now();
+    const proj = `${PROJECT}_tlsince`;
+    // One ancient event (2h old) + one recent; since_seconds=3600 keeps only recent.
+    await postEvents(collector.httpPort, {
+      sessionId, appName: 'http-tls', projectId: proj,
+      events: [netEvent(sessionId, 0, now - 7200_000), consoleEvent(sessionId, 0, now)],
+    });
+
+    const tl = await fetch(
+      `http://127.0.0.1:${collector.httpPort}/api/events/timeline?project_id=${proj}&since_seconds=3600`,
+    ).then((r) => r.json()) as { data: Array<{ eventType: string; timestamp: number }>; count: number };
+
+    // The 2h-old network event is excluded; the just-now console event survives.
+    expect(tl.data.some((e) => e.eventType === 'console')).toBe(true);
+    expect(tl.data.every((e) => e.timestamp >= now - 3600_000)).toBe(true);
+    expect(tl.data.some((e) => e.timestamp === now - 7200_000)).toBe(false);
+  });
+
   it('GET an unknown /api/events/<kind> route returns 404 { error, path }', async () => {
     collector = await spawnCollector();
     await collector.ready();

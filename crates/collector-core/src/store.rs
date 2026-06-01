@@ -99,7 +99,13 @@ enum Cmd {
     Sessions { reply: oneshot::Sender<Vec<SessionInfo>> },
     ConnectedCount { reply: oneshot::Sender<usize> },
     EventsByType { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
-    Timeline { project: Option<String>, types: Option<Vec<String>>, reply: oneshot::Sender<Vec<Value>> },
+    Timeline {
+        project: Option<String>,
+        types: Option<Vec<String>>,
+        since_ms: Option<i64>,
+        session_id: Option<String>,
+        reply: oneshot::Sender<Vec<Value>>,
+    },
     EventCount { project: Option<String>, reply: oneshot::Sender<usize> },
     EventsForApp { app: String, reply: oneshot::Sender<Vec<Value>> },
     EventCountForApp { app: String, reply: oneshot::Sender<usize> },
@@ -250,8 +256,14 @@ impl StoreHandle {
                     Cmd::EventsByType { event_type, project, reply } => {
                         let _ = reply.send(query_events(&conn, &event_type, project.as_deref()));
                     }
-                    Cmd::Timeline { project, types, reply } => {
-                        let _ = reply.send(query_timeline(&conn, project.as_deref(), types.as_deref()));
+                    Cmd::Timeline { project, types, since_ms, session_id, reply } => {
+                        let _ = reply.send(query_timeline(
+                            &conn,
+                            project.as_deref(),
+                            types.as_deref(),
+                            since_ms,
+                            session_id.as_deref(),
+                        ));
                     }
                     Cmd::EventCount { project, reply } => {
                         let _ = reply.send(count_events(&conn, project.as_deref()));
@@ -401,9 +413,21 @@ impl StoreHandle {
     /// All events for a project in **insertion order** (oldest-first), optionally
     /// restricted to a set of event types — the cross-type timeline merge.
     /// Matches the Node `getEventTimeline` (buffer.toArray(), not timestamp-sorted).
-    pub async fn timeline(&self, project: Option<&str>, types: Option<Vec<String>>) -> Vec<Value> {
+    pub async fn timeline(
+        &self,
+        project: Option<&str>,
+        types: Option<Vec<String>>,
+        since_ms: Option<i64>,
+        session_id: Option<&str>,
+    ) -> Vec<Value> {
         let (reply, rx) = oneshot::channel();
-        let cmd = Cmd::Timeline { project: project.map(String::from), types, reply };
+        let cmd = Cmd::Timeline {
+            project: project.map(String::from),
+            types,
+            since_ms,
+            session_id: session_id.map(String::from),
+            reply,
+        };
         if self.tx.send(cmd).await.is_err() {
             return Vec::new();
         }
@@ -453,21 +477,52 @@ fn insert_event(conn: &Connection, project: &str, ev: &Value) -> rusqlite::Resul
     Ok(n > 0)
 }
 
-/// Timeline: all events for a project in insertion order (id ASC), optionally
-/// filtered to a set of event types (filtered in Rust to keep the SQL simple).
-fn query_timeline(conn: &Connection, project: Option<&str>, types: Option<&[String]>) -> Vec<Value> {
+/// Timeline: all events for a project in insertion order (id ASC = chronological,
+/// matching Node's `buffer.toArray()`), then the same in-Rust filters Node's
+/// `getEventTimeline` applies — `since_ms` (keep `timestamp >= since_ms`),
+/// `session_id` (exact, or comma-list membership = Node's `matchesSessionFilter`),
+/// and the `event_types` set.
+fn query_timeline(
+    conn: &Connection,
+    project: Option<&str>,
+    types: Option<&[String]>,
+    since_ms: Option<i64>,
+    session_id: Option<&str>,
+) -> Vec<Value> {
     let mut stmt = match conn.prepare(
-        "SELECT event_type, data FROM events WHERE (?1 IS NULL OR project = ?1) ORDER BY id ASC",
+        "SELECT event_type, session_id, timestamp, data FROM events \
+         WHERE (?1 IS NULL OR project = ?1) ORDER BY id ASC",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
     let rows = stmt.query_map(rusqlite::params![project], |r| {
-        Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+        Ok((
+            r.get::<_, String>(0)?,
+            r.get::<_, Option<String>>(1)?,
+            r.get::<_, i64>(2)?,
+            r.get::<_, String>(3)?,
+        ))
     });
     let mut out = Vec::new();
     if let Ok(rows) = rows {
-        for (event_type, data) in rows.flatten() {
+        for (event_type, sid, ts, data) in rows.flatten() {
+            if let Some(since) = since_ms {
+                if ts < since {
+                    continue;
+                }
+            }
+            if let Some(filter) = session_id {
+                let sid = sid.as_deref().unwrap_or("");
+                let matches = if filter.contains(',') {
+                    filter.split(',').any(|x| x == sid)
+                } else {
+                    sid == filter
+                };
+                if !matches {
+                    continue;
+                }
+            }
             if let Some(filter) = types {
                 if !filter.iter().any(|t| t == &event_type) {
                     continue;

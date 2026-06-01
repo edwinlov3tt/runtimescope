@@ -98,30 +98,79 @@ fn ip_is_internal(ip: &std::net::IpAddr) -> bool {
 /// forms AND the alternate encodings browsers accept (bare decimal like
 /// `2130706433`, hex `0x7f000001`). Returns None for DNS names.
 fn host_as_ip(host: &str) -> Option<std::net::IpAddr> {
-    use std::net::{IpAddr, Ipv4Addr};
+    use std::net::IpAddr;
     let h = host.trim_start_matches('[').trim_end_matches(']');
     if let Ok(ip) = h.parse::<IpAddr>() {
         return Some(ip);
     }
-    if let Ok(n) = h.parse::<u32>() {
-        return Some(IpAddr::V4(Ipv4Addr::from(n))); // decimal IPv4 (SSRF classic)
-    }
-    if let Some(hex) = h.strip_prefix("0x").or_else(|| h.strip_prefix("0X")) {
-        if let Ok(n) = u32::from_str_radix(hex, 16) {
-            return Some(IpAddr::V4(Ipv4Addr::from(n)));
-        }
-    }
-    None
+    // inet_aton / WHATWG-URL IPv4 forms a browser accepts but `parse::<IpAddr>`
+    // rejects: octal (`0177.0.0.1`), per-octet/whole hex (`0x7f.0.0.1`,
+    // `0x7f000001`), decimal (`2130706433`), and abbreviated (`127.1`, `10.1`).
+    // Done deterministically here rather than trusting getaddrinfo (which on macOS
+    // does NOT canonicalize octal-dotted forms — so resolution alone misses them).
+    parse_ipv4_relaxed(h).map(IpAddr::V4)
 }
 
-/// SSRF guard for `scan_website` (audit #9): http(s) only, and reject hosts that
-/// point at the local machine / private networks. IP literals (incl. decimal/
-/// hex/IPv6/mapped) are checked against [`ip_is_internal`]. For DNS NAMES this is
-/// **advisory** — it blocks localhost/.local/.internal but cannot stop a public
-/// name that resolves to a private IP, nor DNS rebinding. Post-resolution
-/// enforcement is the sidecar's job (it performs the actual navigation); tracked
-/// in audit 0002 #9.
-fn guard_scan_url(url: &str) -> Result<(), String> {
+/// Parse one inet_aton octet/value: `0x`-hex, leading-`0` octal, else decimal.
+fn parse_ipv4_part(p: &str) -> Option<u64> {
+    if p.is_empty() {
+        return None;
+    }
+    if let Some(hex) = p.strip_prefix("0x").or_else(|| p.strip_prefix("0X")) {
+        return if hex.is_empty() { Some(0) } else { u64::from_str_radix(hex, 16).ok() };
+    }
+    if p.len() > 1 && p.starts_with('0') {
+        return u64::from_str_radix(p, 8).ok();
+    }
+    p.parse::<u64>().ok()
+}
+
+/// Parse the relaxed IPv4 literal forms a browser canonicalizes (1–4 parts, each
+/// octal/hex/decimal), applying inet_aton's "last part absorbs the rest" rule.
+fn parse_ipv4_relaxed(host: &str) -> Option<std::net::Ipv4Addr> {
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.is_empty() || parts.len() > 4 {
+        return None;
+    }
+    let nums: Vec<u64> = parts.iter().map(|p| parse_ipv4_part(p)).collect::<Option<_>>()?;
+    let value: u64 = match nums.as_slice() {
+        [a] => *a,
+        [a, b] if *a <= 0xff && *b <= 0xff_ffff => (a << 24) | b,
+        [a, b, c] if *a <= 0xff && *b <= 0xff && *c <= 0xffff => (a << 24) | (b << 16) | c,
+        [a, b, c, d] if [a, b, c, d].iter().all(|&&x| x <= 0xff) => (a << 24) | (b << 16) | (c << 8) | d,
+        _ => return None,
+    };
+    if value > u64::from(u32::MAX) {
+        return None;
+    }
+    Some(std::net::Ipv4Addr::from(value as u32))
+}
+
+/// True if `host` RESOLVES (via the system resolver, like the browser) to any
+/// internal address. getaddrinfo canonicalizes the encoded-IP forms the literal
+/// check misses — octal `0177.0.0.1`, abbreviated `127.1`/`10.1`, per-octet-hex
+/// `0x7f.0.0.1` — and a public DNS name that points at a private IP, all collapse
+/// to their real address here. Resolution failure → not-internal (the sidecar's
+/// navigation would fail anyway; no SSRF without a resolvable target). Blocking —
+/// run under `spawn_blocking`. NB: DNS rebinding (resolve-then-goto TOCTOU) still
+/// needs sidecar-side enforcement; tracked as a fast-follow.
+fn host_resolves_internal(host: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    for port in [80u16, 443] {
+        if let Ok(addrs) = (host, port).to_socket_addrs() {
+            if addrs.map(|sa| sa.ip()).any(|ip| ip_is_internal(&ip)) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// SSRF pre-check for `scan_website` (audit #9): http(s) only; reject IP literals /
+/// internal name suffixes. Returns the extracted host on success so the caller can
+/// then do the authoritative **post-resolution** check ([`host_resolves_internal`]),
+/// which catches the encoded-IP + public-name→private bypasses this sync pass can't.
+fn guard_scan_url(url: &str) -> Result<String, String> {
     let trimmed = url.trim();
     let Some(end) = trimmed.find("://") else {
         return Err("URL must start with http:// or https://".into());
@@ -149,7 +198,7 @@ fn guard_scan_url(url: &str) -> Result<(), String> {
     } else if lower == "localhost" || lower.ends_with(".local") || lower.ends_with(".internal") || lower.ends_with(".localhost") {
         return Err(format!("host '{host}' is internal and may not be scanned"));
     }
-    Ok(())
+    Ok(lower)
 }
 
 /// Derive a project name from a URL's host (fallback "scan").
@@ -412,13 +461,30 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
         &self,
         Parameters(args): Parameters<ScanWebsiteArgs>,
     ) -> Result<CallToolResult, ErrorData> {
-        if let Err(reason) = guard_scan_url(&args.url) {
-            return Ok(envelope(json!({
-                "summary": format!("Refused to scan {}: {reason}", args.url),
+        let refused = |reason: String, url: &str| {
+            Ok(envelope(json!({
+                "summary": format!("Refused to scan {url}: {reason}"),
                 "data": null,
                 "issues": [reason],
                 "metadata": { "eventCount": 0, "projectId": null },
-            })));
+            })))
+        };
+        let host = match guard_scan_url(&args.url) {
+            Ok(h) => h,
+            Err(reason) => return refused(reason, &args.url),
+        };
+        // Authoritative post-resolution SSRF check (closes the encoded-IP +
+        // public-name→private-IP bypasses the sync pre-check misses). Blocking
+        // resolve → spawn_blocking.
+        let resolve_host = host.clone();
+        let internal = tokio::task::spawn_blocking(move || host_resolves_internal(&resolve_host))
+            .await
+            .unwrap_or(false);
+        if internal {
+            return refused(
+                format!("host '{host}' resolves to a private/internal address"),
+                &args.url,
+            );
         }
 
         let mut params = json!({ "url": args.url });
@@ -670,5 +736,44 @@ dsn: '{dsn}',\n  appName: '{app_name}',\n}});"
             "issues": ["stop_collector is deferred — service stop/uninstall lifecycle is not yet available in the Rust collector."],
             "metadata": { "deferred": true, "eventCount": 0, "projectId": null },
         })))
+    }
+}
+
+#[cfg(test)]
+mod ssrf_tests {
+    use super::{guard_scan_url, host_as_ip, host_resolves_internal};
+
+    #[test]
+    fn guard_pre_check_rejects_scheme_and_all_encoded_internal_literals() {
+        assert!(guard_scan_url("ftp://x/").is_err(), "non-http scheme");
+        assert!(guard_scan_url("http://localhost/").is_err());
+        assert!(guard_scan_url("http://[::1]/").is_err());
+        // Every encoded form the reviewers reported — now caught at the literal
+        // stage deterministically (no getaddrinfo dependency).
+        for h in ["127.0.0.1", "0177.0.0.1", "127.1", "10.1", "0x7f.0.0.1", "2130706433", "0x7f000001"] {
+            assert!(guard_scan_url(&format!("http://{h}/latest/meta-data/")).is_err(), "must reject {h}");
+        }
+        // A normal public name passes the pre-check and returns the host.
+        assert_eq!(guard_scan_url("http://example.com/path").unwrap(), "example.com");
+    }
+
+    #[test]
+    fn host_as_ip_canonicalizes_inet_aton_forms_like_the_browser() {
+        let v4 = |s: &str| host_as_ip(s).map(|ip| ip.to_string());
+        assert_eq!(v4("0177.0.0.1").as_deref(), Some("127.0.0.1"), "octal-dotted");
+        assert_eq!(v4("127.1").as_deref(), Some("127.0.0.1"), "abbreviated 2-part");
+        assert_eq!(v4("10.1").as_deref(), Some("10.0.0.1"), "abbreviated private");
+        assert_eq!(v4("0x7f.0.0.1").as_deref(), Some("127.0.0.1"), "per-octet hex");
+        assert_eq!(v4("2130706433").as_deref(), Some("127.0.0.1"), "decimal");
+        assert_eq!(v4("0x7f000001").as_deref(), Some("127.0.0.1"), "whole hex");
+        assert_eq!(v4("8.8.8.8").as_deref(), Some("8.8.8.8"), "public dotted-quad");
+        assert_eq!(v4("example.com"), None, "DNS name is not an IP literal");
+    }
+
+    #[test]
+    fn resolution_layer_flags_loopback_not_public() {
+        // The second layer (for DNS names) — assert only the platform-reliable cases.
+        assert!(host_resolves_internal("127.0.0.1"), "plain loopback resolves internal");
+        assert!(!host_resolves_internal("8.8.8.8"), "public IP not internal");
     }
 }

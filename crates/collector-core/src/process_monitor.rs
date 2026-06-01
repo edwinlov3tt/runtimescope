@@ -188,6 +188,16 @@ pub fn port_usage(port: Option<u16>) -> Vec<Value> {
 /// Single-pid kill (ports Node `killProcess`): `{ success, error? }`.
 #[cfg(unix)]
 pub fn kill_process(pid: i64, signal: &str) -> Value {
+    // CRITICAL safety gate: libc::kill interprets pid<=0 specially — 0 = our whole
+    // process group, -1 = EVERY process we can signal, <-1 = a process group. Never
+    // pass those through (the HTTP DELETE path reaches here unguarded). Also refuse
+    // PID 1 (init) and our own PID. Matches the MCP tool's guard.
+    if pid < 2 || pid as u32 == std::process::id() {
+        return json!({
+            "success": false,
+            "error": format!("refusing to kill PID {pid} (system/group/self)")
+        });
+    }
     let sig = if signal == "SIGKILL" { libc::SIGKILL } else { libc::SIGTERM };
     let rc = unsafe { libc::kill(pid as libc::pid_t, sig) };
     if rc == 0 {
@@ -233,6 +243,16 @@ mod tests {
     #[test]
     fn classifier_drops_a_known_non_dev_command() {
         assert_eq!(detect_process_type("login -pf user"), "unknown");
+    }
+
+    #[test]
+    fn kill_process_refuses_dangerous_pids() {
+        // pid -1 (all processes), 0 (our group), 1 (init), self — all rejected
+        // BEFORE any libc::kill, so this test signals nothing.
+        for pid in [-1_i64, 0, 1, std::process::id() as i64] {
+            let r = kill_process(pid, "SIGTERM");
+            assert_eq!(r["success"], false, "must refuse pid {pid}");
+        }
     }
 
     #[test]

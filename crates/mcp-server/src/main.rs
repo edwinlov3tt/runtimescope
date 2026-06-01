@@ -71,7 +71,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     tokio::spawn(async move {
         // MCP auth mode: config-file-only, ignores RUNTIMESCOPE_AUTH_TOKEN (Node
         // parity, mcp-server/src/index.ts).
-        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp).await {
+        // process_monitor = true: mcp-server serves live /api/processes + /api/ports
+        // (Node `new ProcessMonitor(store)`); the standalone collector-server passes false.
+        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp, true).await {
             eprintln!("[RuntimeScope] embedded collector failed: {e}");
         }
     });

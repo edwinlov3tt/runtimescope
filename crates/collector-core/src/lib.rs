@@ -17,6 +17,7 @@ pub mod pm_discovery;
 pub mod pm_project_manager;
 pub mod pm_session_parser;
 pub mod pm_store;
+pub mod process_monitor;
 pub mod server;
 pub mod store;
 pub mod wal;

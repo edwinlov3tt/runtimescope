@@ -28,6 +28,8 @@ async fn main() -> std::io::Result<()> {
     // Standalone daemon has no MCP, so the command hub is unused here (sessions
     // still register; commands simply never get issued). Standalone auth mode:
     // honors RUNTIMESCOPE_AUTH_TOKEN (Node parity, standalone.ts).
-    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string(), AuthMode::Standalone)
+    // process_monitor = false: the standalone collector serves empty /api/processes
+    // + /api/ports (Node `standalone.ts` passes no ProcessMonitor to HttpServer).
+    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string(), AuthMode::Standalone, false)
         .await
 }

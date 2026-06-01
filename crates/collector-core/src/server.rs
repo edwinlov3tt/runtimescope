@@ -79,6 +79,10 @@ struct AppState {
     started: Instant,
     version: String,
     dev_servers: ProcMap,
+    /// Whether `/api/processes` + `/api/ports` serve live ps/lsof data. True for
+    /// mcp-server (Node `new ProcessMonitor(store)`), false for the standalone
+    /// collector-server (Node passes no monitor → those routes return empty).
+    process_monitor: bool,
 }
 
 fn now_ms() -> i64 {
@@ -88,6 +92,7 @@ fn now_ms() -> i64 {
 /// Bind both ports and serve forever. Returns only on bind error. Auth is
 /// constructed per `auth_mode` ([`AuthMode::Standalone`] for `collector-server`,
 /// [`AuthMode::Mcp`] for `mcp-server`) so each binary matches its Node reference.
+#[allow(clippy::too_many_arguments)] // top-level entrypoint; per-binary wiring (auth_mode, process_monitor) is clearer flat than in a config struct
 pub async fn serve(
     store: StoreHandle,
     hub: CommandHub,
@@ -96,6 +101,7 @@ pub async fn serve(
     http_port: u16,
     version: String,
     auth_mode: AuthMode,
+    process_monitor_enabled: bool,
 ) -> std::io::Result<()> {
     // Re-attach managed dev servers persisted before this restart: keep the ones
     // whose process group is still alive, prune the dead rows so GET stays honest
@@ -111,6 +117,7 @@ pub async fn serve(
         started: Instant::now(),
         version,
         dev_servers,
+        process_monitor: process_monitor_enabled,
     };
 
     let http = Router::new()
@@ -148,6 +155,9 @@ pub async fn serve(
             "/api/pm/projects/{id}/dev-server",
             get(pm_dev_server_get).post(pm_dev_server_post).delete(pm_dev_server_delete),
         )
+        // process monitor (M5.5 Core) — live on mcp-server, empty on collector-server
+        .route("/api/processes", get(processes_get).delete(processes_delete))
+        .route("/api/ports", get(ports_get))
         .route("/api/pm/sessions", get(pm_sessions))
         .route("/api/pm/sessions/stats", get(pm_sessions_stats)) // before {id}
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
@@ -1939,6 +1949,97 @@ async fn pm_dev_server_delete(State(s): State<AppState>, headers: HeaderMap, Pat
     }
 }
 
+// ---- process monitor: /api/processes + /api/ports (M5.5 Core) ----
+//
+// Live ps/lsof on mcp-server (`s.process_monitor == true`); empty on the
+// standalone collector-server — matching Node, where only the MCP server
+// constructs a `ProcessMonitor`. Live data is non-deterministic → shape-only
+// conformance; the standalone-empty + DELETE-500 paths gate green-vs-both.
+
+/// GET /api/processes (?type=&project=) — live `DevProcess[]` or empty when disabled.
+async fn processes_get(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if !s.process_monitor {
+        return Json(json!({ "data": [], "count": 0 })).into_response();
+    }
+    let ptype = q.get("type").filter(|v| !v.is_empty()).cloned();
+    let project = q.get("project").filter(|v| !v.is_empty()).cloned();
+    let data = tokio::task::spawn_blocking(move || {
+        let mut procs = crate::process_monitor::scan_dev_processes();
+        if let Some(t) = &ptype {
+            procs.retain(|p| p.get("type").and_then(Value::as_str) == Some(t.as_str()));
+        }
+        if let Some(pr) = &project {
+            procs.retain(|p| p.get("project").and_then(Value::as_str) == Some(pr.as_str()));
+        }
+        procs
+    })
+    .await
+    .unwrap_or_default();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// GET /api/ports (?port=) — live `PortUsage[]` or empty when disabled.
+async fn ports_get(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if !s.process_monitor {
+        return Json(json!({ "data": [], "count": 0 })).into_response();
+    }
+    let port = q.get("port").and_then(|v| v.parse::<u16>().ok());
+    let data = tokio::task::spawn_blocking(move || crate::process_monitor::port_usage(port))
+        .await
+        .unwrap_or_default();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// DELETE /api/processes (?pid=&signal= or body) — kill a pid. 500 when disabled
+/// (Node "Process monitor not available"); 400 when no pid; else `{data:{success,…}}`.
+async fn processes_delete(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+    body: String,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if !s.process_monitor {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "Process monitor not available" }))).into_response();
+    }
+    let mut pid = q.get("pid").and_then(|v| v.parse::<i64>().ok());
+    let mut signal = q.get("signal").filter(|v| !v.is_empty()).cloned();
+    if pid.is_none() && !body.is_empty() {
+        if let Ok(v) = serde_json::from_str::<Value>(&body) {
+            pid = v.get("pid").and_then(Value::as_i64);
+            if signal.is_none() {
+                signal = v.get("signal").and_then(Value::as_str).map(String::from);
+            }
+        }
+    }
+    let Some(pid) = pid else {
+        return bad_request("pid is required");
+    };
+    let sig = signal.unwrap_or_else(|| "SIGTERM".to_string());
+    let result = tokio::task::spawn_blocking(move || crate::process_monitor::kill_process(pid, &sig))
+        .await
+        .unwrap_or_else(|_| json!({ "success": false, "error": "kill task failed" }));
+    Json(json!({ "data": result })).into_response()
+}
+
 // ---- pm/ git integration (M5.5 Slice F) ----
 //
 // All git invocations go through `run_git` → `std::process::Command` with an
@@ -2652,6 +2753,7 @@ mod slice_g_dev_server_tests {
             started: Instant::now(),
             version: crate::VERSION.to_string(),
             dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            process_monitor: false,
         };
         let app = Router::new()
             .route(

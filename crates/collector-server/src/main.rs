@@ -15,6 +15,10 @@ async fn main() -> std::io::Result<()> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
 
+    // First-run cutover guard: before opening the stores, back up any legacy
+    // Node-era data (incompatible schema) — or leave it with PRESERVE=1 (M6 Slice D).
+    collector_core::migration::first_run_guard(&data_dir());
+
     let store = open_store()
         .await
         .map_err(|e| std::io::Error::other(format!("store init failed: {e}")))?;

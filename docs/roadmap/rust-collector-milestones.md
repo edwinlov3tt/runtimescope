@@ -164,9 +164,17 @@ releases = **fast-follow after v0.11.0 ships**.
   also applied to the `install` load/enable steps); (3) readyz poll parsed the HTTP **status line** instead
   of a `" 200"` substring; (4) added `RUNTIMESCOPE_HTTP_PORT` support (readyz + dashboard URL had hardcoded
   6768); (5) systemd `ExecStart` now quoted (spaces-in-path). 6 cli unit tests; clippy clean.
-- [ ] **Slice D — first-run data-wipe warning** + `RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1`.
-- [ ] **Fast-follow (post-v0.11.0):** `install.sh` + self-update vs signed GitHub Releases; `~/.runtimescope/bin`
-  layout; `runtimescope` on PATH; the signed-release CI workflow.
+- [x] **Slice D — first-run cutover guard DONE.** `collector-core/src/migration.rs::first_run_guard` runs
+  in both binaries before opening the stores. Detects **genuine Node-era data** via the `events.session_id`
+  nullability signal (Node = `NOT NULL`, Rust = nullable — the M1 difference), NOT merely "a db exists" — so
+  a db already written by the Rust port is recognized as migrated and **left untouched** (no false-positive
+  backup of live Rust data; verified the real `~/.runtimescope` collector.db is Rust-schema). On Node-era
+  data: **default** moves `collector.db*`/`pm.db*` to `legacy-backup-<ts>/` + warns + starts fresh;
+  **`RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1`** leaves them in place (opens as-is). Idempotent via a `.rust-store`
+  marker. 5 unit tests (fresh / rust-era-adopt / node-era-backup / preserve / idempotent) + smoke-verified on
+  a real Node-schema db. Conformance unaffected (fresh temp HOME → no-op) → 132/132.
+- **🎉 M6 COMPLETE** (Slices A + B + D). Distribution (`install.sh` + self-update vs signed GitHub Releases,
+  `~/.runtimescope/bin` layout, the signed-release CI workflow) is the **documented post-v0.11.0 fast-follow**.
 
 **Team?** No — small, integration-flavored, owner-facing.
 

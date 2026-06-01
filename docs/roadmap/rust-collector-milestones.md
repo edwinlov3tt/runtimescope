@@ -151,9 +151,19 @@ releases = **fast-follow after v0.11.0 ships**.
   guarantee). Gated by `dashboard-embed.conformance.test.ts` (4 cases: shell/asset/SPA-fallback/404)
   green vs Node AND Rust → **132/132**. (Release prereq: `npm run build -w packages/dashboard` before
   the Rust build so the dist is present to embed.)
-- [ ] **Slice B — CLI essential set:** port `service.ts` (launchd/systemd install/stop/start/restart/status,
-  argv no-shell) + `dashboard` (open browser) + `--version` to `crates/cli`; verify by a real install
-  cycle (integration, not conformance). Defer doctor/mcp-doctor diagnostics.
+- [x] **Slice B — CLI essential set DONE.** `crates/cli`: `service install/uninstall/status/restart/stop`
+  (launchd macOS / systemd-user Linux, argv no-shell), `dashboard [--network]` (open browser; LAN URL via
+  UDP-connect IP), `version`/`help`. Plist/unit templates + lifecycle flows port `service.ts` faithfully,
+  **adapted to exec the `collector-server` binary** (sibling of `runtimescope` or on PATH), not
+  node+standalone.js. Dep-free (readyz poll via raw TCP). Doctor/mcp-doctor + npm self-update deferred.
+  Verified read-only against the live launchd service (status parsed PID); a real `install` was NOT run
+  (would hijack the existing service). **Adversarial audit-agent workflow** (3 reviewers + per-finding
+  re-verification): lifecycle-parity + template-fidelity came back **parity**; security-and-edge found
+  **5 confirmed bugs, all fixed** — (1,2) `restart_launchd/systemd` silently ignored `launchctl/systemctl`
+  failures → now `run_checked` surfaces non-zero exits (the "never discard a Result on a write path" rule;
+  also applied to the `install` load/enable steps); (3) readyz poll parsed the HTTP **status line** instead
+  of a `" 200"` substring; (4) added `RUNTIMESCOPE_HTTP_PORT` support (readyz + dashboard URL had hardcoded
+  6768); (5) systemd `ExecStart` now quoted (spaces-in-path). 6 cli unit tests; clippy clean.
 - [ ] **Slice D — first-run data-wipe warning** + `RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1`.
 - [ ] **Fast-follow (post-v0.11.0):** `install.sh` + self-update vs signed GitHub Releases; `~/.runtimescope/bin`
   layout; `runtimescope` on PATH; the signed-release CI workflow.

@@ -32,16 +32,17 @@ fn main() {
 /// the re-install hint instead of opening localhost.
 fn dashboard(args: &[String]) -> i32 {
     let network = args.iter().any(|a| a == "--network");
+    let port = service::http_port(); // honors RUNTIMESCOPE_HTTP_PORT
     if network {
         let host = local_ip().unwrap_or_else(|| "<your-LAN-IP>".to_string());
         println!("  LAN access needs the collector bound to 0.0.0.0:");
         println!("    RUNTIMESCOPE_HOST=0.0.0.0 runtimescope service install");
-        println!("  Then open:  http://{host}:6768/dashboard");
+        println!("  Then open:  http://{host}:{port}/dashboard");
         return 0;
     }
-    let url = "http://127.0.0.1:6768/dashboard";
+    let url = format!("http://127.0.0.1:{port}/dashboard");
     println!("  Opening {url}");
-    open_browser(url)
+    open_browser(&url)
 }
 
 fn open_browser(url: &str) -> i32 {

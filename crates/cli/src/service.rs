@@ -64,20 +64,48 @@ fn ensure_logs_dir() {
     let _ = std::fs::create_dir_all(logs_dir());
 }
 
-/// Raw, dependency-free readiness poll: TCP-connect to 6768 and read the HTTP
-/// status line, looking for `200`. Mirrors Node's `/readyz` wait.
+/// The collector's HTTP port — honors `RUNTIMESCOPE_HTTP_PORT` (default 6768), so
+/// the readyz poll + dashboard URL match a custom-port collector (collector-server
+/// reads the same env). Audit finding: a hardcoded 6768 polled the wrong port.
+pub fn http_port() -> u16 {
+    std::env::var("RUNTIMESCOPE_HTTP_PORT").ok().and_then(|v| v.parse().ok()).unwrap_or(6768)
+}
+
+/// Run a command and **surface a non-zero exit as an error** (audit: a fail-loud
+/// op must never report success on failure — "never discard a `Result` on a
+/// write/IO path"). Node's `execFileSync` throws on non-zero; this mirrors that.
+fn run_checked(label: &str, cmd: &mut Command) -> Result<(), String> {
+    match cmd.status() {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => Err(format!("{label} failed (exit {})", s.code().unwrap_or(-1))),
+        Err(e) => Err(format!("{label} could not run: {e}")),
+    }
+}
+
+/// Raw, dependency-free readiness poll: TCP-connect to the HTTP port and parse the
+/// HTTP **status line** for a 2xx code (not a fragile substring). Mirrors Node's
+/// `res.ok` `/readyz` wait.
 fn wait_for_collector_ready(timeout: std::time::Duration) -> bool {
     use std::io::{Read, Write};
     use std::net::TcpStream;
+    let port = http_port();
     let deadline = std::time::Instant::now() + timeout;
     while std::time::Instant::now() < deadline {
-        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", 6768)) {
+        if let Ok(mut s) = TcpStream::connect(("127.0.0.1", port)) {
             let _ = s.set_read_timeout(Some(std::time::Duration::from_millis(500)));
             if s.write_all(b"GET /readyz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").is_ok() {
-                let mut buf = [0u8; 64];
+                let mut buf = [0u8; 128];
                 if let Ok(n) = s.read(&mut buf) {
-                    if String::from_utf8_lossy(&buf[..n]).contains(" 200") {
-                        return true;
+                    // Parse "HTTP/1.x <code> ..." and accept 2xx.
+                    if let Some(code) = String::from_utf8_lossy(&buf[..n])
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|c| c.parse::<u16>().ok())
+                    {
+                        if (200..=299).contains(&code) {
+                            return true;
+                        }
                     }
                 }
             }
@@ -166,11 +194,7 @@ fn install_launchd() -> Result<(), String> {
     let _ = Command::new("launchctl").args(["unload", "-w"]).arg(&plist).output();
     std::fs::write(&plist, build_launchd_plist(&collector)).map_err(|e| e.to_string())?;
     green(&format!("Wrote {}", plist.to_string_lossy()));
-    Command::new("launchctl")
-        .args(["load", "-w"])
-        .arg(&plist)
-        .status()
-        .map_err(|e| e.to_string())?;
+    run_checked("launchctl load", Command::new("launchctl").args(["load", "-w"]).arg(&plist))?;
     info(&format!("Collector: {collector}"));
     info(&format!("Logs:      {}", logs_dir().to_string_lossy()));
     report_ready();
@@ -212,15 +236,15 @@ fn status_launchd() {
     }
 }
 
-fn restart_launchd() {
+fn restart_launchd() -> Result<(), String> {
     let plist = launchd_plist();
     if !plist.exists() {
-        errln("Service not installed. Run: runtimescope service install");
-        return;
+        return Err("Service not installed. Run: runtimescope service install".to_string());
     }
-    let _ = Command::new("launchctl").arg("unload").arg(&plist).status();
-    let _ = Command::new("launchctl").arg("load").arg(&plist).status();
+    run_checked("launchctl unload", Command::new("launchctl").arg("unload").arg(&plist))?;
+    run_checked("launchctl load", Command::new("launchctl").arg("load").arg(&plist))?;
     green("Service restarted");
+    Ok(())
 }
 
 fn stop_launchd() {
@@ -258,7 +282,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart={collector}
+ExecStart="{collector}"
 Restart=on-failure
 RestartSec=5
 TimeoutStopSec=10
@@ -285,11 +309,11 @@ fn install_systemd() -> Result<(), String> {
     let _ = std::fs::create_dir_all(systemd_unit_dir());
     std::fs::write(systemd_unit(), build_systemd_unit(&collector)).map_err(|e| e.to_string())?;
     green(&format!("Wrote {}", systemd_unit().to_string_lossy()));
-    Command::new("systemctl").args(["--user", "daemon-reload"]).status().map_err(|e| e.to_string())?;
-    Command::new("systemctl")
-        .args(["--user", "enable", "--now", "runtimescope.service"])
-        .status()
-        .map_err(|e| e.to_string())?;
+    run_checked("systemctl daemon-reload", Command::new("systemctl").args(["--user", "daemon-reload"]))?;
+    run_checked(
+        "systemctl enable --now",
+        Command::new("systemctl").args(["--user", "enable", "--now", "runtimescope.service"]),
+    )?;
     info(&format!("Collector: {collector}"));
     report_ready();
     info("Optional always-on (keep running when logged out): sudo loginctl enable-linger $USER");
@@ -327,13 +351,16 @@ fn status_systemd() {
     info("Logs: journalctl --user -u runtimescope -f");
 }
 
-fn restart_systemd() {
+fn restart_systemd() -> Result<(), String> {
     if !systemd_unit().exists() {
-        errln("Service not installed. Run: runtimescope service install");
-        return;
+        return Err("Service not installed. Run: runtimescope service install".to_string());
     }
-    let _ = Command::new("systemctl").args(["--user", "restart", "runtimescope.service"]).status();
+    run_checked(
+        "systemctl restart",
+        Command::new("systemctl").args(["--user", "restart", "runtimescope.service"]),
+    )?;
     green("Service restarted");
+    Ok(())
 }
 
 fn stop_systemd() {
@@ -353,7 +380,7 @@ fn report_ready() {
     println!();
     info("Waiting for collector to come up…");
     if wait_for_collector_ready(std::time::Duration::from_secs(60)) {
-        green("Collector is healthy and serving on http://127.0.0.1:6768");
+        green(&format!("Collector is healthy and serving on http://127.0.0.1:{}", http_port()));
     } else {
         errln("Collector did not respond on /readyz within 60s.");
         info("Common causes: another process holding 6767/6768, or a crash on startup.");
@@ -396,7 +423,6 @@ pub fn run(subcmd: Option<&str>) -> i32 {
         }
         Some("restart") | Some("start") => {
             if mac { restart_launchd() } else { restart_systemd() }
-            Ok(())
         }
         Some("stop") => {
             if mac { stop_launchd() } else { stop_systemd() }
@@ -457,11 +483,27 @@ mod tests {
     #[test]
     fn systemd_unit_execs_the_collector_binary_not_node() {
         let u = build_systemd_unit("/opt/rs/bin/collector-server");
-        assert!(u.contains("ExecStart=/opt/rs/bin/collector-server"));
+        // ExecStart is QUOTED so a path with spaces isn't whitespace-split by systemd
+        // (audit finding — an improvement over Node's unquoted template).
+        assert!(u.contains("ExecStart=\"/opt/rs/bin/collector-server\""));
         assert!(!u.contains("node"), "Rust unit must not exec node");
         assert!(u.contains("Restart=on-failure"));
         assert!(u.contains("MemoryMax=256M"));
         assert!(u.contains("WantedBy=default.target"));
+        // A path with spaces stays a single quoted argument.
+        let spaced = build_systemd_unit("/opt/my dir/collector-server");
+        assert!(spaced.contains("ExecStart=\"/opt/my dir/collector-server\""));
+    }
+
+    #[test]
+    fn http_port_honors_env_override() {
+        // Default when unset; the override path is exercised by the readyz poll +
+        // dashboard URL. (Env is process-global; assert the default branch here.)
+        std::env::remove_var("RUNTIMESCOPE_HTTP_PORT");
+        assert_eq!(http_port(), 6768);
+        std::env::set_var("RUNTIMESCOPE_HTTP_PORT", "7777");
+        assert_eq!(http_port(), 7777);
+        std::env::remove_var("RUNTIMESCOPE_HTTP_PORT");
     }
 
     #[test]

@@ -1,0 +1,133 @@
+name: Release binaries
+
+# On a version tag, gate on conformance, then build universal macOS binaries
+# (arm64 + x86_64 via lipo) for the three Rust executables, optionally codesign
+# them (if Apple signing secrets are configured), checksum, and attach to the
+# GitHub Release. Runs alongside publish.yml (npm); the two are independent.
+#
+# Optional signing secrets (binaries ship UNSIGNED if absent — the build still
+# succeeds, with a notice):
+#   APPLE_CERTIFICATE_BASE64   base64 of a Developer ID Application .p12
+#   APPLE_CERTIFICATE_PASSWORD password for that .p12
+#   APPLE_SIGNING_IDENTITY     e.g. "Developer ID Application: Acme (TEAMID)"
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag to build/release (e.g. v0.11.0)'
+        required: true
+
+permissions:
+  contents: write # create/upload GitHub Release assets
+
+jobs:
+  # A release must pass the parity gate on the exact tagged commit before any
+  # artifact is built — never ship a binary the wire contract hasn't blessed.
+  gate:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm ci
+      - name: Build Rust binaries (release)
+        run: cargo build --release --locked --bin collector-server --bin mcp-server
+      - name: Conformance vs Rust (serial)
+        env:
+          RUNTIMESCOPE_COLLECTOR_CMD: ${{ github.workspace }}/target/release/collector-server
+          RUNTIMESCOPE_MCP_CMD: ${{ github.workspace }}/target/release/mcp-server
+        run: npx vitest run --config tests/conformance/vitest.config.ts --no-file-parallelism
+
+  build:
+    needs: gate
+    runs-on: macos-14
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Show toolchain + targets
+        run: rustup show
+
+      - name: Build both darwin targets
+        run: |
+          for target in aarch64-apple-darwin x86_64-apple-darwin; do
+            cargo build --release --locked --target "$target" \
+              --bin collector-server --bin mcp-server --bin runtimescope
+          done
+
+      - name: Lipo → universal binaries
+        run: |
+          mkdir -p dist
+          for bin in collector-server mcp-server runtimescope; do
+            lipo -create -output "dist/$bin" \
+              "target/aarch64-apple-darwin/release/$bin" \
+              "target/x86_64-apple-darwin/release/$bin"
+            lipo -info "dist/$bin"
+          done
+
+      - name: Detect signing config
+        id: signing
+        env:
+          CERT: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+        run: |
+          if [ -n "$CERT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::No APPLE_CERTIFICATE_BASE64 secret — shipping UNSIGNED binaries."
+          fi
+
+      - name: Codesign (Developer ID)
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          APPLE_CERTIFICATE_BASE64: ${{ secrets.APPLE_CERTIFICATE_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD }}
+          APPLE_SIGNING_IDENTITY: ${{ secrets.APPLE_SIGNING_IDENTITY }}
+        run: |
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PW="$(openssl rand -base64 24)"
+          security create-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PW" "$KEYCHAIN"
+          echo "$APPLE_CERTIFICATE_BASE64" | base64 --decode > "$RUNNER_TEMP/cert.p12"
+          security import "$RUNNER_TEMP/cert.p12" -k "$KEYCHAIN" \
+            -P "$APPLE_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: \
+            -s -k "$KEYCHAIN_PW" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | tr -d '"')
+          for bin in collector-server mcp-server runtimescope; do
+            codesign --force --options runtime --timestamp \
+              --sign "$APPLE_SIGNING_IDENTITY" "dist/$bin"
+            codesign --verify --strict --verbose=2 "dist/$bin"
+          done
+          security delete-keychain "$KEYCHAIN"
+
+      - name: Checksums
+        run: |
+          cd dist
+          shasum -a 256 collector-server mcp-server runtimescope > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Rename assets for the release
+        run: |
+          cd dist
+          for bin in collector-server mcp-server runtimescope; do
+            mv "$bin" "runtimescope-$bin-$TAG-macos-universal"
+          done
+          ls -la
+
+      - name: Publish to the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          SIGNED="${{ steps.signing.outputs.enabled == 'true' && 'signed (Developer ID)' || 'UNSIGNED — no signing secrets configured' }}"
+          NOTES="Universal macOS (arm64 + x86_64) Rust collector binaries for $TAG. Status: $SIGNED. Verify with SHA256SUMS."
+          # Create the release if it doesn't exist yet (the tag may already exist
+          # from the push that triggered this), then upload/overwrite assets.
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$TAG" --notes "$NOTES"
+          gh release upload "$TAG" dist/* --clobber

@@ -1,10 +1,14 @@
 name: Rust
 
-# Build + lint + test the Rust collector workspace (Phase Rust-Collector).
-# Runs on macos-14 (arm64) to match the dev target + the rust-toolchain.toml
-# darwin targets. The Node conformance gate lives in publish.yml; once the Rust
-# binaries are the release artifact, this workflow gains the
-# RUNTIMESCOPE_COLLECTOR_CMD conformance run against them.
+# Build + lint + test the Rust collector workspace, then run the M7 release
+# gates against the built binaries:
+#   - conformance (ADR-0006 wire contract) via RUNTIMESCOPE_COLLECTOR_CMD +
+#     RUNTIMESCOPE_MCP_CMD — the parity gate, run serial (--no-file-parallelism)
+#     to avoid the known harness port-collision flake.
+#   - bench:compare — the perf gate: Node baseline vs the Rust candidate on the
+#     SAME runner (the >=90% throughput / <=1.25x RSS ratios are relative, so
+#     runner speed cancels out).
+# Runs on macos-14 (arm64) to match rust-toolchain.toml's darwin targets.
 on:
   push:
     paths:
@@ -12,12 +16,19 @@ on:
       - 'Cargo.toml'
       - 'Cargo.lock'
       - 'rust-toolchain.toml'
+      - 'tests/conformance/**'
+      - 'stress/**'
+      - 'packages/collector/**'
       - '.github/workflows/rust.yml'
   pull_request:
     paths:
       - 'crates/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
+      - 'tests/conformance/**'
+      - 'stress/**'
+      - 'packages/collector/**'
+  workflow_dispatch:
 
 jobs:
   build:
@@ -29,6 +40,61 @@ jobs:
       - name: Build
         run: cargo build --workspace --locked
       - name: Clippy
-        run: cargo clippy --workspace --locked -- -D warnings
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Test
         run: cargo test --workspace --locked
+
+  # Parity gate: the Rust binaries must pass the full wire-contract suite that
+  # the Node reference passes. Runs serial to dodge the port-collision flake.
+  conformance:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install JS deps (conformance harness)
+        run: npm ci
+      - name: Build Rust binaries (release)
+        run: cargo build --release --locked --bin collector-server --bin mcp-server
+      - name: Conformance vs Rust (serial)
+        env:
+          RUNTIMESCOPE_COLLECTOR_CMD: ${{ github.workspace }}/target/release/collector-server
+          RUNTIMESCOPE_MCP_CMD: ${{ github.workspace }}/target/release/mcp-server
+        run: npx vitest run --config tests/conformance/vitest.config.ts --no-file-parallelism
+
+  # Perf gate: bench the Node standalone and the Rust collector on this runner,
+  # then assert the Rust candidate is within gates. Skipped on feature-branch
+  # pushes (bench is timing-sensitive); runs on PRs, main, and manual dispatch.
+  bench:
+    runs-on: macos-14
+    if: github.event_name != 'push' || github.ref == 'refs/heads/main'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Install JS deps
+        run: npm ci
+      - name: Build Rust collector (release)
+        run: cargo build --release --locked --bin collector-server
+      # Node baseline standalone. Build order matters: sdk -> dashboard ->
+      # collector (the collector's tsup onSuccess copies the dashboard in).
+      - name: Build Node collector (bench baseline)
+        run: |
+          npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk
+          npm run build -w packages/dashboard
+          npm run build -w packages/collector
+      - name: Bench Node baseline
+        run: npm run bench
+      - name: Bench Rust candidate
+        env:
+          RUNTIMESCOPE_COLLECTOR_CMD: ${{ github.workspace }}/target/release/collector-server
+        run: npm run bench
+      - name: Compare (gate)
+        run: |
+          NODE_REPORT=$(ls -t bench/results/node-*.json | head -1)
+          RUST_REPORT=$(ls -t bench/results/collector-server-*.json | head -1)
+          echo "baseline:  $NODE_REPORT"
+          echo "candidate: $RUST_REPORT"
+          npm run bench:compare -- "$NODE_REPORT" "$RUST_REPORT"

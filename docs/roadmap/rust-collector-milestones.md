@@ -182,7 +182,7 @@ releases = **fast-follow after v0.11.0 ships**.
 
 - [x] Full `npm run conformance` green against the Rust binary. **132/132 vs Node AND Rust (serial; parallel has the GPT #7 port-collision flake).**
 - [x] `npm run stress` 7/7; `npm run bench:compare -- node <rust>` within gates (target: Rust beats Node). **Stress 7/7 both ways. Bench: all 5 gates pass — throughput 100% of Node (56.5k ev/s after the txn-batching fix), steady-state RSS 0.13× Node (8× better), no leak, zero drops.** See `reviews/0003`.
-- [ ] Signed-binary release workflow + the conformance/bench gate in CI.
+- [x] Signed-binary release workflow + the conformance/bench gate in CI. **`rust.yml` now runs conformance-vs-Rust (serial) + `bench:compare` on every PR/main; `release-binaries.yml` gates on conformance then ships universal (arm64+x86_64) codesigned macOS binaries + SHA256SUMS on a `v*` tag (signing optional — gated on `APPLE_CERTIFICATE_BASE64`/`APPLE_SIGNING_IDENTITY` secrets; unsigned + noticed if absent).**
 - [ ] Delete `packages/collector|mcp-server|cli`; verify git-tag rollback. **(destructive — needs the safety tag + independent sign-off first)**
 - [ ] v0.11.0; deprecate Node packages (final v0.10.13) on npm; completion report; CURRENT_STATE + HANDOFF → Phase SDK-Channel-Migration.
 

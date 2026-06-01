@@ -210,15 +210,32 @@ impl StoreHandle {
                         for ev in &events {
                             *counters.entry(crate::event::event_type_of(ev).to_string()).or_insert(0) += 1;
                         }
+                        // Insert the whole batch under ONE transaction (vs an
+                        // implicit transaction per row) — a large, durability-neutral
+                        // throughput win: the JSONL WAL fsync above already made the
+                        // batch durable, so the SQLite commit is just the queryable
+                        // copy. insert_event uses a cached prepared statement.
                         let mut stored = 0usize;
-                        for ev in &events {
-                            match insert_event(&conn, &project, ev) {
-                                Ok(true) => stored += 1,  // newly inserted
-                                Ok(false) => {}           // dedup / empty event_id — not newly stored
-                                Err(e) => {
-                                    eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
-                                    err.get_or_insert(format!("SQLite: {e}"));
+                        match conn.unchecked_transaction() {
+                            Ok(tx) => {
+                                for ev in &events {
+                                    match insert_event(&conn, &project, ev) {
+                                        Ok(true) => stored += 1,  // newly inserted
+                                        Ok(false) => {}           // dedup / empty event_id — not newly stored
+                                        Err(e) => {
+                                            eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
+                                            err.get_or_insert(format!("SQLite: {e}"));
+                                        }
+                                    }
                                 }
+                                if let Err(e) = tx.commit() {
+                                    eprintln!("[RuntimeScope] durability: SQLite commit failed: {e}");
+                                    err.get_or_insert(format!("SQLite commit: {e}"));
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("[RuntimeScope] durability: could not open SQLite transaction: {e}");
+                                err.get_or_insert(format!("SQLite txn: {e}"));
                             }
                         }
                         // The batch is now durable in SQLite (its own WAL) — close the
@@ -569,11 +586,14 @@ fn insert_event(conn: &Connection, project: &str, ev: &Value) -> rusqlite::Resul
     let timestamp = ev.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
     let event_type = event_type_of(ev);
     let data = ev.to_string();
-    let n = conn.execute(
-        "INSERT OR IGNORE INTO events (event_id, session_id, project, event_type, timestamp, data)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-        rusqlite::params![event_id, session_id, project, event_type, timestamp, data],
-    )?;
+    // prepare_cached: the INSERT is parsed once per connection, then reused for
+    // every event in every batch (the hot ingest path runs this ~10k×/sec).
+    let n = conn
+        .prepare_cached(
+            "INSERT OR IGNORE INTO events (event_id, session_id, project, event_type, timestamp, data)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        )?
+        .execute(rusqlite::params![event_id, session_id, project, event_type, timestamp, data])?;
     Ok(n > 0)
 }
 

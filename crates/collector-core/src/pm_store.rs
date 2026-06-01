@@ -853,6 +853,22 @@ impl PmStore {
         rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
+    /// True if ANY non-revoked workspace API key exists. Once true, the HTTP
+    /// auth gate flips on even without a global token (Node's `hasActiveApiKeys`
+    /// — the H5 fix: a freshly-minted workspace key must actually gate access).
+    pub fn has_active_api_keys(&self) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT 1 FROM pm_api_keys WHERE revoked_at IS NULL LIMIT 1",
+            [],
+            |_| Ok(()),
+        )
+        .optional()
+        .ok()
+        .flatten()
+        .is_some()
+    }
+
     pub fn create_workspace(
         &self,
         name: &str,

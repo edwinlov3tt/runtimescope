@@ -102,6 +102,9 @@ struct AppState {
     /// mcp-server (Node `new ProcessMonitor(store)`), false for the standalone
     /// collector-server (Node passes no monitor → those routes return empty).
     process_monitor: bool,
+    /// Epoch-ms of the last admin snapshot — enforces Node's 60s cooldown so a
+    /// runaway caller can't fill the disk with VACUUM copies.
+    last_snapshot: Arc<Mutex<i64>>,
 }
 
 fn now_ms() -> i64 {
@@ -139,6 +142,7 @@ pub async fn serve(
         dev_servers,
         dev_starting,
         process_monitor: process_monitor_enabled,
+        last_snapshot: Arc::new(Mutex::new(0)),
     };
 
     let http = Router::new()
@@ -153,6 +157,7 @@ pub async fn serve(
         .route("/assets/{*rest}", get(serve_dashboard))
         // gated
         .route("/api/sessions", get(sessions))
+        .route("/api/v1/admin/snapshot", post(admin_snapshot))
         .route("/api/projects", get(projects))
         .route("/api/events", post(post_events))
         .route("/api/events/{kind}", get(events_by_kind))
@@ -193,7 +198,7 @@ pub async fn serve(
             "/api/pm/workspaces/{id}",
             get(pm_workspace_by_id).put(pm_update_workspace).delete(pm_delete_workspace),
         )
-        .route("/api/pm/workspaces/{id}/api-keys", post(pm_create_api_key))
+        .route("/api/pm/workspaces/{id}/api-keys", get(pm_list_api_keys).post(pm_create_api_key))
         .route("/api/pm/api-keys/{prefix}", axum::routing::delete(pm_revoke_api_key))
         // capex + categories (M5.5 Slice A)
         .route("/api/pm/categories", get(pm_categories))
@@ -236,16 +241,49 @@ pub async fn serve(
 }
 
 /// Gate check for the non-public HTTP routes.
-fn http_authorized(s: &AppState, headers: &HeaderMap) -> bool {
-    if !s.auth.enabled() {
-        return true;
+/// The resolved identity of an HTTP caller, mirroring Node's `_rsCaller`.
+struct Caller {
+    /// Authenticated with a global AuthManager token, OR auth is inactive
+    /// (local-trust mode) — full access.
+    is_admin: bool,
+    /// Set when a workspace-scoped `tk_` token authenticated this request.
+    workspace_id: Option<String>,
+}
+
+/// Resolve the caller exactly as Node's `handleRequest` gate does. Returns
+/// `None` when auth is *active* and no valid token matched (⇒ 401). Auth is
+/// active when a global token is configured OR any workspace API key exists
+/// (the H5 fix — a minted workspace key must gate access even with no global
+/// token). A valid token may be the global token (⇒ admin) or a workspace
+/// `tk_` token (⇒ that workspace).
+fn resolve_caller(s: &AppState, headers: &HeaderMap) -> Option<Caller> {
+    let workspace_keys_exist = s.pm.has_active_api_keys();
+    let auth_active = s.auth.enabled() || workspace_keys_exist;
+    if !auth_active {
+        return Some(Caller { is_admin: true, workspace_id: None });
     }
     let presented = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok());
-    s.auth.authorized(AuthManager::extract_bearer(presented))
+    let token = AuthManager::extract_bearer(presented);
+    // `validate` (not `authorized`) so a workspace token isn't misread as the
+    // global admin token when no global keys are set.
+    let is_global = token.is_some_and(|t| s.auth.validate(t));
+    let workspace = token.and_then(|t| s.pm.get_workspace_by_api_key(t));
+    if !is_global && workspace.is_none() {
+        return None;
+    }
+    Some(Caller { is_admin: is_global, workspace_id: workspace.map(|w| w.id) })
+}
+
+fn http_authorized(s: &AppState, headers: &HeaderMap) -> bool {
+    resolve_caller(s, headers).is_some()
 }
 
 fn unauthorized() -> Response {
-    (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized" }))).into_response()
+    (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized", "code": "AUTH_FAILED" }))).into_response()
+}
+
+fn forbidden(msg: &str) -> Response {
+    (StatusCode::FORBIDDEN, Json(json!({ "error": format!("Forbidden: {msg}") }))).into_response()
 }
 
 // ---- HTTP handlers ----
@@ -266,12 +304,43 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
     }))
 }
 
-async fn metrics() -> impl IntoResponse {
-    let body = "# RuntimeScope collector metrics\nruntimescope_up 1\n";
+async fn metrics(State(s): State<AppState>) -> Response {
+    // Opt-out parity with Node (sensitive hosted collectors scrape via a sidecar).
+    if std::env::var("RUNTIMESCOPE_DISABLE_METRICS").as_deref() == Ok("1") {
+        return (
+            StatusCode::NOT_FOUND,
+            [(header::CONTENT_TYPE, "text/plain")],
+            "Metrics disabled (RUNTIMESCOPE_DISABLE_METRICS=1).\n",
+        )
+            .into_response();
+    }
+    let snap = s.store.metrics_snapshot().await;
+    let connected = s.store.connected_count().await;
+    let uptime = s.started.elapsed().as_secs();
+
+    let mut body = String::from("# RuntimeScope collector metrics\nruntimescope_up 1\n");
+    body.push_str("# HELP runtimescope_events_total Total events accepted by the collector since start.\n");
+    body.push_str("# TYPE runtimescope_events_total counter\n");
+    for (ty, n) in &snap.events_by_type {
+        // Escape the label value per the Prometheus exposition format.
+        let ty = ty.replace('\\', "\\\\").replace('"', "\\\"");
+        body.push_str(&format!("runtimescope_events_total{{type=\"{ty}\"}} {n}\n"));
+    }
+    body.push_str("# HELP runtimescope_buffer_size Events currently held in the hot-tier window.\n");
+    body.push_str("# TYPE runtimescope_buffer_size gauge\n");
+    body.push_str(&format!("runtimescope_buffer_size {}\n", snap.buffer_size));
+    body.push_str("# HELP runtimescope_sessions_connected SDK sessions currently connected.\n");
+    body.push_str("# TYPE runtimescope_sessions_connected gauge\n");
+    body.push_str(&format!("runtimescope_sessions_connected {connected}\n"));
+    body.push_str("# HELP runtimescope_collector_uptime_seconds Seconds since the collector started.\n");
+    body.push_str("# TYPE runtimescope_collector_uptime_seconds gauge\n");
+    body.push_str(&format!("runtimescope_collector_uptime_seconds {uptime}\n"));
+
     (
         [(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")],
         body,
     )
+        .into_response()
 }
 
 async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
@@ -289,13 +358,48 @@ async fn sessions(State(s): State<AppState>, headers: HeaderMap) -> Response {
                 "appName": si.app_name,
                 "projectId": si.project_id,
                 "connectedAt": si.connected_at,
-                "eventCount": 0,
+                "eventCount": si.event_count,
                 "isConnected": si.is_connected,
             })
         })
         .collect();
     let count = list.len();
     Json(json!({ "data": list, "count": count })).into_response()
+}
+
+/// POST /api/v1/admin/snapshot — atomic `VACUUM INTO` backup of the store.
+/// **Admin only**: a workspace-scoped token is non-admin → 403 (the security
+/// property the auth-fuzz gate checks). Rate-limited to one call per 60s → 429
+/// with `Retry-After`. Mirrors Node's admin snapshot endpoint.
+async fn admin_snapshot(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    let Some(caller) = resolve_caller(&s, &headers) else {
+        return unauthorized();
+    };
+    if !caller.is_admin {
+        return forbidden("snapshot requires admin");
+    }
+    // 60s cooldown (Node) — checked + claimed under one lock so concurrent calls
+    // can't both pass.
+    const COOLDOWN_MS: i64 = 60_000;
+    {
+        let mut last = s.last_snapshot.lock().unwrap();
+        let now = now_ms();
+        let since = now - *last;
+        if *last != 0 && since < COOLDOWN_MS {
+            let retry_after = ((COOLDOWN_MS - since) as f64 / 1000.0).ceil() as i64;
+            return (
+                StatusCode::TOO_MANY_REQUESTS,
+                [(header::RETRY_AFTER, retry_after.to_string())],
+                Json(json!({ "error": "Snapshot rate-limited", "retryAfterSeconds": retry_after })),
+            )
+                .into_response();
+        }
+        *last = now;
+    }
+    match s.store.snapshot().await {
+        Ok(v) => (StatusCode::CREATED, Json(v)).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
 }
 
 /// Event read API: `/api/events/<kind>`, scoped by `?project_id=` + query
@@ -727,6 +831,45 @@ async fn pm_delete_workspace(State(s): State<AppState>, headers: HeaderMap, Path
         Ok(()) => Json(json!({ "ok": true })).into_response(),
         Err(e) => bad_request(&e),
     }
+}
+
+/// GET /api/pm/workspaces/{id}/api-keys — list the workspace's live keys with
+/// the raw secret masked (only `keyPrefix`/`keyLast4` for display). Workspace-
+/// scoped: a workspace token may only list its OWN keys (else 403); the global
+/// admin token may list any. 404 when the workspace is absent. Mirrors Node's
+/// `GET` route + `requireWorkspaceAccess`.
+async fn pm_list_api_keys(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    let Some(caller) = resolve_caller(&s, &headers) else {
+        return unauthorized();
+    };
+    if !caller.is_admin && caller.workspace_id.as_deref() != Some(id.as_str()) {
+        return forbidden("caller not authorized for this workspace");
+    }
+    if s.pm.list_workspaces().iter().all(|w| w.id != id) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "Workspace not found" }))).into_response();
+    }
+    let data: Vec<Value> = s
+        .pm
+        .list_api_keys(&id)
+        .into_iter()
+        .map(|k| {
+            // Node's mapApiKeyRow shape — `key` is blank (the secret never leaves
+            // create); prefix + last4 are for display.
+            let mut o = json!({
+                "key": "",
+                "keyPrefix": k.key_prefix,
+                "keyLast4": k.key_last4,
+                "workspaceId": k.workspace_id,
+                "label": k.label,
+                "createdAt": k.created_at,
+            });
+            if let Some(e) = k.expires_at {
+                o.as_object_mut().unwrap().insert("expiresAt".into(), json!(e));
+            }
+            o
+        })
+        .collect();
+    Json(json!({ "data": data })).into_response()
 }
 
 /// POST /api/pm/workspaces/{id}/api-keys — mint a workspace-scoped `tk_` key.
@@ -2934,6 +3077,7 @@ mod slice_g_dev_server_tests {
             dev_servers: Arc::new(Mutex::new(HashMap::new())),
             dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
             process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
         };
         let app = Router::new()
             .route(

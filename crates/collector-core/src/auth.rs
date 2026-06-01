@@ -157,6 +157,21 @@ impl AuthManager {
         ok
     }
 
+    /// Constant-time check that `presented` matches a configured **global**
+    /// token, regardless of `enabled`. Unlike [`authorized`], this does NOT
+    /// return true when auth is off — so a workspace `tk_` token is never
+    /// misclassified as a global admin token when no global keys are set
+    /// (Node's `validate()` vs `isAuthorized()` distinction; the H5 trap).
+    pub fn validate(&self, presented: &str) -> bool {
+        use subtle::ConstantTimeEq;
+        let p = presented.as_bytes();
+        let mut ok = false;
+        for expected in &self.tokens {
+            ok |= bool::from(p.ct_eq(expected.as_bytes()));
+        }
+        ok
+    }
+
     /// Pull the bearer token out of an `Authorization` header value. Mirrors
     /// Node's `/^Bearer\s+(\S+)$/i` (`packages/collector/src/auth.ts`):
     /// case-insensitive `Bearer`, one-or-more whitespace, then a single run of
@@ -267,6 +282,29 @@ mod tests {
         assert!(mgr.authorized(Some("secret-key-bbb")), "second config key must authorize");
         assert!(!mgr.authorized(Some("wrong-key")), "unknown key must be rejected");
         assert!(!mgr.authorized(None), "missing token must be rejected when enabled");
+    }
+
+    // The H5 trap: `validate()` must NOT inherit `authorized()`'s "auth off →
+    // everything passes" semantics, or the HTTP gate would misclassify a
+    // workspace `tk_` token as the global admin token whenever no global keys
+    // are configured. validate() = "matches a real global token", period.
+    #[test]
+    fn validate_never_passes_when_no_global_token_is_configured() {
+        let _env = EnvGuard::unset();
+        let mgr = AuthManager::for_mode(AuthMode::Standalone); // no token → disabled
+        assert!(!mgr.enabled());
+        assert!(mgr.authorized(Some("anything")), "authorized() trusts everything when off");
+        assert!(!mgr.validate("anything"), "validate() must NOT trust a token when no global key exists");
+        assert!(!mgr.validate("tk_workspacetoken"), "a workspace token is not a global admin token");
+    }
+
+    #[test]
+    fn validate_matches_only_the_configured_global_token() {
+        let _env = EnvGuard::set("env-token-xyz");
+        let mgr = AuthManager::from_env();
+        assert!(mgr.validate("env-token-xyz"), "the configured global token validates");
+        assert!(!mgr.validate("env-token-xy"), "a near-miss does not validate");
+        assert!(!mgr.validate("tk_workspace"), "a workspace token does not validate as global");
     }
 
     #[test]

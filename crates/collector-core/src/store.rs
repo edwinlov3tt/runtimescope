@@ -82,6 +82,19 @@ pub struct SessionInfo {
     pub project_id: Option<String>,
     pub connected_at: i64,
     pub is_connected: bool,
+    /// Stored events attributed to this session (filled at query time from
+    /// SQLite — Node's `SessionInfo.eventCount`). 0 in the in-memory record.
+    pub event_count: i64,
+}
+
+/// A point-in-time read of the collector's Prometheus-exposable counters/gauges.
+/// `events_by_type` is the cumulative per-type accept counter (Node's
+/// `runtimescope_events_total{type}`); `buffer_size` is the hot-tier gauge,
+/// `min(total stored, ring cap)` (Node's `runtimescope_buffer_size`).
+pub struct MetricsSnapshot {
+    pub events_by_type: Vec<(String, u64)>,
+    pub buffer_size: usize,
+    pub total_events: usize,
 }
 
 impl SessionInfo {
@@ -107,6 +120,8 @@ enum Cmd {
         reply: oneshot::Sender<Vec<Value>>,
     },
     EventCount { project: Option<String>, reply: oneshot::Sender<usize> },
+    MetricsSnapshot { reply: oneshot::Sender<MetricsSnapshot> },
+    Snapshot { reply: oneshot::Sender<Result<Value, String>> },
     EventsForApp { app: String, reply: oneshot::Sender<Vec<Value>> },
     EventCountForApp { app: String, reply: oneshot::Sender<usize> },
     SaveSnapshot {
@@ -167,6 +182,18 @@ impl StoreHandle {
             // (audit #7, matching Node's warmFromSqlite).
             let mut sessions: Vec<SessionInfo> = load_sessions(&conn);
 
+            // Hot-tier cap (Node's ring-buffer size). We keep every event durably
+            // in SQLite (the beyond-Node win), but the read API + buffer_size gauge
+            // present only the newest `cap` rows so the observable hot-tier contract
+            // matches Node. `RUNTIMESCOPE_BUFFER_SIZE` (default 10k) per the env spec.
+            let cap: usize = std::env::var("RUNTIMESCOPE_BUFFER_SIZE")
+                .ok()
+                .and_then(|v| v.parse::<usize>().ok())
+                .filter(|n| *n > 0)
+                .unwrap_or(10_000);
+            // Cumulative per-type accept counter (Node's runtimescope_events_total).
+            let mut counters: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+
             while let Some(cmd) = rx.blocking_recv() {
                 match cmd {
                     Cmd::AddBatch { project, events, reply } => {
@@ -176,6 +203,12 @@ impl StoreHandle {
                         if let Err(e) = wal.append(&project, &events).and_then(|()| wal.commit()) {
                             eprintln!("[RuntimeScope] durability: WAL write failed: {e}");
                             err.get_or_insert(format!("WAL: {e}"));
+                        }
+                        // Cumulative accept counter, by type — Node increments
+                        // runtimescope_events_total per event the store accepts,
+                        // independent of dedup/cap (it's a monotonic total).
+                        for ev in &events {
+                            *counters.entry(crate::event::event_type_of(ev).to_string()).or_insert(0) += 1;
                         }
                         let mut stored = 0usize;
                         for ev in &events {
@@ -212,6 +245,7 @@ impl StoreHandle {
                                 project_id: project_id.clone(),
                                 connected_at,
                                 is_connected: true,
+                                event_count: 0,
                             });
                             connected_at
                         };
@@ -237,7 +271,11 @@ impl StoreHandle {
                             "projectId": project_id,
                             "connectedAt": connected_at,
                         });
-                        let _ = insert_event(&conn, &scope, &session_event);
+                        // Count the synthetic connect event once (idempotent on
+                        // reconnect — only a newly-inserted row bumps the counter).
+                        if let Ok(true) = insert_event(&conn, &scope, &session_event) {
+                            *counters.entry("session".to_string()).or_insert(0) += 1;
+                        }
                     }
                     Cmd::MarkDisconnected { session_id } => {
                         if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
@@ -249,13 +287,20 @@ impl StoreHandle {
                         );
                     }
                     Cmd::Sessions { reply } => {
-                        let _ = reply.send(sessions.clone());
+                        // Attach the live per-session event count (Node's
+                        // SessionInfo.eventCount) from SQLite — one grouped query.
+                        let counts = session_event_counts(&conn);
+                        let mut list = sessions.clone();
+                        for s in &mut list {
+                            s.event_count = counts.get(&s.session_id).copied().unwrap_or(0);
+                        }
+                        let _ = reply.send(list);
                     }
                     Cmd::ConnectedCount { reply } => {
                         let _ = reply.send(sessions.iter().filter(|s| s.is_connected).count());
                     }
                     Cmd::EventsByType { event_type, project, reply } => {
-                        let _ = reply.send(query_events(&conn, &event_type, project.as_deref()));
+                        let _ = reply.send(query_events(&conn, &event_type, project.as_deref(), cap));
                     }
                     Cmd::Timeline { project, types, since_ms, session_id, reply } => {
                         let _ = reply.send(query_timeline(
@@ -268,6 +313,17 @@ impl StoreHandle {
                     }
                     Cmd::EventCount { project, reply } => {
                         let _ = reply.send(count_events(&conn, project.as_deref()));
+                    }
+                    Cmd::MetricsSnapshot { reply } => {
+                        let total = count_events(&conn, None);
+                        let mut by_type: Vec<(String, u64)> =
+                            counters.iter().map(|(k, v)| (k.clone(), *v)).collect();
+                        by_type.sort_by(|a, b| a.0.cmp(&b.0));
+                        let _ = reply.send(MetricsSnapshot {
+                            events_by_type: by_type,
+                            buffer_size: total.min(cap),
+                            total_events: total,
+                        });
                     }
                     Cmd::EventsForApp { app, reply } => {
                         // App-scoped (not projectId-scoped): events belonging to a
@@ -298,6 +354,9 @@ impl StoreHandle {
                     }
                     Cmd::SessionHistory { project, limit, reply } => {
                         let _ = reply.send(query_session_history(&conn, &project, limit));
+                    }
+                    Cmd::Snapshot { reply } => {
+                        let _ = reply.send(make_snapshot(&conn, &data_dir));
                     }
                 }
             }
@@ -332,6 +391,26 @@ impl StoreHandle {
             return Vec::new();
         }
         rx.await.unwrap_or_default()
+    }
+
+    /// Take an atomic `VACUUM INTO` backup of the store under
+    /// `<data_dir>/snapshots/<ts>/`. Returns the Node-shaped result
+    /// (`{ path, timestamp, projects, totalBytes }`) or an error string.
+    pub async fn snapshot(&self) -> Result<Value, String> {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Cmd::Snapshot { reply }).await.is_err() {
+            return Err("store channel closed".into());
+        }
+        rx.await.unwrap_or_else(|_| Err("store dropped the snapshot reply".into()))
+    }
+
+    /// A Prometheus-exposable snapshot of the live counters/gauges (`/metrics`).
+    pub async fn metrics_snapshot(&self) -> MetricsSnapshot {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Cmd::MetricsSnapshot { reply }).await.is_err() {
+            return MetricsSnapshot { events_by_type: Vec::new(), buffer_size: 0, total_events: 0 };
+        }
+        rx.await.unwrap_or(MetricsSnapshot { events_by_type: Vec::new(), buffer_size: 0, total_events: 0 })
     }
 
     pub async fn connected_count(&self) -> usize {
@@ -454,9 +533,27 @@ fn load_sessions(conn: &Connection) -> Vec<SessionInfo> {
             project_id: r.get(2)?,
             connected_at: r.get(3)?,
             is_connected: false,
+            event_count: 0,
         })
     });
     rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+}
+
+/// Per-session stored-event counts (`session_id → COUNT(*)`), one grouped query.
+/// Used to fill `SessionInfo.event_count` for `GET /api/sessions`.
+fn session_event_counts(conn: &Connection) -> std::collections::HashMap<String, i64> {
+    let mut m = std::collections::HashMap::new();
+    let Ok(mut stmt) =
+        conn.prepare("SELECT session_id, COUNT(*) FROM events WHERE session_id <> '' GROUP BY session_id")
+    else {
+        return m;
+    };
+    if let Ok(rows) = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?))) {
+        for (sid, c) in rows.flatten() {
+            m.insert(sid, c);
+        }
+    }
+    m
 }
 
 /// INSERT OR IGNORE one raw event. Idempotent on `event_id` (so WAL replay is
@@ -539,6 +636,33 @@ fn query_timeline(
     out
 }
 
+/// Atomic backup of the store: `VACUUM INTO` a fresh `collector.db` under
+/// `<data_dir>/snapshots/<ts>/`. SQLite holds the full event history (the
+/// beyond-Node durability win), so one DB copy is the whole snapshot. Returns
+/// Node's response shape; surfaces a real error rather than a false success.
+fn make_snapshot(conn: &Connection, data_dir: &std::path::Path) -> Result<Value, String> {
+    let ts = now_ms();
+    let root = data_dir.join("snapshots").join(ts.to_string());
+    std::fs::create_dir_all(&root).map_err(|e| e.to_string())?;
+    let db_path = root.join("collector.db");
+    // VACUUM INTO requires the destination not already exist (ts-named dir is fresh).
+    let dest = db_path.to_str().ok_or("snapshot path is not valid UTF-8")?;
+    conn.execute("VACUUM INTO ?1", rusqlite::params![dest]).map_err(|e| e.to_string())?;
+    let sqlite_bytes = std::fs::metadata(&db_path).map(|m| m.len()).unwrap_or(0);
+    let event_count = count_events(conn, None) as i64;
+    Ok(serde_json::json!({
+        "path": root.to_string_lossy(),
+        "timestamp": ts,
+        "totalBytes": sqlite_bytes,
+        "projects": [{
+            "name": "collector",
+            "sqliteBytes": sqlite_bytes,
+            "walBytes": 0,
+            "eventCount": event_count,
+        }],
+    }))
+}
+
 /// COUNT(*) of stored events for a project scope (or all events when `None`).
 fn count_events(conn: &Connection, project: Option<&str>) -> usize {
     conn.query_row(
@@ -612,15 +736,19 @@ fn query_session_history(conn: &Connection, project: &str, limit: usize) -> Vec<
     rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
 }
 
-/// Query events of a type, optionally project-scoped, newest-first.
-fn query_events(conn: &Connection, event_type: &str, project: Option<&str>) -> Vec<Value> {
+/// Query events of a type, optionally project-scoped, newest-first — but only
+/// within the **hot tier**: the newest `cap` events across the whole store
+/// (Node's ring-buffer window), then filtered by type/project. This bounds the
+/// read API to the configured buffer size while SQLite keeps full history.
+fn query_events(conn: &Connection, event_type: &str, project: Option<&str>, cap: usize) -> Vec<Value> {
     let mut stmt = match conn.prepare(
-        "SELECT data FROM events WHERE event_type = ?1 AND (?2 IS NULL OR project = ?2) ORDER BY id DESC",
+        "SELECT data FROM (SELECT id, data, event_type, project FROM events ORDER BY id DESC LIMIT ?3) \
+         WHERE event_type = ?1 AND (?2 IS NULL OR project = ?2) ORDER BY id DESC",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(rusqlite::params![event_type, project], |r| r.get::<_, String>(0));
+    let rows = stmt.query_map(rusqlite::params![event_type, project, cap as i64], |r| r.get::<_, String>(0));
     let mut out = Vec::new();
     if let Ok(rows) = rows {
         for row in rows.flatten() {

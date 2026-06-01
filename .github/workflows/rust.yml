@@ -55,6 +55,13 @@ jobs:
           node-version: 20
       - name: Install JS deps (conformance harness)
         run: npm ci
+      # The Rust binary embeds the dashboard SPA (rust-embed, compile-time), and
+      # the dashboard-embed conformance spec asserts the REAL SPA is served — so
+      # build it BEFORE cargo. sdk -> dashboard (dashboard imports @runtimescope/sdk).
+      - name: Build dashboard SPA (embedded into the binary)
+        run: |
+          npm run build -w packages/sdk
+          npm run build -w packages/dashboard
       - name: Build Rust binaries (release)
         run: cargo build --release --locked --bin collector-server --bin mcp-server
       - name: Conformance vs Rust (serial)

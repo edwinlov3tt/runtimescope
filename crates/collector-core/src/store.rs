@@ -194,37 +194,75 @@ impl StoreHandle {
             // Cumulative per-type accept counter (Node's runtimescope_events_total).
             let mut counters: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
-            while let Some(cmd) = rx.blocking_recv() {
+            // Group-commit: under load, AddBatch commands queue up. We drain the
+            // consecutive ones and fsync the WAL ONCE for the whole group, instead
+            // of one fsync per batch (the per-batch fsync dominated p99 tail
+            // latency). Each batch still waits for a real fsync before its ack, so
+            // durability is unchanged — the crash-recovery contract still holds.
+            // `pending` lets us "unget" a non-AddBatch command pulled mid-drain so
+            // command order is preserved.
+            let mut pending: std::collections::VecDeque<Cmd> = std::collections::VecDeque::new();
+            loop {
+                let cmd = match pending.pop_front() {
+                    Some(c) => c,
+                    None => match rx.blocking_recv() {
+                        Some(c) => c,
+                        None => break,
+                    },
+                };
                 match cmd {
                     Cmd::AddBatch { project, events, reply } => {
-                        // Durability: WAL append + fsync BEFORE the SQLite write.
-                        // Errors are propagated, not swallowed (audit #5).
+                        // Collect this batch + any already-queued AddBatch into a group.
+                        type Pending = (String, Vec<Value>, oneshot::Sender<Result<usize, String>>);
+                        let mut group: Vec<Pending> = vec![(project, events, reply)];
+                        loop {
+                            let next = pending.pop_front().or_else(|| rx.try_recv().ok());
+                            match next {
+                                Some(Cmd::AddBatch { project, events, reply }) => {
+                                    group.push((project, events, reply));
+                                }
+                                Some(other) => {
+                                    // preserve order: process it after the group commits.
+                                    pending.push_front(other);
+                                    break;
+                                }
+                                None => break,
+                            }
+                        }
+
                         let mut err: Option<String> = None;
-                        if let Err(e) = wal.append(&project, &events).and_then(|()| wal.commit()) {
-                            eprintln!("[RuntimeScope] durability: WAL write failed: {e}");
-                            err.get_or_insert(format!("WAL: {e}"));
+                        // 1) WAL: append every batch, then ONE fsync for the group.
+                        for (project, events, _) in &group {
+                            if let Err(e) = wal.append(project, events) {
+                                eprintln!("[RuntimeScope] durability: WAL append failed: {e}");
+                                err.get_or_insert(format!("WAL: {e}"));
+                            }
                         }
-                        // Cumulative accept counter, by type — Node increments
-                        // runtimescope_events_total per event the store accepts,
-                        // independent of dedup/cap (it's a monotonic total).
-                        for ev in &events {
-                            *counters.entry(crate::event::event_type_of(ev).to_string()).or_insert(0) += 1;
+                        if err.is_none() {
+                            if let Err(e) = wal.commit() {
+                                eprintln!("[RuntimeScope] durability: WAL fsync failed: {e}");
+                                err.get_or_insert(format!("WAL: {e}"));
+                            }
                         }
-                        // Insert the whole batch under ONE transaction (vs an
-                        // implicit transaction per row) — a large, durability-neutral
-                        // throughput win: the JSONL WAL fsync above already made the
-                        // batch durable, so the SQLite commit is just the queryable
-                        // copy. insert_event uses a cached prepared statement.
-                        let mut stored = 0usize;
+                        // 2) Cumulative per-type accept counters (every event).
+                        for (_, events, _) in &group {
+                            for ev in events {
+                                *counters.entry(crate::event::event_type_of(ev).to_string()).or_insert(0) += 1;
+                            }
+                        }
+                        // 3) SQLite: the WHOLE group under ONE transaction (cached stmt).
+                        let mut stored = vec![0usize; group.len()];
                         match conn.unchecked_transaction() {
                             Ok(tx) => {
-                                for ev in &events {
-                                    match insert_event(&conn, &project, ev) {
-                                        Ok(true) => stored += 1,  // newly inserted
-                                        Ok(false) => {}           // dedup / empty event_id — not newly stored
-                                        Err(e) => {
-                                            eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
-                                            err.get_or_insert(format!("SQLite: {e}"));
+                                for (i, (project, events, _)) in group.iter().enumerate() {
+                                    for ev in events {
+                                        match insert_event(&conn, project, ev) {
+                                            Ok(true) => stored[i] += 1, // newly inserted
+                                            Ok(false) => {}             // dedup / empty event_id
+                                            Err(e) => {
+                                                eprintln!("[RuntimeScope] durability: SQLite insert failed: {e}");
+                                                err.get_or_insert(format!("SQLite: {e}"));
+                                            }
                                         }
                                     }
                                 }
@@ -238,15 +276,20 @@ impl StoreHandle {
                                 err.get_or_insert(format!("SQLite txn: {e}"));
                             }
                         }
-                        // The batch is now durable in SQLite (its own WAL) — close the
-                        // JSONL WAL window so it stays bounded (audit #3). Only when
-                        // every write succeeded; otherwise keep it for recovery.
+                        // 4) Group is durable in SQLite — truncate the JSONL WAL once
+                        //    (audit #3), only if every write succeeded.
                         if err.is_none() {
                             if let Err(e) = wal.truncate() {
                                 eprintln!("[RuntimeScope] WAL truncate failed: {e}");
                             }
                         }
-                        let _ = reply.send(err.map_or(Ok(stored), Err));
+                        // 5) Ack each batch: the shared err, or its own stored count.
+                        for (i, (_, _, reply)) in group.into_iter().enumerate() {
+                            let _ = reply.send(match &err {
+                                Some(e) => Err(e.clone()),
+                                None => Ok(stored[i]),
+                            });
+                        }
                     }
                     Cmd::RegisterSession { session_id, app_name, project_id } => {
                         let connected_at = if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {

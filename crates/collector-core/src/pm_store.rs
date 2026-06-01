@@ -602,28 +602,168 @@ impl PmStore {
         rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
+    /// `list_sessions` with the date-range + `hide_empty` filters Node's CSV export
+    /// uses (newest-first, no pagination). Ports `listSessions(pid, {limit, …})`.
+    pub fn list_sessions_filtered(
+        &self,
+        project_id: Option<&str>,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+        hide_empty: bool,
+    ) -> Vec<PmSession> {
+        let conn = self.conn.lock().unwrap();
+        let mut conds: Vec<String> = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(p) = project_id {
+            conds.push("project_id = ?".into());
+            vals.push(Box::new(p.to_string()));
+        }
+        if let Some(ms) = start_date.and_then(date_start_ms) {
+            conds.push("started_at >= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if let Some(ms) = end_date.and_then(date_end_ms) {
+            conds.push("started_at <= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if hide_empty {
+            conds.push(nonempty_session_clause(""));
+        }
+        let where_sql = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
+        let sql = format!("SELECT {SESSION_COLS} FROM pm_sessions {where_sql} ORDER BY started_at DESC");
+        let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+        let params_ref: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_ref.iter().copied()), map_session);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+    }
+
     /// Aggregate session stats, optionally scoped to a project (ports the core of
     /// Node `getSessionStats`).
     pub fn session_stats(&self, project_id: Option<&str>) -> SessionStats {
+        self.session_stats_filtered(project_id, None, None, false)
+    }
+
+    /// Aggregate session stats with optional date-range + `hide_empty` filters,
+    /// plus the per-model breakdown — ports Node `getSessionStats`.
+    pub fn session_stats_filtered(
+        &self,
+        project_id: Option<&str>,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+        hide_empty: bool,
+    ) -> SessionStats {
         let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT COUNT(*), COALESCE(SUM(active_minutes),0), COALESCE(SUM(cost_microdollars),0),
-                    COALESCE(SUM(total_input_tokens),0), COALESCE(SUM(total_output_tokens),0),
-                    COALESCE(AVG(active_minutes),0)
-             FROM pm_sessions WHERE (?1 IS NULL OR project_id = ?1)",
-            params![project_id],
-            |r| {
+        let mut conds: Vec<String> = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(p) = project_id {
+            conds.push("project_id = ?".into());
+            vals.push(Box::new(p.to_string()));
+        }
+        if let Some(ms) = start_date.and_then(date_start_ms) {
+            conds.push("started_at >= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if let Some(ms) = end_date.and_then(date_end_ms) {
+            conds.push("started_at <= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if hide_empty {
+            conds.push(nonempty_session_clause(""));
+        }
+        let where_sql = if conds.is_empty() { String::new() } else { format!("WHERE {}", conds.join(" AND ")) };
+
+        let totals_sql = format!(
+            "SELECT COUNT(*), COALESCE(SUM(active_minutes),0), COALESCE(SUM(cost_microdollars),0), \
+             COALESCE(SUM(total_input_tokens),0), COALESCE(SUM(total_output_tokens),0), \
+             COALESCE(AVG(active_minutes),0) FROM pm_sessions {where_sql}"
+        );
+        let params_ref: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+        let mut stats = conn
+            .query_row(&totals_sql, rusqlite::params_from_iter(params_ref.iter().copied()), |r| {
                 Ok(SessionStats {
                     total_sessions: r.get(0)?,
                     total_active_minutes: r.get(1)?,
                     total_cost_microdollars: r.get(2)?,
                     total_input_tokens: r.get(3)?,
                     total_output_tokens: r.get(4)?,
-                    avg_active_minutes: r.get(5)?,
+                    avg_session_minutes: r.get(5)?,
+                    model_breakdown: Vec::new(),
                 })
-            },
-        )
-        .unwrap_or_default()
+            })
+            .unwrap_or_default();
+
+        // modelBreakdown: same filters + `model IS NOT NULL`, GROUP BY model, cost DESC.
+        let mut model_conds = conds.clone();
+        model_conds.push("model IS NOT NULL".into());
+        let model_sql = format!(
+            "SELECT model, COUNT(*) as sessions, COALESCE(SUM(cost_microdollars),0) as cost \
+             FROM pm_sessions WHERE {} GROUP BY model ORDER BY cost DESC",
+            model_conds.join(" AND ")
+        );
+        if let Ok(mut stmt) = conn.prepare(&model_sql) {
+            let params_ref2: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+            if let Ok(rows) = stmt.query_map(rusqlite::params_from_iter(params_ref2.iter().copied()), |r| {
+                Ok(ModelBreakdown { model: r.get(0)?, sessions: r.get(1)?, cost: r.get(2)? })
+            }) {
+                stats.model_breakdown = rows.flatten().collect();
+            }
+        }
+        stats
+    }
+
+    /// Per-project rollups for the dashboard home — ports Node `getProjectSummaries`.
+    /// Returns **raw snake_case rows** (Node serves the SQL row verbatim, so
+    /// `runtime_apps` stays a JSON string and `sdk_installed` an integer here).
+    pub fn get_project_summaries(
+        &self,
+        start_date: Option<&str>,
+        end_date: Option<&str>,
+        hide_empty: bool,
+    ) -> Vec<ProjectSummary> {
+        let conn = self.conn.lock().unwrap();
+        // Filters apply to the LEFT JOIN's ON clause (so projects with no matching
+        // sessions still appear), matching Node.
+        let mut join_conds: Vec<String> = Vec::new();
+        let mut vals: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(ms) = start_date.and_then(date_start_ms) {
+            join_conds.push("s.started_at >= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if let Some(ms) = end_date.and_then(date_end_ms) {
+            join_conds.push("s.started_at <= ?".into());
+            vals.push(Box::new(ms));
+        }
+        if hide_empty {
+            join_conds.push(nonempty_session_clause("s."));
+        }
+        let on_extra = if join_conds.is_empty() { String::new() } else { format!("AND {}", join_conds.join(" AND ")) };
+        let sql = format!(
+            "SELECT p.id, p.name, p.path, p.category, p.sdk_installed, p.runtimescope_project, \
+             p.runtime_apps, COUNT(s.id) as session_count, COALESCE(SUM(s.cost_microdollars),0) as total_cost, \
+             COALESCE(SUM(s.active_minutes),0) as total_active_minutes, MAX(s.started_at) as last_session_at, \
+             COALESCE(SUM(s.message_count),0) as total_messages \
+             FROM pm_projects p LEFT JOIN pm_sessions s ON s.project_id = p.id {on_extra} \
+             GROUP BY p.id ORDER BY last_session_at DESC"
+        );
+        let Ok(mut stmt) = conn.prepare(&sql) else { return Vec::new() };
+        let params_ref: Vec<&dyn rusqlite::ToSql> = vals.iter().map(|b| b.as_ref()).collect();
+        let rows = stmt.query_map(rusqlite::params_from_iter(params_ref.iter().copied()), |r| {
+            Ok(ProjectSummary {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                path: r.get(2)?,
+                category: r.get(3)?,
+                sdk_installed: r.get(4)?,
+                runtimescope_project: r.get(5)?,
+                runtime_apps: r.get(6)?,
+                session_count: r.get(7)?,
+                total_cost: r.get(8)?,
+                total_active_minutes: r.get(9)?,
+                last_session_at: r.get(10)?,
+                total_messages: r.get(11)?,
+            })
+        });
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
     /// Active (non-revoked) API keys for a workspace. The secret is masked.
@@ -1520,7 +1660,63 @@ pub struct SessionStats {
     pub total_cost_microdollars: i64,
     pub total_input_tokens: i64,
     pub total_output_tokens: i64,
-    pub avg_active_minutes: f64,
+    /// Node names this `avgSessionMinutes` (NOT `avgActiveMinutes`).
+    pub avg_session_minutes: f64,
+    pub model_breakdown: Vec<ModelBreakdown>,
+}
+
+/// Per-model rollup inside `SessionStats` (ports Node's `modelBreakdown` rows).
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelBreakdown {
+    pub model: String,
+    pub sessions: i64,
+    pub cost: i64,
+}
+
+/// A raw project-summary row (Node `getProjectSummaries` serves the SQL row
+/// verbatim — hence **snake_case** keys, a raw `runtime_apps` JSON string, and an
+/// integer `sdk_installed`, unlike the camelCase `PmProject`). NULL columns are
+/// emitted as `null` (not omitted), matching better-sqlite3's row JSON.
+#[derive(Debug, Clone, Default, Serialize)]
+pub struct ProjectSummary {
+    pub id: String,
+    pub name: String,
+    pub path: Option<String>,
+    pub category: Option<String>,
+    pub sdk_installed: i64,
+    pub runtimescope_project: Option<String>,
+    pub runtime_apps: Option<String>,
+    pub session_count: i64,
+    pub total_cost: i64,
+    pub total_active_minutes: f64,
+    pub last_session_at: Option<i64>,
+    pub total_messages: i64,
+}
+
+/// The "non-empty session" predicate (optionally column-aliased), shared by
+/// `getSessionStats`/`getProjectSummaries`'s `hide_empty` filter.
+fn nonempty_session_clause(prefix: &str) -> String {
+    format!(
+        "({p}message_count > 0 OR {p}total_input_tokens > 0 OR {p}total_output_tokens > 0 OR {p}cost_microdollars > 0 OR {p}active_minutes > 0)",
+        p = prefix
+    )
+}
+
+/// `new Date(d).getTime()` — UTC midnight of a YYYY-MM-DD.
+fn date_start_ms(d: &str) -> Option<i64> {
+    chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+        .ok()
+        .and_then(|nd| nd.and_hms_opt(0, 0, 0))
+        .map(|ndt| ndt.and_utc().timestamp_millis())
+}
+
+/// `new Date(d + 'T23:59:59.999Z').getTime()` — end-of-day UTC.
+fn date_end_ms(d: &str) -> Option<i64> {
+    chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d")
+        .ok()
+        .and_then(|nd| nd.and_hms_milli_opt(23, 59, 59, 999))
+        .map(|ndt| ndt.and_utc().timestamp_millis())
 }
 
 const SESSION_COLS: &str = "id, project_id, jsonl_path, jsonl_size, first_prompt, summary, slug, model, \
@@ -1956,6 +2152,59 @@ mod tests {
 
         s.delete_note(&n2.id);
         assert_eq!(s.list_notes(Some("proj-n"), None).len(), 1);
+    }
+
+    #[test]
+    fn session_stats_filtered_and_project_summaries() {
+        let s = tmp_store();
+        s.upsert_project(&PmProject {
+            id: "proj-s".into(),
+            name: "Proj S".into(),
+            ..Default::default()
+        });
+        let mut a = sample_session("sa", "proj-s");
+        a.model = Some("opus".into());
+        a.cost_microdollars = 1_000_000;
+        a.active_minutes = 10.0;
+        a.message_count = 5;
+        a.total_input_tokens = 100;
+        a.total_output_tokens = 50;
+        s.upsert_session(&a);
+        let mut b = sample_session("sb", "proj-s");
+        b.model = Some("opus".into());
+        b.cost_microdollars = 3_000_000;
+        b.active_minutes = 30.0;
+        s.upsert_session(&b);
+        let mut c = sample_session("sc", "proj-s");
+        c.model = Some("sonnet".into());
+        c.cost_microdollars = 500_000;
+        c.active_minutes = 20.0;
+        s.upsert_session(&c);
+
+        let stats = s.session_stats_filtered(Some("proj-s"), None, None, false);
+        assert_eq!(stats.total_sessions, 3);
+        assert_eq!(stats.total_cost_microdollars, 4_500_000);
+        assert_eq!(stats.avg_session_minutes, 20.0); // (10+30+20)/3
+        // modelBreakdown: grouped, ordered by cost DESC → opus (4M) before sonnet (0.5M).
+        assert_eq!(stats.model_breakdown.len(), 2);
+        assert_eq!(stats.model_breakdown[0].model, "opus");
+        assert_eq!(stats.model_breakdown[0].sessions, 2);
+        assert_eq!(stats.model_breakdown[0].cost, 4_000_000);
+        assert_eq!(stats.model_breakdown[1].model, "sonnet");
+
+        // hide_empty drops the all-zero stub sessions (none here are empty).
+        assert_eq!(s.session_stats_filtered(None, None, None, true).total_sessions, 3);
+
+        // project summaries: one project, 3 sessions, raw snake_case row.
+        let sums = s.get_project_summaries(None, None, false);
+        assert_eq!(sums.len(), 1);
+        assert_eq!(sums[0].id, "proj-s");
+        assert_eq!(sums[0].session_count, 3);
+        assert_eq!(sums[0].total_cost, 4_500_000);
+        assert_eq!(sums[0].total_messages, 5);
+        let v = serde_json::to_value(&sums[0]).unwrap();
+        assert!(v.get("session_count").is_some(), "summaries are snake_case");
+        assert!(v.get("sessionCount").is_none());
     }
 
     #[test]

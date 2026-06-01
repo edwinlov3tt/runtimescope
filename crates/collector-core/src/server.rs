@@ -82,13 +82,18 @@ pub async fn serve(
         // pm/ project-manager surface (M5)
         .route("/api/pm/discover", post(pm_discover))
         .route("/api/pm/projects", get(pm_projects))
+        // static project sub-routes before the {id} capture (M5.5 Slice E)
+        .route("/api/pm/projects/summaries", get(pm_projects_summaries))
+        .route("/api/pm/projects/export-csv", get(pm_projects_export_csv))
         .route(
             "/api/pm/projects/{id}",
             get(pm_project_by_id).put(pm_update_project).delete(pm_delete_project),
         )
         .route("/api/pm/projects/{id}/workspace", put(pm_set_project_workspace))
         .route("/api/pm/sessions", get(pm_sessions))
+        .route("/api/pm/sessions/stats", get(pm_sessions_stats)) // before {id}
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
+        .route("/api/pm/sessions/{id}/refresh", post(pm_session_refresh))
         .route("/api/pm/workspaces", get(pm_workspaces).post(pm_create_workspace))
         .route(
             "/api/pm/workspaces/{id}",
@@ -1359,6 +1364,161 @@ async fn pm_rules_put(
         return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
     }
     Json(json!({ "ok": true })).into_response()
+}
+
+// ---- pm/ project + session ops (M5.5 Slice E) ----
+
+fn q_hide_empty(q: &HashMap<String, String>) -> bool {
+    matches!(q.get("hide_empty").map(String::as_str), Some("1") | Some("true"))
+}
+
+/// GET /api/pm/projects/summaries (?start_date=&end_date=&hide_empty=).
+async fn pm_projects_summaries(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let summaries = s.pm.get_project_summaries(
+        q.get("start_date").map(String::as_str),
+        q.get("end_date").map(String::as_str),
+        q_hide_empty(&q),
+    );
+    let count = summaries.len();
+    Json(json!({ "data": summaries, "count": count })).into_response()
+}
+
+/// GET /api/pm/sessions/stats (?project_id=&start_date=&end_date=&hide_empty=).
+async fn pm_sessions_stats(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let stats = s.pm.session_stats_filtered(
+        q.get("project_id").filter(|v| !v.is_empty()).map(String::as_str),
+        q.get("start_date").map(String::as_str),
+        q.get("end_date").map(String::as_str),
+        q_hide_empty(&q),
+    );
+    Json(serde_json::to_value(&stats).unwrap_or_else(|_| json!({}))).into_response()
+}
+
+/// CSV field escape — ports Node's `csvEscape` (quote+double when it contains `,`/`"`/newline).
+fn csv_escape(v: &str) -> String {
+    if v.contains(',') || v.contains('"') || v.contains('\n') {
+        format!("\"{}\"", v.replace('"', "\"\""))
+    } else {
+        v.to_string()
+    }
+}
+
+fn ymd(ms: i64) -> String {
+    chrono::DateTime::from_timestamp_millis(ms).map(|dt| dt.format("%Y-%m-%d").to_string()).unwrap_or_default()
+}
+
+/// GET /api/pm/projects/export-csv — the two-section (PROJECTS / SESSIONS) CSV
+/// export. Ports Node exactly (section markers, headers, csvEscape, rounding).
+async fn pm_projects_export_csv(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let start = q.get("start_date").map(String::as_str);
+    let end = q.get("end_date").map(String::as_str);
+    let hide_empty = q_hide_empty(&q);
+    let project_ids: Option<Vec<String>> = q
+        .get("project_ids")
+        .filter(|v| !v.is_empty())
+        .map(|v| v.split(',').filter(|s| !s.is_empty()).map(String::from).collect());
+
+    let mut summaries = s.pm.get_project_summaries(start, end, hide_empty);
+    if let Some(ids) = &project_ids {
+        summaries.retain(|p| ids.contains(&p.id));
+    }
+
+    let mut lines: Vec<String> = Vec::new();
+    lines.push("=== PROJECTS ===".into());
+    lines.push("Project,Category,Sessions,Messages,Cost ($),Active Time (min),Last Session".into());
+    for p in &summaries {
+        lines.push(
+            [
+                csv_escape(&p.name),
+                csv_escape(p.category.as_deref().unwrap_or("")),
+                p.session_count.to_string(),
+                p.total_messages.to_string(),
+                format!("{:.2}", p.total_cost as f64 / 1_000_000.0),
+                (p.total_active_minutes.round() as i64).to_string(),
+                p.last_session_at.map(ymd).unwrap_or_default(),
+            ]
+            .join(","),
+        );
+    }
+    lines.push(String::new());
+    lines.push("=== SESSIONS ===".into());
+    lines.push("Project,Session ID,Slug,Model,Date,Messages,Tokens In,Tokens Out,Cost ($),Active Time (min),Branch".into());
+
+    // Sessions for the (filtered) projects, newest-first across all of them.
+    let mut sessions: Vec<crate::pm_store::PmSession> = Vec::new();
+    for p in &summaries {
+        sessions.extend(s.pm.list_sessions_filtered(Some(&p.id), start, end, hide_empty));
+    }
+    sessions.sort_by_key(|s| std::cmp::Reverse(s.started_at));
+    for sess in &sessions {
+        let pname = summaries
+            .iter()
+            .find(|p| p.id == sess.project_id)
+            .map(|p| p.name.clone())
+            .unwrap_or_else(|| sess.project_id.clone());
+        lines.push(
+            [
+                csv_escape(&pname),
+                csv_escape(&sess.id),
+                csv_escape(sess.slug.as_deref().unwrap_or("")),
+                csv_escape(sess.model.as_deref().unwrap_or("")),
+                ymd(sess.started_at),
+                sess.message_count.to_string(),
+                sess.total_input_tokens.to_string(),
+                sess.total_output_tokens.to_string(),
+                format!("{:.2}", sess.cost_microdollars as f64 / 1_000_000.0),
+                (sess.active_minutes.round() as i64).to_string(),
+                csv_escape(sess.git_branch.as_deref().unwrap_or("")),
+            ]
+            .join(","),
+        );
+    }
+
+    let today = chrono::Utc::now().format("%Y-%m-%d");
+    csv_response(&format!("runtimescope-export-{today}.csv"), lines.join("\n"))
+}
+
+/// POST /api/pm/sessions/{id}/refresh — re-index the session's project, return the
+/// updated session. 404 when the session is unknown.
+async fn pm_session_refresh(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(session) = s.pm.get_session(&id) else {
+        return not_found_json("Session not found");
+    };
+    let pm = s.pm.clone();
+    let project_id = session.project_id.clone();
+    let claude_base = std::path::Path::new(&home_dir()).join(".claude");
+    let _ = tokio::task::spawn_blocking(move || {
+        crate::pm_discovery::reindex_project_sessions(&pm, &project_id, &claude_base);
+    })
+    .await;
+    match s.pm.get_session(&id) {
+        Some(updated) => Json(serde_json::to_value(&updated).unwrap_or_else(|_| json!({}))).into_response(),
+        None => not_found_json("Session not found"),
+    }
 }
 
 // ---- WebSocket ----

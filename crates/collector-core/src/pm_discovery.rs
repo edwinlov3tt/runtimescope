@@ -234,6 +234,17 @@ pub fn discover_claude_projects(claude_base: &Path, pm: &PmStore) -> DiscoveryRe
     res
 }
 
+/// Re-index a single project's sessions on demand — ports Node
+/// `ProjectDiscovery.indexProjectSessions(projectId)` (the `sessions/{id}/refresh`
+/// backend). A no-op when the project is unknown or has no `claudeProjectKey`
+/// (nothing to index), mirroring Node.
+pub fn reindex_project_sessions(pm: &PmStore, project_id: &str, claude_base: &Path) {
+    let Some(project) = pm.get_project(project_id) else { return };
+    let Some(key) = project.claude_project_key else { return };
+    let mut res = DiscoveryResult::default();
+    index_sessions(project_id, &key, claude_base, pm, &mut res);
+}
+
 fn process_claude_project(key: &str, claude_base: &Path, pm: &PmStore, res: &mut DiscoveryResult) {
     // The over-discovery fix: skip anything that isn't a resolvable real project.
     let Some(path) = resolve_real_project(key) else { return };

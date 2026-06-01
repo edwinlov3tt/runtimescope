@@ -87,4 +87,11 @@ describe('pm/ project + session ops HTTP routes (Node)', () => {
     expect(r.status).toBe(404);
     expect(await r.json()).toEqual({ error: 'Session not found' });
   });
+
+  it('GET /api/pm/projects/{id}/scripts → 404 for an unknown project (M5.5 Slice G)', async () => {
+    const base = await up();
+    const r = await fetch(`${base}/api/pm/projects/proj-x/scripts`);
+    expect(r.status).toBe(404);
+    expect(await r.json()).toEqual({ error: 'Project not found' });
+  });
 });

@@ -97,6 +97,8 @@ pub async fn serve(
         .route("/api/pm/projects/{id}/git/stage", post(pm_git_stage))
         .route("/api/pm/projects/{id}/git/unstage", post(pm_git_unstage))
         .route("/api/pm/projects/{id}/git/commit", post(pm_git_commit))
+        // project scripts (M5.5 Slice G, step 1)
+        .route("/api/pm/projects/{id}/scripts", get(pm_project_scripts))
         .route("/api/pm/sessions", get(pm_sessions))
         .route("/api/pm/sessions/stats", get(pm_sessions_stats)) // before {id}
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
@@ -1539,6 +1541,46 @@ async fn pm_session_refresh(State(s): State<AppState>, headers: HeaderMap, Path(
     }
 }
 
+// ---- pm/ project scripts (M5.5 Slice G, step 1 — the safe package.json read) ----
+
+/// `{ scripts, recommended }` from `<path>/package.json` — ports Node's `/scripts`
+/// handler: `scripts = pkg.scripts ?? {}`; `recommended` = the first of
+/// `dev`/`start`/`serve` present, else null. Missing/unparsable file → empty.
+fn read_project_scripts(path: &str) -> Value {
+    let empty = json!({ "scripts": {}, "recommended": Value::Null });
+    let Ok(content) = std::fs::read_to_string(std::path::Path::new(path).join("package.json")) else {
+        return empty;
+    };
+    let Ok(pkg) = serde_json::from_str::<Value>(&content) else {
+        return empty;
+    };
+    let scripts = pkg.get("scripts").filter(|v| v.is_object()).cloned().unwrap_or_else(|| json!({}));
+    let recommended = ["dev", "start", "serve"]
+        .iter()
+        .find(|s| scripts.get(**s).is_some())
+        .map(|s| json!(s))
+        .unwrap_or(Value::Null);
+    json!({ "scripts": scripts, "recommended": recommended })
+}
+
+/// GET /api/pm/projects/{id}/scripts — 404 no-project; `{scripts:{},recommended:null}`
+/// when the project has no path; else the package.json scripts.
+async fn pm_project_scripts(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return not_found_json("Project not found");
+    };
+    let Some(path) = project.path else {
+        return Json(json!({ "data": { "scripts": {}, "recommended": Value::Null } })).into_response();
+    };
+    let data = tokio::task::spawn_blocking(move || read_project_scripts(&path))
+        .await
+        .unwrap_or_else(|_| json!({ "scripts": {}, "recommended": Value::Null }));
+    Json(json!({ "data": data })).into_response()
+}
+
 // ---- pm/ git integration (M5.5 Slice F) ----
 //
 // All git invocations go through `run_git` → `std::process::Command` with an
@@ -2101,5 +2143,57 @@ mod slice_f_git_tests {
     #[test]
     fn is_git_repo_false_for_non_repo() {
         assert!(!is_git_repo("/tmp"));
+    }
+}
+
+#[cfg(test)]
+mod slice_g_scripts_tests {
+    use super::read_project_scripts;
+    use std::io::Write;
+
+    fn tmp_with_pkg(json: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "rs-scripts-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut f = std::fs::File::create(dir.join("package.json")).unwrap();
+        f.write_all(json.as_bytes()).unwrap();
+        dir
+    }
+
+    #[test]
+    fn reads_scripts_and_picks_recommended_dev_first() {
+        let dir = tmp_with_pkg(r#"{"scripts":{"build":"x","start":"y","dev":"z"}}"#);
+        let v = read_project_scripts(dir.to_str().unwrap());
+        assert_eq!(v["scripts"]["dev"], "z");
+        assert_eq!(v["recommended"], "dev", "dev wins over start (precedence order)");
+    }
+
+    #[test]
+    fn recommended_falls_through_to_start_then_serve() {
+        let dir = tmp_with_pkg(r#"{"scripts":{"build":"x","serve":"s","start":"y"}}"#);
+        let v = read_project_scripts(dir.to_str().unwrap());
+        assert_eq!(v["recommended"], "start", "start before serve");
+    }
+
+    #[test]
+    fn no_recommended_when_none_present() {
+        let dir = tmp_with_pkg(r#"{"scripts":{"build":"x","lint":"y"}}"#);
+        let v = read_project_scripts(dir.to_str().unwrap());
+        assert!(v["recommended"].is_null());
+    }
+
+    #[test]
+    fn missing_or_malformed_package_json_is_empty() {
+        assert_eq!(read_project_scripts("/nonexistent-xyz"), serde_json::json!({ "scripts": {}, "recommended": null }));
+        let dir = tmp_with_pkg("not json{{");
+        assert_eq!(read_project_scripts(dir.to_str().unwrap()), serde_json::json!({ "scripts": {}, "recommended": null }));
+        // package.json with no scripts key → empty scripts, null recommended.
+        let dir2 = tmp_with_pkg(r#"{"name":"x"}"#);
+        let v = read_project_scripts(dir2.to_str().unwrap());
+        assert_eq!(v, serde_json::json!({ "scripts": {}, "recommended": null }));
     }
 }

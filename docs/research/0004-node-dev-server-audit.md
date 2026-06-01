@@ -113,12 +113,25 @@
    integration test against a real spawned process — *not* an empty-state shape check, since
    "no gaps" means proving start/stop/detect actually work.
 
-## Open questions for the dedicated pass
+## Decisions (user, 2026-06-01)
 
-- **Stop semantics vs Node parity:** the correct group-kill **diverges** from Node's
-  orphaning behavior. Confirm we treat this as an intended improvement (Rust-test-gated), since
-  a conformance test that asserted Node's "killed:true but still running" would be asserting a bug.
-- **SSH/forward scope for v1:** detect-and-warn only, or actually resolve forward tables
-  (`docker port`, parse `ssh -L`)? The latter is real work.
-- **Port→monitoring wiring:** how far do we go — just persist+surface the port, or actively
-  hint the SDK/scanner to attach to it?
+- **Stop semantics:** **fix the orphan bug** (own process-group + group-kill). This is an
+  intended divergence from Node's "killed:true but still running" behavior — Rust-test-gated,
+  NOT conformance-gated against the Node bug.
+- **SSH/forward scope (v1): detect-and-warn.** Detect devcontainer/remote/Codespaces
+  (`.devcontainer/`, `$SSH_CONNECTION`, `$CODESPACES`, `$REMOTE_CONTAINERS`), read the child
+  tree's actual bound ports, and **mark them container-local / not-host-mapped**. Do NOT resolve
+  forward tables (`docker port`/`ssh -L`/`forwardPorts`) yet — that's a flagged v2 follow-up.
+- **Port→monitoring wiring: active auto-attach.** Beyond persisting + surfacing the detected
+  port(s), actively hint the SDK/scanner to attach (e.g. surface/trigger the inject-snippet or
+  a scan against the detected port) so a started dev server is wired into observability without
+  a manual step. (Design the hint so a wrong/duplicate detection is a no-op, not a misfire.)
+
+### Build order for the dedicated pass (Slice G)
+1. `scripts` route (trivial package.json read) — separable, ships first.
+2. Dev-server **core**: argv-no-shell + own process-group spawn; group-kill stop; `GET`; real
+   listening-socket detection over the child *tree* (lsof/`/proc/net/tcp`); deterministic
+   conformance surface (404/400/409/stop-when-stopped) + a real spawned-listener lifecycle
+   integration test (spawn → detect real port → group-kill → port freed).
+3. **Persistence + re-attach** (pid/pgid/ports) so restart doesn't orphan + `GET` stays honest.
+4. **Devcontainer detect-and-warn** + **active auto-attach** of the detected port.

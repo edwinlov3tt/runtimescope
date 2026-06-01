@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS pm_api_keys (
   revoked_at INTEGER,
   key_prefix TEXT,
   key_last4 TEXT,
-  last_used_at INTEGER
+  last_used_at INTEGER,
+  FOREIGN KEY (workspace_id) REFERENCES pm_workspaces(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS pm_projects (
   id TEXT PRIMARY KEY,
@@ -86,7 +87,8 @@ CREATE TABLE IF NOT EXISTS pm_sessions (
   pre_compaction_tokens INTEGER,
   permission_mode TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES pm_projects(id)
 );
 CREATE INDEX IF NOT EXISTS idx_pm_sessions_project ON pm_sessions(project_id);
 CREATE TABLE IF NOT EXISTS pm_capex_entries (
@@ -105,7 +107,9 @@ CREATE TABLE IF NOT EXISTS pm_capex_entries (
   notes TEXT,
   period TEXT NOT NULL,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES pm_projects(id),
+  FOREIGN KEY (session_id) REFERENCES pm_sessions(id)
 );
 CREATE INDEX IF NOT EXISTS idx_pm_capex_project ON pm_capex_entries(project_id);
 CREATE INDEX IF NOT EXISTS idx_pm_capex_period ON pm_capex_entries(period);
@@ -119,7 +123,9 @@ CREATE TABLE IF NOT EXISTS pm_notes (
   pinned INTEGER NOT NULL DEFAULT 0,
   tags TEXT,
   created_at INTEGER NOT NULL,
-  updated_at INTEGER NOT NULL
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES pm_projects(id),
+  FOREIGN KEY (session_id) REFERENCES pm_sessions(id)
 );
 CREATE TABLE IF NOT EXISTS pm_tasks (
   id TEXT PRIMARY KEY,
@@ -136,7 +142,8 @@ CREATE TABLE IF NOT EXISTS pm_tasks (
   due_date TEXT,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
-  completed_at INTEGER
+  completed_at INTEGER,
+  FOREIGN KEY (project_id) REFERENCES pm_projects(id)
 );
 CREATE TABLE IF NOT EXISTS pm_deleted_projects (
   path TEXT PRIMARY KEY,
@@ -428,6 +435,10 @@ impl PmStore {
             std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
+        // Enforce the declared FK constraints — parity with Node, where
+        // better-sqlite3 defaults `foreign_keys = ON` (rusqlite defaults OFF).
+        // Set before the schema runs and outside any transaction.
+        conn.pragma_update(None, "foreign_keys", true).map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
         let store = PmStore { conn: Arc::new(Mutex::new(conn)) };
         store.ensure_default_workspace()?;
@@ -1224,7 +1235,7 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
         sort_order: Option<f64>,
         assigned_to: Option<&str>,
         due_date: Option<&str>,
-    ) -> PmTask {
+    ) -> Result<PmTask, String> {
         let id = self.new_uuid_v4();
         let now = now_ms();
         let sort_order = sort_order.unwrap_or(now as f64);
@@ -1246,7 +1257,7 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
             completed_at: None,
         };
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO pm_tasks (id, project_id, title, description, status, priority, labels, \
              source, source_ref, sort_order, assigned_to, due_date, created_at, updated_at, completed_at) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
@@ -1255,8 +1266,9 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
                 task.labels, task.source, task.source_ref, task.sort_order, task.assigned_to,
                 task.due_date, task.created_at, task.updated_at, task.completed_at
             ],
-        );
-        task
+        )
+        .map_err(|e| e.to_string())?; // e.g. a dangling project_id → FK violation
+        Ok(task)
     }
 
     /// Partial-update a task — ports Node `updateTask`. Only provided fields are
@@ -1352,7 +1364,7 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
         content: &str,
         pinned: bool,
         tags_json: &str,
-    ) -> PmNote {
+    ) -> Result<PmNote, String> {
         let id = self.new_uuid_v4();
         let now = now_ms();
         let note = PmNote {
@@ -1367,15 +1379,16 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
             updated_at: now,
         };
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO pm_notes (id, project_id, session_id, title, content, pinned, tags, created_at, updated_at) \
              VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
             params![
                 note.id, note.project_id, note.session_id, note.title, note.content,
                 note.pinned as i64, note.tags, note.created_at, note.updated_at
             ],
-        );
-        note
+        )
+        .map_err(|e| e.to_string())?; // dangling project_id/session_id → FK violation
+        Ok(note)
     }
 
     /// Partial-update a note — ports Node `updateNote` (title/content/pinned/tags).
@@ -1935,10 +1948,18 @@ mod tests {
         }
     }
 
+    /// Seed a minimal parent project so FK-constrained child inserts (sessions,
+    /// capex, tasks, notes) are valid (pm.db enforces foreign_keys).
+    fn seed_project(s: &PmStore, id: &str) {
+        s.upsert_project(&PmProject { id: id.into(), name: id.into(), ..Default::default() });
+    }
+
     #[test]
     fn upsert_capex_stub_defaults_match_node() {
         let s = tmp_store();
         let sess = sample_session("sess-abc", "proj-1");
+        seed_project(&s, "proj-1");
+        s.upsert_session(&sess);
         s.upsert_capex_stub(&sess);
 
         let entries = s.list_capex_entries("proj-1");
@@ -1985,6 +2006,8 @@ mod tests {
         // the recomputed metrics (cost/minutes/etc.) still update.
         let s = tmp_store();
         let sess = sample_session("sess-c", "proj-c");
+        seed_project(&s, "proj-c");
+        s.upsert_session(&sess);
         s.upsert_capex_stub(&sess);
 
         // User confirms the entry (the write path sets confirmed=true + metadata).
@@ -2012,13 +2035,16 @@ mod tests {
     #[test]
     fn capex_filter_update_confirm_summary_roundtrip() {
         let s = tmp_store();
+        seed_project(&s, "proj-q");
         // Two entries in the same project; different sessions/periods.
         let mut a = sample_session("sa", "proj-q");
         a.cost_microdollars = 1_000_000;
+        s.upsert_session(&a);
         s.upsert_capex_stub(&a);
         let mut b = sample_session("sb", "proj-q");
         b.cost_microdollars = 2_000_000;
         b.started_at = a.started_at + 86_400_000; // next day → distinct period
+        s.upsert_session(&b);
         s.upsert_capex_stub(&b);
 
         // confirmed filter: none confirmed yet.
@@ -2079,11 +2105,12 @@ mod tests {
     #[test]
     fn task_create_list_update_reorder_delete() {
         let s = tmp_store();
+        seed_project(&s, "proj-t");
         // create with defaults + labels.
         let t = s.create_task(
             Some("proj-t"), "Write tests", Some("desc"), "todo", "high",
             r#"["a","b"]"#, "manual", None, Some(5.0), None, None,
-        );
+        ).unwrap();
         assert_eq!(t.title, "Write tests");
         assert_eq!(t.status, "todo");
         assert_eq!(t.priority, "high");
@@ -2121,9 +2148,11 @@ mod tests {
     #[test]
     fn note_create_list_update_delete_with_pinned_ordering() {
         let s = tmp_store();
+        seed_project(&s, "proj-n");
+        s.upsert_session(&sample_session("sess-1", "proj-n")); // n2 references it (FK)
         // two notes; second pinned → must sort first (pinned DESC, updated_at DESC).
-        let n1 = s.create_note(Some("proj-n"), None, "First", "body one", false, r#"["x"]"#);
-        let n2 = s.create_note(Some("proj-n"), Some("sess-1"), "Second", "body two", true, "[]");
+        let n1 = s.create_note(Some("proj-n"), None, "First", "body one", false, r#"["x"]"#).unwrap();
+        let n2 = s.create_note(Some("proj-n"), Some("sess-1"), "Second", "body two", true, "[]").unwrap();
 
         let all = s.list_notes(Some("proj-n"), None);
         assert_eq!(all.len(), 2);
@@ -2205,6 +2234,33 @@ mod tests {
         let v = serde_json::to_value(&sums[0]).unwrap();
         assert!(v.get("session_count").is_some(), "summaries are snake_case");
         assert!(v.get("sessionCount").is_none());
+    }
+
+    #[test]
+    fn foreign_keys_enforced_parity_with_node() {
+        let s = tmp_store();
+        // Discovery's insert order is FK-safe: project → session → capex all succeed.
+        seed_project(&s, "fk-proj");
+        let sess = sample_session("fk-sess", "fk-proj");
+        s.upsert_session(&sess);
+        s.upsert_capex_stub(&sess);
+        assert_eq!(s.list_capex_entries("fk-proj").len(), 1);
+
+        // A note/task with a VALID (or null) project_id is accepted...
+        assert!(s.create_note(Some("fk-proj"), None, "ok", "", false, "[]").is_ok());
+        assert!(s.create_note(None, None, "ok-null", "", false, "[]").is_ok());
+        assert!(s.create_task(None, "ok", None, "todo", "medium", "[]", "manual", None, None, None, None).is_ok());
+
+        // ...but a DANGLING project_id trips the FK (Node 400s the same case — its
+        // better-sqlite3 connection defaults foreign_keys=ON; ours does too now).
+        let bad_note = s.create_note(Some("ghost-proj"), None, "x", "", false, "[]");
+        assert!(bad_note.is_err(), "FK must reject a note with a non-existent project_id");
+        assert!(bad_note.unwrap_err().contains("FOREIGN KEY"), "rusqlite surfaces the SQLite FK message");
+        let bad_task = s.create_task(Some("ghost-proj"), "x", None, "todo", "medium", "[]", "manual", None, None, None, None);
+        assert!(bad_task.is_err(), "FK must reject a task with a non-existent project_id");
+
+        // A note with a dangling session_id is rejected too.
+        assert!(s.create_note(Some("fk-proj"), Some("ghost-sess"), "x", "", false, "[]").is_err());
     }
 
     #[test]
@@ -2314,7 +2370,8 @@ mod tests {
         proj.created_at = now_ms();
         proj.updated_at = now_ms();
         s.upsert_project(&proj);
-        // Seed a capex stub so cascade-delete is observable.
+        // Seed a session + capex stub so cascade-delete is observable.
+        s.upsert_session(&sample_session("s1", "p1"));
         s.upsert_capex_stub(&sample_session("s1", "p1"));
         assert_eq!(s.list_capex_entries("p1").len(), 1);
 

@@ -181,7 +181,11 @@ re-verified, surfaced these — all closed:
   behavioral divergence, tracked in roadmap M5.5 for a dedicated pass (enable the pragma +
   add constraints + propagate create errors, after verifying discovery's insert order is
   parent-first). Lesson: **verify a library's pragma defaults before declaring a DDL
-  difference cosmetic** — "the code never sets it" ≠ "it's off."
+  difference cosmetic** — "the code never sets it" ≠ "it's off." **RESOLVED (M5.5 FK pass):**
+  `PmStore::open` now sets `PRAGMA foreign_keys = ON` + declares the FKs; `create_task`/
+  `create_note` return `Result` → routes 400 on a dangling ref (identical
+  `"FOREIGN KEY constraint failed"` message as Node). Discovery is FK-safe (parent-first
+  inserts) and `delete_project` deletes children first — both verified by a unit test.
 
 ## Where things live
 

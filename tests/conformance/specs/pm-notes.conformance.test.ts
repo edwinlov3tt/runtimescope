@@ -135,6 +135,19 @@ describe('pm/ notes HTTP routes (Node)', () => {
     expect(got.title).toBe('Edit me'); // untouched
   });
 
+  it('POST with a dangling projectId → 400 (FK enforced in both runtimes)', async () => {
+    const base = await up();
+    // Fresh db has no projects, so any projectId is a dangling FK ref. Node
+    // (better-sqlite3 foreign_keys=ON) and Rust (pragma on + FK constraints) both
+    // reject the insert → the route's catch returns 400 with the SQLite message.
+    const r = await fetch(`${base}/api/pm/notes`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ title: 'orphan', projectId: 'does-not-exist' }),
+    });
+    expect(r.status).toBe(400);
+    expect((await r.json() as { error: string }).error).toMatch(/FOREIGN KEY constraint failed/);
+  });
+
   it('DELETE removes the note', async () => {
     const base = await up();
     const n = await createNote(base, { title: 'Delete me' });

@@ -986,7 +986,7 @@ async fn pm_tasks_create(State(s): State<AppState>, headers: HeaderMap, body: St
     let Some(title) = v.get("title").and_then(Value::as_str) else {
         return bad_request("title required");
     };
-    let task = s.pm.create_task(
+    match s.pm.create_task(
         v.get("projectId").and_then(Value::as_str),
         title,
         v.get("description").and_then(Value::as_str),
@@ -998,8 +998,11 @@ async fn pm_tasks_create(State(s): State<AppState>, headers: HeaderMap, body: St
         v.get("sortOrder").and_then(Value::as_f64),
         v.get("assignedTo").and_then(Value::as_str),
         v.get("dueDate").and_then(Value::as_str),
-    );
-    (StatusCode::CREATED, Json(serde_json::to_value(&task).unwrap_or_else(|_| json!({})))).into_response()
+    ) {
+        // A dangling projectId trips the FK → 400 (Node's createTask throws → 400).
+        Ok(task) => (StatusCode::CREATED, Json(serde_json::to_value(&task).unwrap_or_else(|_| json!({})))).into_response(),
+        Err(e) => bad_request(&e),
+    }
 }
 
 /// PUT /api/pm/tasks/{id} — partial update; {ok:true}, 400 on missing body.
@@ -1103,15 +1106,17 @@ async fn pm_notes_create(State(s): State<AppState>, headers: HeaderMap, body: St
     let Ok(v) = serde_json::from_str::<Value>(&body) else {
         return bad_request("Invalid JSON");
     };
-    let note = s.pm.create_note(
+    match s.pm.create_note(
         v.get("projectId").and_then(Value::as_str),
         v.get("sessionId").and_then(Value::as_str),
         v.get("title").and_then(Value::as_str).unwrap_or("Untitled"),
         v.get("content").and_then(Value::as_str).unwrap_or(""),
         v.get("pinned").and_then(Value::as_bool).unwrap_or(false),
         &tags_json(&v),
-    );
-    (StatusCode::CREATED, Json(serde_json::to_value(&note).unwrap_or_else(|_| json!({})))).into_response()
+    ) {
+        Ok(note) => (StatusCode::CREATED, Json(serde_json::to_value(&note).unwrap_or_else(|_| json!({})))).into_response(),
+        Err(e) => bad_request(&e),
+    }
 }
 
 /// PUT /api/pm/notes/{id} — partial update; {ok:true}, 400 on missing body.

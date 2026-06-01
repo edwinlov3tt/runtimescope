@@ -31,7 +31,14 @@ fn now_ms() -> i64 {
 }
 
 /// JS `Math.round`: half toward +∞ (NOT banker's rounding, NOT half-away-from-zero).
-fn js_round(x: f64) -> i64 {
+/// Guards non-finite input → 0: a malformed JSONL (`costUSD: 1e308`, huge tokens)
+/// can overflow the cost math to ±inf/NaN. `f64 as i64` is *saturating* in modern
+/// Rust (inf→i64::MAX, not UB), but that's still a garbage cost — return sane 0.
+/// `pub` so pm_store's adjusted-cost recompute rounds identically (no divergence).
+pub fn js_round(x: f64) -> i64 {
+    if !x.is_finite() {
+        return 0;
+    }
     (x + 0.5).floor() as i64
 }
 
@@ -141,7 +148,7 @@ fn js_truthy(v: &Value) -> bool {
 /// else 0.
 fn parse_timestamp(v: Option<&Value>) -> i64 {
     match v {
-        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().map(|f| f as i64)).unwrap_or(0),
+        Some(Value::Number(n)) => n.as_i64().or_else(|| n.as_f64().filter(|f| f.is_finite()).map(|f| f as i64)).unwrap_or(0),
         Some(Value::String(s)) => chrono::DateTime::parse_from_rfc3339(s)
             .map(|dt| dt.timestamp_millis())
             .unwrap_or(0),
@@ -281,7 +288,9 @@ pub fn parse_session_jsonl(path: &Path) -> ParsedSession {
                 }
                 // usage: msg.usage ?? obj.usage.
                 if let Some(usage) = nested_or_top(msg, &obj, "usage").filter(|v| v.is_object()) {
-                    let num = |k: &str| usage.get(k).and_then(Value::as_i64).unwrap_or(0);
+                    // Clamp negatives to 0 — a malformed JSONL with negative token
+                    // counts shouldn't corrupt the running totals (cost/sums go wrong).
+                    let num = |k: &str| usage.get(k).and_then(Value::as_i64).unwrap_or(0).max(0);
                     let input = num("input_tokens");
                     let output = num("output_tokens");
                     let cache_creation = num("cache_creation_input_tokens");
@@ -504,9 +513,7 @@ mod tests {
         assert_eq!(r2.cost_microdollars, 2273);
         assert_eq!(r2.model.as_deref(), Some("claude-opus-4-6"));
         // msg precedence over top + model LAST seen
-        let r3 = parse(concat!(
-            "{\"type\":\"assistant\",\"timestamp\":\"2025-01-01T00:00:00.000Z\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":999,\"output_tokens\":999},\"message\":{\"model\":\"claude-sonnet-4-5\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}"
-        ));
+        let r3 = parse("{\"type\":\"assistant\",\"timestamp\":\"2025-01-01T00:00:00.000Z\",\"model\":\"claude-opus-4-6\",\"usage\":{\"input_tokens\":999,\"output_tokens\":999},\"message\":{\"model\":\"claude-sonnet-4-5\",\"usage\":{\"input_tokens\":100,\"output_tokens\":50}}}");
         assert_eq!(r3.total_input_tokens, 100);
         assert_eq!(r3.cost_microdollars, 1050);
         assert_eq!(r3.model.as_deref(), Some("claude-sonnet-4-5"));

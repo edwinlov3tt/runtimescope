@@ -126,6 +126,34 @@ pub fn group_alive(pgid: i32) -> bool {
     pgid > 1 && unsafe { libc::kill(-pgid, 0) } == 0
 }
 
+/// System boot time in epoch seconds, used to detect a reboot (which recycles
+/// pgids → a persisted dev-server pgid could then name an unrelated process group;
+/// re-attach must only trust pgids from the current boot). `None` if undetectable.
+#[cfg(target_os = "linux")]
+pub fn boot_time_secs() -> Option<i64> {
+    std::fs::read_to_string("/proc/stat")
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime ")?.trim().parse::<i64>().ok())
+}
+#[cfg(target_os = "macos")]
+pub fn boot_time_secs() -> Option<i64> {
+    // `sysctl -n kern.boottime` → "{ sec = 1700000000, usec = 0 } ..."
+    let out = std::process::Command::new("sysctl").args(["-n", "kern.boottime"]).output().ok()?;
+    let s = String::from_utf8_lossy(&out.stdout);
+    s.split("sec =")
+        .nth(1)?
+        .trim()
+        .split([',', ' '])
+        .next()?
+        .parse::<i64>()
+        .ok()
+}
+#[cfg(not(any(target_os = "linux", target_os = "macos")))]
+pub fn boot_time_secs() -> Option<i64> {
+    None
+}
+
 #[cfg(not(unix))]
 pub fn group_alive(_pgid: i32) -> bool {
     false

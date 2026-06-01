@@ -166,6 +166,7 @@ CREATE TABLE IF NOT EXISTS pm_dev_servers (
   status TEXT NOT NULL DEFAULT 'starting',
   ports TEXT,
   container_local INTEGER NOT NULL DEFAULT 0,
+  boot_time INTEGER NOT NULL DEFAULT 0,
   updated_at INTEGER NOT NULL
 );
 ";
@@ -255,6 +256,10 @@ pub struct DevServerRecord {
     /// JSON array string of bound ports (e.g. `"[3000,5173]"`), or `None`.
     pub ports: Option<String>,
     pub container_local: bool,
+    /// System boot time (epoch secs) when spawned — re-attach only trusts a pgid
+    /// from the CURRENT boot (a reboot recycles pgids → a stored pgid could name
+    /// an unrelated process group). 0 = unknown (legacy row) → not re-attached.
+    pub boot_time: i64,
 }
 
 impl DevServerRecord {
@@ -484,6 +489,9 @@ impl PmStore {
         // Set before the schema runs and outside any transaction.
         conn.pragma_update(None, "foreign_keys", true).map_err(|e| e.to_string())?;
         conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+        // Migrate a pre-existing pm_dev_servers (created before boot_time was added)
+        // — CREATE IF NOT EXISTS won't add the column. Ignore "duplicate column".
+        let _ = conn.execute("ALTER TABLE pm_dev_servers ADD COLUMN boot_time INTEGER NOT NULL DEFAULT 0", []);
         let store = PmStore { conn: Arc::new(Mutex::new(conn)) };
         store.ensure_default_workspace()?;
         Ok(store)
@@ -948,16 +956,16 @@ impl PmStore {
         let conn = self.conn.lock().unwrap();
         let _ = conn.execute(
             "INSERT INTO pm_dev_servers
-               (project_id, pid, pgid, command, cwd, started_at, status, ports, container_local, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+               (project_id, pid, pgid, command, cwd, started_at, status, ports, container_local, boot_time, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
              ON CONFLICT(project_id) DO UPDATE SET
                pid = excluded.pid, pgid = excluded.pgid, command = excluded.command,
                cwd = excluded.cwd, started_at = excluded.started_at, status = excluded.status,
                ports = excluded.ports, container_local = excluded.container_local,
-               updated_at = excluded.updated_at",
+               boot_time = excluded.boot_time, updated_at = excluded.updated_at",
             params![
                 r.project_id, r.pid, r.pgid, r.command, r.cwd, r.started_at,
-                r.status, r.ports, r.container_local as i64, now_ms()
+                r.status, r.ports, r.container_local as i64, r.boot_time, now_ms()
             ],
         );
     }
@@ -974,7 +982,7 @@ impl PmStore {
     pub fn dev_server_get(&self, project_id: &str) -> Option<DevServerRecord> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
-            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local
+            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local, boot_time
              FROM pm_dev_servers WHERE project_id = ?1",
             params![project_id],
             map_dev_server,
@@ -993,7 +1001,7 @@ impl PmStore {
     pub fn dev_server_list(&self) -> Vec<DevServerRecord> {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare(
-            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local
+            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local, boot_time
              FROM pm_dev_servers",
         ) {
             Ok(s) => s,
@@ -1131,9 +1139,10 @@ impl PmStore {
             sets.push("work_type = ?");
             vals.push(w);
         }
-        // js_round half-up to match Node's Math.round on the recompute.
+        // Reuse the parser's js_round (half-up + non-finite guard) so the recompute
+        // rounds identically and can't produce a garbage cost from inf/NaN inputs.
         let adjusted = match (adjustment_factor, cost_microdollars) {
-            (Some(f), Some(c)) => Some(((c as f64) * f + 0.5).floor() as i64),
+            (Some(f), Some(c)) => Some(crate::pm_session_parser::js_round((c as f64) * f)),
             _ => None,
         };
         if let Some(f) = adjustment_factor.as_ref() {
@@ -1275,25 +1284,27 @@ Adjustment Factor,Adjusted Cost (USD),Confirmed,Confirmed By,Notes";
                 .and_then(|s| chrono::DateTime::from_timestamp_millis(s.started_at))
                 .map(|dt| dt.format("%Y-%m-%d").to_string())
                 .unwrap_or_default();
-            let notes = e.notes.clone().unwrap_or_default().replace('"', "\"\"");
-            let confirmed_by = e.confirmed_by.clone().unwrap_or_default();
+            // RFC-4180 escape EVERY quoted string field (not just notes — Node's
+            // bug): a `"`/`,`/newline in slug/model/work_type/etc would otherwise
+            // break out of the quoted cell (CSV injection/corruption).
+            let esc = |s: &str| s.replace('"', "\"\"");
             let row = format!(
                 "\n\"{}\",\"{}\",\"{}\",\"{}\",\"{}\",\"{:.2}\",\"{:.2}\",\"{:.4}\",\"{}\",\"{}\",\"{:.2}\",\"{:.4}\",\"{}\",\"{}\",\"{}\"",
-                e.period,
-                e.session_id,
-                slug,
-                date,
-                model,
+                esc(&e.period),
+                esc(&e.session_id),
+                esc(&slug),
+                esc(&date),
+                esc(&model),
                 e.active_minutes,
                 e.active_minutes / 60.0,
                 e.cost_microdollars as f64 / 1_000_000.0,
-                e.classification,
-                e.work_type.clone().unwrap_or_default(),
+                esc(&e.classification),
+                esc(&e.work_type.clone().unwrap_or_default()),
                 e.adjustment_factor,
                 e.adjusted_cost_microdollars as f64 / 1_000_000.0,
                 if e.confirmed { "Yes" } else { "No" },
-                confirmed_by,
-                notes,
+                esc(&e.confirmed_by.clone().unwrap_or_default()),
+                esc(&e.notes.clone().unwrap_or_default()),
             );
             out.push_str(&row);
         }
@@ -1910,6 +1921,7 @@ fn map_dev_server(r: &rusqlite::Row) -> rusqlite::Result<DevServerRecord> {
         status: r.get::<_, Option<String>>(6)?.unwrap_or_else(|| "starting".into()),
         ports: r.get(7)?,
         container_local: r.get::<_, i64>(8)? == 1,
+        boot_time: r.get::<_, i64>(9)?,
     })
 }
 

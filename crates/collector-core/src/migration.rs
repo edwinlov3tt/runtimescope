@@ -26,25 +26,28 @@ const LEGACY_FILES: &[&str] = &[
 /// on un-migrated, incompatible Node data.
 pub fn first_run_guard(data_dir: &Path) -> Result<(), String> {
     let marker = data_dir.join(MARKER);
-    if marker.exists() {
-        return Ok(()); // already handled on a prior run
+    if marker_is_complete(&marker) {
+        return Ok(()); // a prior run finished the cutover
     }
     let collector_db = data_dir.join("collector.db");
     if !collector_db.exists() {
-        claim_marker(data_dir); // fresh install — nothing to migrate
+        finalize_marker(data_dir); // fresh install — nothing to migrate
         return Ok(());
     }
     if !is_node_era(&collector_db) {
-        // Already a Rust-format store (e.g. created by a pre-marker Rust build) —
-        // adopt it silently; do NOT back up live data.
-        claim_marker(data_dir);
+        // Already a Rust-format store (e.g. a pre-marker Rust build) — adopt it
+        // silently; do NOT back up live data.
+        finalize_marker(data_dir);
         return Ok(());
     }
 
-    // Genuine Node-era data. Atomically claim the migration so two binaries
-    // starting concurrently don't both back up (→ split state). Loser skips.
+    // Genuine Node-era data. Atomically claim the migration (create_new, marked
+    // "in-progress") so two binaries starting concurrently don't both back up.
     if !claim_marker(data_dir) {
-        return Ok(()); // another process is performing the cutover
+        // We lost the claim — another process is mid-cutover (or a prior one
+        // crashed mid-cutover). BLOCK until it completes; do NOT optimistically
+        // open un-backed-up legacy data (the round-1 gap both reviewers flagged).
+        return wait_for_migration(&marker);
     }
 
     if std::env::var("RUNTIMESCOPE_PRESERVE_LEGACY_DATA").as_deref() == Ok("1") {
@@ -54,6 +57,7 @@ pub fn first_run_guard(data_dir: &Path) -> Result<(), String> {
              so this may misbehave; unset the variable to back the old data up and start fresh.",
             data_dir.display()
         );
+        finalize_marker(data_dir);
         return Ok(());
     }
 
@@ -65,11 +69,12 @@ pub fn first_run_guard(data_dir: &Path) -> Result<(), String> {
                  old files in place instead.)",
                 dest.display()
             );
+            finalize_marker(data_dir); // flip "in-progress" → "complete"
             Ok(())
         }
         Err(e) => {
-            // Backing up failed → do NOT run on a half-migrated / incompatible
-            // store. Clear the marker so a fixed retry re-runs the cutover.
+            // Backup failed → REMOVE the marker so a fixed retry re-runs, and a
+            // waiting loser sees the marker vanish and aborts too (no split-brain).
             let _ = std::fs::remove_file(&marker);
             Err(format!(
                 "legacy Node-era data backup failed: {e}. Move ~/.runtimescope/collector.db & pm.db aside \
@@ -79,18 +84,50 @@ pub fn first_run_guard(data_dir: &Path) -> Result<(), String> {
     }
 }
 
-/// Atomically claim the data dir via the marker (`create_new` — only the first
-/// process succeeds). Returns true iff THIS call created it. Non-migration paths
-/// ignore the bool (a concurrent fresh-install just means the other wrote it).
+/// The marker is `complete` only once the cutover finished (a legacy `v1` marker
+/// from a round-1 build is NOT complete → the guard re-runs harmlessly + finalizes).
+fn marker_is_complete(marker: &Path) -> bool {
+    std::fs::read_to_string(marker).map(|s| s.trim() == "complete").unwrap_or(false)
+}
+
+/// Atomically claim the cutover (`create_new`, content "in-progress"). true iff
+/// THIS call created the marker (i.e. we are the migrating process).
 fn claim_marker(data_dir: &Path) -> bool {
     let _ = std::fs::create_dir_all(data_dir);
     match std::fs::OpenOptions::new().write(true).create_new(true).open(data_dir.join(MARKER)) {
         Ok(mut f) => {
             use std::io::Write;
-            let _ = f.write_all(b"v1\n");
+            let _ = f.write_all(b"in-progress\n");
             true
         }
-        Err(_) => false, // already existed (another process / prior run)
+        Err(_) => false,
+    }
+}
+
+/// Flip the marker to "complete" (create-or-overwrite). Future starts short-circuit.
+fn finalize_marker(data_dir: &Path) {
+    let _ = std::fs::create_dir_all(data_dir);
+    let _ = std::fs::write(data_dir.join(MARKER), b"complete\n");
+}
+
+/// Loser path: block (bounded) until the winner finalizes the cutover, or the
+/// marker disappears (winner's backup failed → we must abort too, never start on
+/// un-migrated data).
+fn wait_for_migration(marker: &Path) -> Result<(), String> {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        if marker_is_complete(marker) {
+            return Ok(());
+        }
+        if !marker.exists() {
+            return Err("the concurrent first-run cutover aborted (its backup failed) — not starting on \
+                        un-migrated data; resolve ~/.runtimescope and restart"
+                .to_string());
+        }
+        if std::time::Instant::now() >= deadline {
+            return Err("timed out waiting for the concurrent first-run cutover to finish".to_string());
+        }
+        std::thread::sleep(std::time::Duration::from_millis(100));
     }
 }
 
@@ -227,13 +264,25 @@ mod tests {
     }
 
     #[test]
-    fn marker_makes_it_idempotent() {
+    fn complete_marker_makes_it_idempotent() {
         let d = tmp();
         make_db(&d, true);
-        std::fs::write(d.join(MARKER), b"v1\n").unwrap(); // pretend a prior run handled it
+        std::fs::write(d.join(MARKER), b"complete\n").unwrap(); // prior run finished
         first_run_guard(&d).expect("guard ok");
-        assert!(d.join("collector.db").exists(), "marker present → no action");
+        assert!(d.join("collector.db").exists(), "complete marker → no action");
         assert!(!has_backup(&d));
+    }
+
+    #[test]
+    fn loser_aborts_when_winner_marker_vanishes() {
+        // Simulate the winner's backup failing (marker removed) → the loser's wait
+        // must return Err, not optimistically proceed.
+        let d = tmp();
+        let marker = d.join(MARKER); // does not exist → "winner aborted"
+        assert!(super::wait_for_migration(&marker).is_err());
+        // And a completed marker → Ok.
+        std::fs::write(&marker, b"complete\n").unwrap();
+        assert!(super::wait_for_migration(&marker).is_ok());
     }
 
     fn has_backup(d: &Path) -> bool {

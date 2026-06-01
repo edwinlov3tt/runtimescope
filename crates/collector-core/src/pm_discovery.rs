@@ -526,3 +526,41 @@ mod tests {
         assert_eq!(resolve_real_project(&skey), None);
     }
 }
+
+#[cfg(test)]
+mod to_period_tests {
+    use super::to_period;
+
+    fn is_ymd(s: &str) -> bool {
+        let b = s.as_bytes();
+        s.len() == 10
+            && b[4] == b'-'
+            && b[7] == b'-'
+            && s.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() })
+    }
+
+    // The real contract: an absolute instant always maps to exactly ONE local
+    // time, so `.single()` must not return None and we must never fall back to the
+    // "1970-01-01" sentinel for a valid recent timestamp. Asserting on a specific
+    // calendar date would be timezone-fragile (a UTC-8 machine buckets a 06:30 UTC
+    // instant on the prior day), so we assert shape + the no-sentinel invariant.
+    #[test]
+    fn dst_adjacent_instants_never_hit_the_1970_sentinel() {
+        // Two UTC instants straddling the 2026-03-08 US DST gap.
+        for ms in [1772951400000i64, 1772955000000i64] {
+            let p = to_period(ms);
+            assert!(is_ymd(&p), "well-formed YYYY-MM-DD, got {p:?}");
+            assert_ne!(p, "1970-01-01", "recent instant {ms} mis-bucketed to the sentinel");
+        }
+    }
+
+    #[test]
+    fn edge_timestamps_stay_well_formed() {
+        // Epoch, one day pre-epoch, and year ~2100 must all yield a valid date
+        // string (never panic, never an empty/garbage period).
+        for ms in [0i64, -86_400_000, 4_102_444_800_000] {
+            let p = to_period(ms);
+            assert!(is_ymd(&p), "edge ts {ms} -> well-formed date, got {p:?}");
+        }
+    }
+}

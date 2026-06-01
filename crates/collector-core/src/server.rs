@@ -1756,7 +1756,19 @@ async fn pm_project_scripts(State(s): State<AppState>, headers: HeaderMap, Path(
 /// prune dead rows. A re-attached proc has no `Child`/monitor (it predates us) —
 /// `GET` re-derives its status from the pgid liveness check + persisted ports.
 fn reattach_dev_servers(pm: &PmStore, map: &ProcMap) {
+    let current_boot = crate::dev_server::boot_time_secs();
     for rec in pm.dev_server_list() {
+        // Reboot/identity guard: only trust a persisted pgid if it was spawned in
+        // the CURRENT boot. After a reboot the kernel recycles pgids, so a stored
+        // pgid could name an unrelated process group — re-attaching it would report
+        // a stranger's process "running" and DELETE would group-kill it. Prune any
+        // record not from this boot (incl. legacy boot_time=0). (Both reviewers + R2.)
+        if let Some(now_boot) = current_boot {
+            if rec.boot_time != now_boot {
+                pm.dev_server_delete(&rec.project_id);
+                continue;
+            }
+        }
         let pgid = rec.pgid as i32;
         if group_alive(pgid) {
             let inner = Arc::new(ProcInner {
@@ -2017,6 +2029,7 @@ async fn pm_dev_server_post(State(s): State<AppState>, headers: HeaderMap, Path(
         status: "starting".to_string(),
         ports: None,
         container_local,
+        boot_time: crate::dev_server::boot_time_secs().unwrap_or(0),
     });
     spawn_dev_monitor(spawned, mp, s.pm.clone(), s.dev_servers.clone(), id.clone());
 
@@ -2767,6 +2780,8 @@ mod slice_g_dev_server_tests {
             status: "running".into(),
             ports: Some("[4321]".into()),
             container_local: false,
+            // current boot so the record survives the reboot-prune and reaches liveness.
+            boot_time: crate::dev_server::boot_time_secs().unwrap_or(0),
         });
         // A dead/bogus group — must be pruned so GET reports the truth after restart.
         pm.dev_server_upsert(&DevServerRecord {
@@ -2779,6 +2794,7 @@ mod slice_g_dev_server_tests {
             status: "running".into(),
             ports: None,
             container_local: false,
+            boot_time: crate::dev_server::boot_time_secs().unwrap_or(0),
         });
 
         let map: ProcMap = Arc::new(Mutex::new(HashMap::new()));
@@ -2797,6 +2813,48 @@ mod slice_g_dev_server_tests {
 
         // Cleanup the real process.
         let _ = stop_group(live_pgid, signal_from_name("SIGKILL").0);
+        let _ = spawned.child.wait();
+    }
+
+    // Reboot guard: a record whose pgid is STILL ALIVE must still be pruned if it
+    // was spawned in a prior boot — after a reboot the kernel recycles pgids, so a
+    // live pgid from a stale boot names a stranger's group, not our dev server.
+    // (Claude F3 / GPT #4 / round-2 cross-validated CRITICAL.)
+    #[test]
+    fn reattach_prunes_record_from_a_stale_boot_even_if_pgid_is_alive() {
+        let Some(now_boot) = crate::dev_server::boot_time_secs() else {
+            eprintln!("skip: boot time undetectable on this platform");
+            return;
+        };
+        let pm = tmp_pm();
+        let argv = vec!["node".to_string(), "-e".to_string(), "setInterval(()=>{},1e9)".to_string()];
+        let Ok(mut spawned) = spawn_dev_process(&argv, "/tmp") else {
+            eprintln!("skip: node unavailable");
+            return;
+        };
+        let pgid = spawned.pgid;
+        assert!(group_alive(pgid), "precondition: the group is alive");
+        pm.dev_server_upsert(&DevServerRecord {
+            project_id: "stale".into(),
+            pid: spawned.pid as i64,
+            pgid: pgid as i64,
+            command: "node".into(),
+            cwd: "/tmp".into(),
+            started_at: 1,
+            status: "running".into(),
+            ports: None,
+            container_local: false,
+            // spawned in a *previous* boot — must be pruned despite being alive now.
+            boot_time: now_boot - 1,
+        });
+
+        let map: ProcMap = Arc::new(Mutex::new(HashMap::new()));
+        reattach_dev_servers(&pm, &map);
+
+        assert!(!map.lock().unwrap().contains_key("stale"), "stale-boot pgid not re-attached");
+        assert!(pm.dev_server_get("stale").is_none(), "stale-boot row pruned from pm.db (no group-kill of a stranger)");
+
+        let _ = stop_group(pgid, signal_from_name("SIGKILL").0);
         let _ = spawned.child.wait();
     }
 

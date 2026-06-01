@@ -11,6 +11,7 @@
 
 pub mod auth;
 pub mod command;
+pub mod dev_server;
 pub mod event;
 pub mod pm_discovery;
 pub mod pm_project_manager;

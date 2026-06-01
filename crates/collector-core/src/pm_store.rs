@@ -150,6 +150,24 @@ CREATE TABLE IF NOT EXISTS pm_deleted_projects (
   name TEXT,
   deleted_at INTEGER NOT NULL
 );
+-- Managed dev servers (M5.5 Slice G). Keyed by project_id (one dev server per
+-- project, like Node's in-memory map) but PERSISTED so a collector restart can
+-- re-attach (liveness-check the pgid) instead of orphaning the real server, and
+-- so GET tells the truth after a restart. Deliberately NOT FK'd to pm_projects:
+-- the row's lifetime is tied to a live OS process group, not to the project row,
+-- and we don't want re-attach/discovery ordering to trip the (now-ON) FK pragma.
+CREATE TABLE IF NOT EXISTS pm_dev_servers (
+  project_id TEXT PRIMARY KEY,
+  pid INTEGER NOT NULL,
+  pgid INTEGER NOT NULL,
+  command TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  started_at INTEGER NOT NULL,
+  status TEXT NOT NULL DEFAULT 'starting',
+  ports TEXT,
+  container_local INTEGER NOT NULL DEFAULT 0,
+  updated_at INTEGER NOT NULL
+);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -221,6 +239,32 @@ pub struct PmProject {
     /// the `capex-all` / `categories` dashboard filters.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub category: Option<String>,
+}
+
+/// A persisted managed dev server (M5.5 Slice G). The `ports` column is a
+/// JSON-encoded `[u16]`; `parsed_ports()` decodes it.
+#[derive(Clone, Debug)]
+pub struct DevServerRecord {
+    pub project_id: String,
+    pub pid: i64,
+    pub pgid: i64,
+    pub command: String,
+    pub cwd: String,
+    pub started_at: i64,
+    pub status: String,
+    /// JSON array string of bound ports (e.g. `"[3000,5173]"`), or `None`.
+    pub ports: Option<String>,
+    pub container_local: bool,
+}
+
+impl DevServerRecord {
+    /// Decode the `ports` JSON column to a `Vec<u16>` (empty on null/malformed).
+    pub fn parsed_ports(&self) -> Vec<u16> {
+        self.ports
+            .as_deref()
+            .and_then(|j| serde_json::from_str::<Vec<u16>>(j).ok())
+            .unwrap_or_default()
+    }
 }
 
 /// A parsed/indexed Claude session row (the parser's metrics + file bookkeeping).
@@ -893,6 +937,70 @@ impl PmStore {
             "UPDATE pm_projects SET workspace_id = ?2, updated_at = ?3 WHERE id = ?1",
             params![project_id, workspace_id, now_ms()],
         );
+    }
+
+    // ============================================================
+    // Dev servers (M5.5 Slice G) — persist + re-attach across restart.
+    // ============================================================
+
+    /// Upsert the managed dev-server row for a project (one per project).
+    pub fn dev_server_upsert(&self, r: &DevServerRecord) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO pm_dev_servers
+               (project_id, pid, pgid, command, cwd, started_at, status, ports, container_local, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ON CONFLICT(project_id) DO UPDATE SET
+               pid = excluded.pid, pgid = excluded.pgid, command = excluded.command,
+               cwd = excluded.cwd, started_at = excluded.started_at, status = excluded.status,
+               ports = excluded.ports, container_local = excluded.container_local,
+               updated_at = excluded.updated_at",
+            params![
+                r.project_id, r.pid, r.pgid, r.command, r.cwd, r.started_at,
+                r.status, r.ports, r.container_local as i64, now_ms()
+            ],
+        );
+    }
+
+    /// Update just the live status + detected ports (called from the monitor).
+    pub fn dev_server_update_status(&self, project_id: &str, status: &str, ports_json: Option<&str>) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "UPDATE pm_dev_servers SET status = ?2, ports = ?3, updated_at = ?4 WHERE project_id = ?1",
+            params![project_id, status, ports_json, now_ms()],
+        );
+    }
+
+    pub fn dev_server_get(&self, project_id: &str) -> Option<DevServerRecord> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local
+             FROM pm_dev_servers WHERE project_id = ?1",
+            params![project_id],
+            map_dev_server,
+        )
+        .optional()
+        .ok()
+        .flatten()
+    }
+
+    pub fn dev_server_delete(&self, project_id: &str) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute("DELETE FROM pm_dev_servers WHERE project_id = ?1", params![project_id]);
+    }
+
+    /// All persisted dev servers (for re-attach on startup).
+    pub fn dev_server_list(&self) -> Vec<DevServerRecord> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT project_id, pid, pgid, command, cwd, started_at, status, ports, container_local
+             FROM pm_dev_servers",
+        ) {
+            Ok(s) => s,
+            Err(_) => return Vec::new(),
+        };
+        let rows = stmt.query_map([], map_dev_server);
+        rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
     }
 
     // ============================================================
@@ -1788,6 +1896,20 @@ fn map_project(r: &rusqlite::Row) -> rusqlite::Result<PmProject> {
         created_at: r.get(10)?,
         updated_at: r.get(11)?,
         category: r.get(12)?,
+    })
+}
+
+fn map_dev_server(r: &rusqlite::Row) -> rusqlite::Result<DevServerRecord> {
+    Ok(DevServerRecord {
+        project_id: r.get(0)?,
+        pid: r.get(1)?,
+        pgid: r.get(2)?,
+        command: r.get(3)?,
+        cwd: r.get(4)?,
+        started_at: r.get(5)?,
+        status: r.get::<_, Option<String>>(6)?.unwrap_or_else(|| "starting".into()),
+        ports: r.get(7)?,
+        container_local: r.get::<_, i64>(8)? == 1,
     })
 }
 

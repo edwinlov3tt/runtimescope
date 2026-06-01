@@ -15,3 +15,14 @@ futures-util = "0.3"
 subtle = "2"
 sha2 = "0.10"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+
+# Unix-only: process-group signalling for the dev-server lifecycle (group-kill
+# the whole tree on stop; ESRCH detection for the "already exited" path).
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[dev-dependencies]
+# `ServiceExt::oneshot` — drive axum handlers in-process (no bound port) so the
+# dev-server success/409 response SHAPES are asserted, not just the 404 paths
+# the conformance harness can reach.
+tower = { version = "0.5", features = ["util"] }

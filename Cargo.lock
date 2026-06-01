@@ -170,12 +170,14 @@ dependencies = [
  "axum",
  "chrono",
  "futures-util",
+ "libc",
  "rusqlite",
  "serde",
  "serde_json",
  "sha2",
  "subtle",
  "tokio",
+ "tower",
  "tracing",
 ]
 

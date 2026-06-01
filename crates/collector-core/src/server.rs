@@ -7,6 +7,11 @@
 
 use crate::auth::{AuthManager, AuthMode};
 use crate::command::CommandHub;
+use crate::dev_server::{
+    build_auto_attach, detect_container_local, group_alive, poll_listening_ports, resolve_launch,
+    signal_from_name, spawn_dev_process, stop_group, DevServerRequest, Spawned, StopOutcome,
+    DETECT_INTERVAL, DETECT_TIMEOUT, MAX_LOG_LINES,
+};
 use crate::event::{
     event_type_of, is_valid_event_type, kind_to_event_type, project_of, EventBatch,
     HandshakePayload, WsMessage,
@@ -29,10 +34,41 @@ use serde_json::{json, Value};
 use std::collections::HashMap;
 use tokio::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 /// Monotonic suffix so backfilled HTTP eventIds are unique even within one ms.
 static HTTP_EVENT_SEQ: AtomicU64 = AtomicU64::new(0);
+
+/// The live mutable state of one managed dev server. The detect-monitor thread
+/// mutates `status`/`exit_code`/`ports`; the log readers append to `logs`; the
+/// `GET` handler reads them. Each field has its own lock so a slow log read
+/// never blocks a status read.
+struct ProcInner {
+    status: Mutex<String>,
+    exit_code: Mutex<Option<i32>>,
+    logs: Mutex<Vec<String>>,
+    ports: Mutex<Vec<u16>>,
+}
+
+/// A managed dev server in the in-memory map. Cheap to `clone()` (the mutable
+/// state is behind `Arc<ProcInner>`). Re-attached procs (post-restart) share
+/// this shape but have no live monitor — `GET` re-derives their truth from the
+/// pgid liveness check + persisted ports.
+#[derive(Clone)]
+struct ManagedProc {
+    pid: u32,
+    pgid: i32,
+    command: String,
+    started_at: i64,
+    container_local: bool,
+    inner: Arc<ProcInner>,
+}
+
+/// Shared mutable runtime state, keyed by projectId (one dev server per project,
+/// like Node's `managedProcesses` map) — but persisted to `pm.db` so a restart
+/// re-attaches instead of orphaning.
+type ProcMap = Arc<Mutex<HashMap<String, ManagedProc>>>;
 
 #[derive(Clone)]
 struct AppState {
@@ -42,6 +78,7 @@ struct AppState {
     auth: AuthManager,
     started: Instant,
     version: String,
+    dev_servers: ProcMap,
 }
 
 fn now_ms() -> i64 {
@@ -60,6 +97,12 @@ pub async fn serve(
     version: String,
     auth_mode: AuthMode,
 ) -> std::io::Result<()> {
+    // Re-attach managed dev servers persisted before this restart: keep the ones
+    // whose process group is still alive, prune the dead rows so GET stays honest
+    // (the fix for Node's in-memory map that lies "stopped" after a restart).
+    let dev_servers: ProcMap = Arc::new(Mutex::new(HashMap::new()));
+    reattach_dev_servers(&pm, &dev_servers);
+
     let state = AppState {
         store,
         hub,
@@ -67,6 +110,7 @@ pub async fn serve(
         auth: AuthManager::for_mode(auth_mode),
         started: Instant::now(),
         version,
+        dev_servers,
     };
 
     let http = Router::new()
@@ -99,6 +143,11 @@ pub async fn serve(
         .route("/api/pm/projects/{id}/git/commit", post(pm_git_commit))
         // project scripts (M5.5 Slice G, step 1)
         .route("/api/pm/projects/{id}/scripts", get(pm_project_scripts))
+        // dev-server lifecycle (M5.5 Slice G, steps 2-4)
+        .route(
+            "/api/pm/projects/{id}/dev-server",
+            get(pm_dev_server_get).post(pm_dev_server_post).delete(pm_dev_server_delete),
+        )
         .route("/api/pm/sessions", get(pm_sessions))
         .route("/api/pm/sessions/stats", get(pm_sessions_stats)) // before {id}
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
@@ -1581,6 +1630,315 @@ async fn pm_project_scripts(State(s): State<AppState>, headers: HeaderMap, Path(
     Json(json!({ "data": data })).into_response()
 }
 
+// ---- pm/ dev-server lifecycle (M5.5 Slice G, steps 2-4 — the "no gaps" slice) ----
+//
+// Closes the Node bugs rather than porting them (see docs/research/0004): argv +
+// no shell, own process group, group-kill on stop, real listening-socket
+// detection over the child tree, persistence + re-attach, devcontainer
+// detect-and-warn, and active auto-attach of the detected port to monitoring.
+// The OS-facing primitives live in `crate::dev_server`; this is the orchestration.
+
+/// On startup, restore the managed-proc map from `pm.db`: keep live groups,
+/// prune dead rows. A re-attached proc has no `Child`/monitor (it predates us) —
+/// `GET` re-derives its status from the pgid liveness check + persisted ports.
+fn reattach_dev_servers(pm: &PmStore, map: &ProcMap) {
+    for rec in pm.dev_server_list() {
+        let pgid = rec.pgid as i32;
+        if group_alive(pgid) {
+            let inner = Arc::new(ProcInner {
+                status: Mutex::new(rec.status.clone()),
+                exit_code: Mutex::new(None),
+                // Logs don't survive a restart (audit bug #10, acceptable for v1).
+                logs: Mutex::new(Vec::new()),
+                ports: Mutex::new(rec.parsed_ports()),
+            });
+            let mp = ManagedProc {
+                pid: rec.pid as u32,
+                pgid,
+                command: rec.command.clone(),
+                started_at: rec.started_at,
+                container_local: rec.container_local,
+                inner,
+            };
+            map.lock().unwrap().insert(rec.project_id, mp);
+        } else {
+            pm.dev_server_delete(&rec.project_id);
+        }
+    }
+}
+
+/// Tail a child stream into the proc's capped log ring (≤ MAX_LOG_LINES).
+fn spawn_log_reader<R: std::io::Read + Send + 'static>(stream: R, inner: Arc<ProcInner>) {
+    use std::io::{BufRead, BufReader};
+    std::thread::spawn(move || {
+        let reader = BufReader::new(stream);
+        for line in reader.lines() {
+            let Ok(line) = line else { break };
+            let mut logs = inner.logs.lock().unwrap();
+            logs.push(line);
+            let len = logs.len();
+            if len > MAX_LOG_LINES {
+                logs.drain(0..len - MAX_LOG_LINES);
+            }
+        }
+    });
+}
+
+/// The detect-monitor: owns the spawned `Child` (so it reaps on exit — no
+/// zombie), captures logs, and flips `starting`→`running` once the child TREE
+/// actually binds a port (real socket poll, not log-scrape). On exit it prunes
+/// the map + db so `GET` reports the truth.
+fn spawn_dev_monitor(spawned: Spawned, mp: ManagedProc, pm: PmStore, map: ProcMap, project_id: String) {
+    let Spawned { pid: _, pgid, mut child } = spawned;
+    if let Some(out) = child.stdout.take() {
+        spawn_log_reader(out, mp.inner.clone());
+    }
+    if let Some(err) = child.stderr.take() {
+        spawn_log_reader(err, mp.inner.clone());
+    }
+    std::thread::spawn(move || {
+        let start = Instant::now();
+        let mut detected = false;
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    let code = status.code();
+                    *mp.inner.exit_code.lock().unwrap() = code;
+                    let st = if code == Some(0) { "stopped" } else { "crashed" };
+                    *mp.inner.status.lock().unwrap() = st.to_string();
+                    map.lock().unwrap().remove(&project_id);
+                    pm.dev_server_delete(&project_id);
+                    let _ = child.wait(); // ensure fully reaped
+                    return;
+                }
+                Ok(None) => {}
+                Err(_) => return,
+            }
+            if !detected && start.elapsed() < DETECT_TIMEOUT {
+                let ports = poll_listening_ports(pgid);
+                if !ports.is_empty() {
+                    detected = true;
+                    *mp.inner.ports.lock().unwrap() = ports.clone();
+                    {
+                        let mut s = mp.inner.status.lock().unwrap();
+                        if *s == "starting" {
+                            *s = "running".to_string();
+                        }
+                    }
+                    // Tie the detected port back to monitoring: persist it so a
+                    // restart re-attaches with the real ports and GET/dashboard
+                    // can surface the auto-attach hint (the feature's reason to exist).
+                    let ports_json = serde_json::to_string(&ports).ok();
+                    pm.dev_server_update_status(&project_id, "running", ports_json.as_deref());
+                }
+            }
+            std::thread::sleep(if detected { Duration::from_millis(500) } else { DETECT_INTERVAL });
+        }
+    });
+}
+
+/// Parse the POST body `{ script?, command? }` (Node `try { JSON.parse } catch {}`).
+fn parse_dev_body(body: &str) -> DevServerRequest {
+    if body.is_empty() {
+        return DevServerRequest::default();
+    }
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .map(|v| DevServerRequest {
+            command: v.get("command").and_then(Value::as_str).map(String::from),
+            script: v.get("script").and_then(Value::as_str).map(String::from),
+        })
+        .unwrap_or_default()
+}
+
+/// Parse the DELETE body `{ signal? }` → "SIGKILL" or default "SIGTERM".
+fn parse_dev_signal(body: &str) -> &'static str {
+    let is_kill = (!body.is_empty())
+        .then(|| serde_json::from_str::<Value>(body).ok())
+        .flatten()
+        .and_then(|v| v.get("signal").and_then(Value::as_str).map(|s| s == "SIGKILL"))
+        .unwrap_or(false);
+    if is_kill {
+        "SIGKILL"
+    } else {
+        "SIGTERM"
+    }
+}
+
+/// GET /api/pm/projects/{id}/dev-server — no managed proc → `{data:{status:"stopped"}}`;
+/// a managed proc whose group has died → pruned + `stopped`; else the live status,
+/// pid, command, startedAt, exitCode, logs (last 100) + the additive `ports`,
+/// `isContainerLocal`, `autoAttach` fields.
+async fn pm_dev_server_get(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let stopped = || Json(json!({ "data": { "status": "stopped" } })).into_response();
+    let Some(mp) = s.dev_servers.lock().unwrap().get(&id).cloned() else {
+        return stopped();
+    };
+    // Liveness-check the group (Node checks the pid); a dead group → prune + stopped.
+    if !group_alive(mp.pgid) {
+        s.dev_servers.lock().unwrap().remove(&id);
+        s.pm.dev_server_delete(&id);
+        return stopped();
+    }
+    let status = mp.inner.status.lock().unwrap().clone();
+    let exit_code = *mp.inner.exit_code.lock().unwrap();
+    let ports = mp.inner.ports.lock().unwrap().clone();
+    let logs: Vec<String> = {
+        let l = mp.inner.logs.lock().unwrap();
+        l[l.len().saturating_sub(100)..].to_vec()
+    };
+    let auto_attach = build_auto_attach(&ports, mp.container_local, &id);
+    Json(json!({ "data": {
+        // --- Node-matched shape (the dashboard reads these) ---
+        "status": status,
+        "pid": mp.pid,
+        "command": mp.command,
+        "startedAt": mp.started_at,
+        "exitCode": exit_code,
+        "logs": logs,
+        // --- additive (allowed by the contract): the real tie-back ---
+        "ports": ports,
+        "isContainerLocal": mp.container_local,
+        "autoAttach": auto_attach,
+    }}))
+    .into_response()
+}
+
+/// POST /api/pm/projects/{id}/dev-server — start a dev server (argv, no shell,
+/// own process group). 404 unknown project; 400 no path / invalid input; 409
+/// already running; else `200 {data:{pid, command, cwd, status:"starting"}}`.
+async fn pm_dev_server_post(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return not_found_json("Project not found");
+    };
+    let Some(path) = project.path else {
+        return bad_request("Project has no filesystem path");
+    };
+
+    // Already running? (Node: process.kill(existing.pid, 0) → 409.) A stale dead
+    // entry is pruned so a fresh start succeeds.
+    if let Some(mp) = s.dev_servers.lock().unwrap().get(&id).cloned() {
+        if group_alive(mp.pgid) {
+            let status = mp.inner.status.lock().unwrap().clone();
+            return (
+                StatusCode::CONFLICT,
+                Json(json!({ "error": "Dev server already running", "data": { "pid": mp.pid, "status": status } })),
+            )
+                .into_response();
+        }
+        s.dev_servers.lock().unwrap().remove(&id);
+        s.pm.dev_server_delete(&id);
+    }
+
+    let launch = match resolve_launch(&parse_dev_body(&body)) {
+        Ok(l) => l,
+        Err(e) => return bad_request(&e),
+    };
+
+    // Spawn + container-detect are blocking/fs work → spawn_blocking.
+    let cwd = path.clone();
+    let argv = launch.argv.clone();
+    let spawn_result = tokio::task::spawn_blocking(move || {
+        let container_local = detect_container_local(&cwd);
+        (container_local, spawn_dev_process(&argv, &cwd))
+    })
+    .await;
+
+    let (container_local, spawned) = match spawn_result {
+        Ok(t) => t,
+        Err(_) => return git_500("spawn task failed".into()),
+    };
+    let spawned = match spawned {
+        Ok(sp) => sp,
+        Err(e) => return git_500(e.to_string()),
+    };
+
+    let pid = spawned.pid;
+    let now = now_ms();
+    let inner = Arc::new(ProcInner {
+        status: Mutex::new("starting".to_string()),
+        exit_code: Mutex::new(None),
+        logs: Mutex::new(Vec::new()),
+        ports: Mutex::new(Vec::new()),
+    });
+    let mp = ManagedProc {
+        pid,
+        pgid: spawned.pgid,
+        command: launch.display.clone(),
+        started_at: now,
+        container_local,
+        inner,
+    };
+    s.dev_servers.lock().unwrap().insert(id.clone(), mp.clone());
+    s.pm.dev_server_upsert(&crate::pm_store::DevServerRecord {
+        project_id: id.clone(),
+        pid: pid as i64,
+        pgid: spawned.pgid as i64,
+        command: launch.display.clone(),
+        cwd: path.clone(),
+        started_at: now,
+        status: "starting".to_string(),
+        ports: None,
+        container_local,
+    });
+    spawn_dev_monitor(spawned, mp, s.pm.clone(), s.dev_servers.clone(), id.clone());
+
+    Json(json!({ "data": { "pid": pid, "command": launch.display, "cwd": path, "status": "starting" } }))
+        .into_response()
+}
+
+/// DELETE /api/pm/projects/{id}/dev-server — group-kill the whole tree. 404
+/// unknown project; 404 nothing running; else `200 {data:{killed:true, pid, signal}}`
+/// (+ `note:"Process already exited"` when the group was already gone).
+///
+/// Intended divergence from Node: we do NOT port the fragile `findPidsInDirectory`
+/// fallback (audit bug #7 — shell-interpolated `lsof +D`, `/proc` prefix match,
+/// kills an arbitrary pid). With persistence + re-attach the map is the source of
+/// truth, so "no managed entry" → 404, and the kill is a `kill(-pgid)` group-kill.
+async fn pm_dev_server_delete(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.pm.get_project(&id).is_none() {
+        return not_found_json("Project not found");
+    }
+    let (sig, sig_name) = signal_from_name(parse_dev_signal(&body));
+
+    let Some(mp) = s.dev_servers.lock().unwrap().get(&id).cloned() else {
+        return not_found_json("No running dev server found for this project");
+    };
+    let pid = mp.pid;
+    let pgid = mp.pgid;
+    // Drop our tracking up front (Node deletes the map entry on stop).
+    s.dev_servers.lock().unwrap().remove(&id);
+    s.pm.dev_server_delete(&id);
+
+    let outcome = tokio::task::spawn_blocking(move || stop_group(pgid, sig))
+        .await
+        .unwrap_or_else(|_| StopOutcome::Error("kill task failed".into()));
+
+    match outcome {
+        StopOutcome::Signalled => {
+            Json(json!({ "data": { "killed": true, "pid": pid, "signal": sig_name } })).into_response()
+        }
+        StopOutcome::AlreadyExited => Json(
+            json!({ "data": { "killed": true, "pid": pid, "signal": sig_name, "note": "Process already exited" } }),
+        )
+        .into_response(),
+        StopOutcome::Error(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": format!("Failed to kill PID {pid}: {e}") })),
+        )
+            .into_response(),
+    }
+}
+
 // ---- pm/ git integration (M5.5 Slice F) ----
 //
 // All git invocations go through `run_git` → `std::process::Command` with an
@@ -2143,6 +2501,237 @@ mod slice_f_git_tests {
     #[test]
     fn is_git_repo_false_for_non_repo() {
         assert!(!is_git_repo("/tmp"));
+    }
+}
+
+// Persistence + re-attach proof (acceptance: a restart doesn't orphan and GET
+// stays honest). `reattach_dev_servers` is the restart path both binaries run in
+// `serve()` before binding — keep live groups, prune dead rows from pm.db.
+#[cfg(all(test, unix))]
+mod slice_g_dev_server_tests {
+    use super::*;
+    use crate::dev_server::spawn_dev_process;
+    use crate::pm_store::{DevServerRecord, PmStore};
+    use std::collections::HashMap;
+
+    fn tmp_pm() -> PmStore {
+        let dir = std::env::temp_dir().join(format!(
+            "rs-pm-dev-{}-{:?}",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        PmStore::open(&dir.join("pm.db")).unwrap()
+    }
+
+    #[test]
+    fn reattach_keeps_live_group_and_prunes_dead() {
+        let pm = tmp_pm();
+        // A real, live process in its OWN process group (mirrors a restart finding
+        // a still-running dev server).
+        let argv = vec!["node".to_string(), "-e".to_string(), "setInterval(()=>{},1e9)".to_string()];
+        let Ok(mut spawned) = spawn_dev_process(&argv, "/tmp") else {
+            eprintln!("skip: node unavailable");
+            return;
+        };
+        let live_pgid = spawned.pgid;
+        pm.dev_server_upsert(&DevServerRecord {
+            project_id: "live".into(),
+            pid: spawned.pid as i64,
+            pgid: live_pgid as i64,
+            command: "node".into(),
+            cwd: "/tmp".into(),
+            started_at: 1,
+            status: "running".into(),
+            ports: Some("[4321]".into()),
+            container_local: false,
+        });
+        // A dead/bogus group — must be pruned so GET reports the truth after restart.
+        pm.dev_server_upsert(&DevServerRecord {
+            project_id: "dead".into(),
+            pid: 999_998,
+            pgid: 999_998,
+            command: "gone".into(),
+            cwd: "/tmp".into(),
+            started_at: 1,
+            status: "running".into(),
+            ports: None,
+            container_local: false,
+        });
+
+        let map: ProcMap = Arc::new(Mutex::new(HashMap::new()));
+        reattach_dev_servers(&pm, &map);
+
+        {
+            let m = map.lock().unwrap();
+            assert!(m.contains_key("live"), "live group re-attached (no orphan)");
+            assert!(!m.contains_key("dead"), "dead group not re-attached");
+            // persisted ports survive the restart (GET surfaces them again).
+            assert_eq!(*m["live"].inner.ports.lock().unwrap(), vec![4321u16]);
+        }
+        // GET stays honest: the dead row is pruned from pm.db, the live one kept.
+        assert!(pm.dev_server_get("dead").is_none(), "dead row pruned from pm.db");
+        assert!(pm.dev_server_get("live").is_some(), "live row retained");
+
+        // Cleanup the real process.
+        let _ = stop_group(live_pgid, signal_from_name("SIGKILL").0);
+        let _ = spawned.child.wait();
+    }
+
+    // The success / 409 / no-path SHAPES the conformance harness can't reach (it
+    // has no seeded project). Driven through the REAL handlers in-process via
+    // `oneshot` against a seeded pm.db + a real `node` listener — this is the
+    // audit-discipline fix: assert the success-path shapes, not just the 404s.
+    use crate::auth::AuthMode;
+    use crate::command::CommandHub;
+    use crate::store::StoreHandle;
+    use axum::body::{to_bytes, Body};
+    use axum::http::Request;
+    use axum::routing::get;
+    use axum::Router;
+    use tower::ServiceExt;
+
+    fn node_available() -> bool {
+        std::process::Command::new("node").arg("-v").output().map(|o| o.status.success()).unwrap_or(false)
+    }
+
+    async fn read_json(resp: Response) -> (u16, Value) {
+        let status = resp.status().as_u16();
+        let bytes = to_bytes(resp.into_body(), usize::MAX).await.unwrap();
+        let v = serde_json::from_slice(&bytes).unwrap_or(Value::Null);
+        (status, v)
+    }
+
+    async fn req(app: &Router, method: &str, uri: &str, body: Option<&str>) -> (u16, Value) {
+        let mut b = Request::builder().method(method).uri(uri);
+        let body = match body {
+            Some(s) => {
+                b = b.header("content-type", "application/json");
+                Body::from(s.to_string())
+            }
+            None => Body::empty(),
+        };
+        let resp = app.clone().oneshot(b.body(body).unwrap()).await.unwrap();
+        read_json(resp).await
+    }
+
+    #[tokio::test]
+    async fn post_get_delete_success_shapes_through_real_handlers() {
+        if !node_available() {
+            eprintln!("skip: node unavailable");
+            return;
+        }
+        let root = std::env::temp_dir().join(format!("rs-devhttp-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&root);
+        // project working dir with a real listener script (argv `node listener.js`
+        // — no shell, passes resolve_launch validation).
+        let proj_dir = root.join("proj");
+        std::fs::create_dir_all(&proj_dir).unwrap();
+        std::fs::write(
+            proj_dir.join("listener.js"),
+            "const net=require('net');const s=net.createServer(()=>{});s.listen(0,'127.0.0.1');setInterval(()=>{},1e9);",
+        )
+        .unwrap();
+
+        let store = StoreHandle::open(root.join("data")).await.expect("store");
+        let pm = PmStore::open(&root.join("pm.db")).expect("pm");
+        pm.upsert_project(&crate::pm_store::PmProject {
+            id: "p1".into(),
+            name: "Proj".into(),
+            path: Some(proj_dir.to_string_lossy().to_string()),
+            ..Default::default()
+        });
+        // A project with NO path → the 400 branch.
+        pm.upsert_project(&crate::pm_store::PmProject { id: "nopath".into(), name: "NoPath".into(), path: None, ..Default::default() });
+
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            auth: AuthManager::for_mode(AuthMode::Standalone),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+        };
+        let app = Router::new()
+            .route(
+                "/api/pm/projects/{id}/dev-server",
+                get(pm_dev_server_get).post(pm_dev_server_post).delete(pm_dev_server_delete),
+            )
+            .with_state(state);
+
+        // 404 unknown project (POST + DELETE resolve the project first).
+        let (s, v) = req(&app, "POST", "/api/pm/projects/ghost/dev-server", None).await;
+        assert_eq!((s, v), (404, json!({ "error": "Project not found" })));
+
+        // 400 project has no filesystem path.
+        let (s, v) = req(&app, "POST", "/api/pm/projects/nopath/dev-server", None).await;
+        assert_eq!((s, v), (400, json!({ "error": "Project has no filesystem path" })));
+
+        // 400 command injection is rejected (argv-no-shell, the audit's headline hole).
+        let (s, _v) = req(&app, "POST", "/api/pm/projects/p1/dev-server", Some(r#"{"command":"node listener.js; rm -rf ~"}"#)).await;
+        assert_eq!(s, 400);
+
+        // POST success → 200 {data:{pid, command, cwd, status:"starting"}} (Node shape).
+        let (s, v) = req(&app, "POST", "/api/pm/projects/p1/dev-server", Some(r#"{"command":"node listener.js"}"#)).await;
+        assert_eq!(s, 200, "post success");
+        let d = &v["data"];
+        assert!(d["pid"].as_u64().unwrap() > 1);
+        assert_eq!(d["command"], "node listener.js");
+        assert_eq!(d["cwd"], proj_dir.to_string_lossy().to_string());
+        assert_eq!(d["status"], "starting");
+        let pid = d["pid"].as_u64().unwrap();
+
+        // 409 already running → {error, data:{pid, status}} (Node shape).
+        let (s, v) = req(&app, "POST", "/api/pm/projects/p1/dev-server", Some(r#"{"command":"node listener.js"}"#)).await;
+        assert_eq!(s, 409, "second start conflicts");
+        assert_eq!(v["error"], "Dev server already running");
+        assert_eq!(v["data"]["pid"].as_u64().unwrap(), pid);
+        assert!(v["data"]["status"].is_string());
+
+        // GET → poll until the real port is detected (running). Assert the full
+        // Node-matched shape + the additive tie-back fields.
+        let mut got_running = false;
+        let mut last = Value::Null;
+        for _ in 0..50 {
+            let (gs, gv) = req(&app, "GET", "/api/pm/projects/p1/dev-server", None).await;
+            assert_eq!(gs, 200);
+            last = gv.clone();
+            if gv["data"]["status"] == "running" && gv["data"]["ports"].as_array().map(|a| !a.is_empty()).unwrap_or(false) {
+                got_running = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        let d = &last["data"];
+        // Node-matched keys (the dashboard reads these — a renamed field is the bug class we guard).
+        assert_eq!(d["pid"].as_u64().unwrap(), pid);
+        assert_eq!(d["command"], "node listener.js");
+        assert!(d["startedAt"].as_i64().unwrap() > 0, "startedAt present (camelCase)");
+        assert!(d.get("exitCode").is_some(), "exitCode key present");
+        assert!(d["logs"].is_array(), "logs array present");
+        // additive tie-back fields.
+        assert!(d["ports"].is_array());
+        assert_eq!(d["isContainerLocal"], false);
+        assert!(got_running, "real port should be detected → running; last={last}");
+        // auto-attach hint wired to the detected port (the feature's reason to exist).
+        let ports = d["ports"].as_array().unwrap();
+        assert!(!ports.is_empty());
+        assert_eq!(d["autoAttach"]["port"], ports[0]);
+        assert_eq!(d["autoAttach"]["hostReachable"], true);
+
+        // DELETE → 200 {data:{killed:true, pid, signal:"SIGTERM"}} (Node shape) + group-kill.
+        let (s, v) = req(&app, "DELETE", "/api/pm/projects/p1/dev-server", None).await;
+        assert_eq!(s, 200, "delete success");
+        assert_eq!(v["data"]["killed"], true);
+        assert_eq!(v["data"]["pid"].as_u64().unwrap(), pid);
+        assert_eq!(v["data"]["signal"], "SIGTERM");
+
+        // GET after stop → bare stopped (group is gone).
+        let (s, v) = req(&app, "GET", "/api/pm/projects/p1/dev-server", None).await;
+        assert_eq!((s, v), (200, json!({ "data": { "status": "stopped" } })));
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 }
 

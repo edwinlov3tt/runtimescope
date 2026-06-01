@@ -187,6 +187,57 @@ re-verified, surfaced these — all closed:
   `"FOREIGN KEY constraint failed"` message as Node). Discovery is FK-safe (parent-first
   inserts) and `delete_project` deletes children first — both verified by a unit test.
 
+## M5.5 Slice G — dev-server lifecycle (intended divergences, fix-don't-port)
+
+The Node dev-server (`pm-routes.ts:743-925`) was audited as buggy (`research/0004`); the
+user's standing decision was to **close the bugs, not port them**. The deterministic
+response shapes still match Node byte-for-byte (gated by `pm-dev-server.conformance.test.ts`
+vs both); the behavioral fixes below are **intentional divergences**, Rust-test-gated:
+
+- **Stop = group-kill (the headline fix).** Node spawns with `shell:true` and kills only
+  the shell pid, orphaning the real server while returning `killed:true` (it keeps its
+  port). Rust spawns with **argv, no shell**, in its **own process group**
+  (`process_group(0)`), and stops via `kill(-pgid, SIGTERM)` → escalate `SIGKILL`. This is
+  **NOT conformance-gated** against Node's "killed:true but still listening" bug — it's
+  gated by a **real spawned-process integration test** (`dev_server::lifecycle_tests`:
+  spawn a grandchild listener → detect its real port via socket-poll → group-kill → assert
+  the port is **freed** and the whole group is **gone**, i.e. no orphan). That test is the
+  whole point of the slice.
+- **No `shell:true`, ever.** A body `command` is split into argv (never handed to a shell);
+  `resolve_launch` rejects shell metacharacters (`;`,`|`,`&`,`$`,`` ` ``,`(`,`)`,`*`,`\`,…),
+  killing Node's command-injection hole (`{"command":"npm run dev; rm -rf ~"}`). A `script`
+  name is validated to a safe charset and run as `npm run <script>` argv.
+- **Real listen detection, not log-scrape.** Ports come from the child **tree's** actual
+  listening sockets (`lsof -nP -a -g <pgid> -iTCP -sTCP:LISTEN`; the `-a` ANDs the group +
+  LISTEN filters), reporting **all** bound ports; `status` flips to `running` only once
+  something is actually listening (5s detect window, 100ms cadence; timeout → stays
+  `starting`). The Node log-regex is dropped entirely (it caught one port, missed most
+  formats, and flipped `running` on the first byte).
+- **Persist + re-attach.** Managed procs live in `pm.db` `pm_dev_servers` (pid/**pgid**/
+  command/cwd/startedAt/ports/containerLocal), **not FK'd** to `pm_projects` (the row's
+  lifetime is tied to a live OS group, not the project row, and FK-is-ON would make
+  re-attach/discovery ordering brittle). `serve()` re-attaches on startup: keep live groups,
+  prune dead rows — so `GET` tells the truth after a restart (Node's in-memory map lies
+  `stopped`). Tested by `slice_g_dev_server_tests::reattach_keeps_live_group_and_prunes_dead`.
+- **Dropped the fragile stop-fallback (audit bug #7).** Node's `findPidsInDirectory` (shell-
+  interpolated `lsof +D`, `/proc` prefix-match, kills an arbitrary pid, Windows no-op) is
+  **deliberately not ported** — with persistence the managed map is the source of truth, so
+  "no managed entry" → 404 and stop is always a `kill(-pgid)` on a known group.
+- **Devcontainer detect-and-warn (v1).** `.devcontainer/`/`$SSH_CONNECTION`/`$CODESPACES`/
+  `$REMOTE_CONTAINERS` → ports flagged `isContainerLocal` (`hostReachable:false`). Forward-
+  table resolution (`docker port`/`ssh -L`) is a flagged v2 follow-up, not done here.
+- **Active auto-attach (the tie-back; Node never connected dev-server↔monitoring).** A
+  detected port produces an `autoAttach` hint (URL + inject snippet + per-port `scan` flag)
+  surfaced in `GET`. Designed as a **safe no-op on bad detection**: empty → `null`; ports
+  deduped (duplicate detection → one idempotent hint); container-local → `scan:false` so a
+  host scanner won't misfire; the hint is declarative data, and a scan is gated on `scan`
+  **and** a live socket (a stale port → connection-refused no-op).
+- **Dashboard live-updates: deferred (documented).** The Rust WS is SDK-only; Node's
+  `broadcastDevServer` (`dev_server_status`/`dev_server_log` to dashboard WS clients) has no
+  Rust equivalent. Decision: make `GET /dev-server` the honest poll source of truth (status
+  + ports + logs); a WS push to dashboard clients is a separate, bigger WS-layer change, left
+  as a follow-up. The broadcast is not conformance-gateable; the `GET` shape is.
+
 ## Where things live
 
 | Add a… | Where |

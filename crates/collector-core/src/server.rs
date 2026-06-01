@@ -90,6 +90,13 @@ pub async fn serve(
             get(pm_project_by_id).put(pm_update_project).delete(pm_delete_project),
         )
         .route("/api/pm/projects/{id}/workspace", put(pm_set_project_workspace))
+        // git integration (M5.5 Slice F)
+        .route("/api/pm/projects/{id}/git/status", get(pm_git_status))
+        .route("/api/pm/projects/{id}/git/log", get(pm_git_log))
+        .route("/api/pm/projects/{id}/git/diff", get(pm_git_diff))
+        .route("/api/pm/projects/{id}/git/stage", post(pm_git_stage))
+        .route("/api/pm/projects/{id}/git/unstage", post(pm_git_unstage))
+        .route("/api/pm/projects/{id}/git/commit", post(pm_git_commit))
         .route("/api/pm/sessions", get(pm_sessions))
         .route("/api/pm/sessions/stats", get(pm_sessions_stats)) // before {id}
         .route("/api/pm/sessions/{id}", get(pm_session_by_id))
@@ -1521,6 +1528,322 @@ async fn pm_session_refresh(State(s): State<AppState>, headers: HeaderMap, Path(
     }
 }
 
+// ---- pm/ git integration (M5.5 Slice F) ----
+//
+// All git invocations go through `run_git` → `std::process::Command` with an
+// explicit argv and NO shell (mirrors Node's `execFileSync('git', args)`), with a
+// `--` separator before any user-supplied paths so a path can't be read as a flag.
+// The blocking git work runs under `spawn_blocking`.
+
+/// Run `git <args>` in `cwd` (no shell). Ok(stdout) on exit 0, else Err(stderr).
+fn run_git(args: &[&str], cwd: &str) -> Result<String, String> {
+    let out = std::process::Command::new("git")
+        .args(args)
+        .current_dir(cwd)
+        .output()
+        .map_err(|e| e.to_string())?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).to_string())
+    } else {
+        Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+fn is_git_repo(cwd: &str) -> bool {
+    std::process::Command::new("git")
+        .args(["rev-parse", "--git-dir"])
+        .current_dir(cwd)
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
+}
+
+/// Parse `git status --porcelain` → (staged, unstaged, untracked) — ports Node
+/// `parseGitStatus` (X=index col, Y=worktree col; `R old -> new` renames; `??`
+/// untracked). `oldPath` is emitted only on a rename in the staged entry.
+fn parse_git_status(porcelain: &str) -> (Vec<Value>, Vec<Value>, Vec<Value>) {
+    let (mut staged, mut unstaged, mut untracked) = (Vec::new(), Vec::new(), Vec::new());
+    for line in porcelain.split('\n') {
+        if line.len() < 4 {
+            continue;
+        }
+        let mut chars = line.chars();
+        let x = chars.next().unwrap();
+        let y = chars.next().unwrap();
+        let filepath = &line[3..]; // "XY " prefix is 3 ASCII bytes
+        let (mut path, mut old_path) = (filepath.to_string(), None::<String>);
+        if let Some(idx) = filepath.find(" -> ") {
+            old_path = Some(filepath[..idx].to_string());
+            path = filepath[idx + 4..].to_string();
+        }
+        if x == '?' && y == '?' {
+            untracked.push(json!({ "path": path, "status": "?" }));
+            continue;
+        }
+        if x != ' ' && x != '?' {
+            let mut o = json!({ "path": path, "status": x.to_string() });
+            if let Some(op) = &old_path {
+                o["oldPath"] = json!(op);
+            }
+            staged.push(o);
+        }
+        if y != ' ' && y != '?' {
+            unstaged.push(json!({ "path": path, "status": y.to_string() }));
+        }
+    }
+    (staged, unstaged, untracked)
+}
+
+/// Extract the commit hash from `git commit` output — ports Node's
+/// `/\[[\w/.-]+ ([a-f0-9]+)\]/` (the `[branch hash]` line).
+fn extract_commit_hash(output: &str) -> String {
+    for line in output.lines() {
+        let Some(start) = line.find('[') else { continue };
+        let Some(rel_end) = line[start..].find(']') else { continue };
+        let inside = &line[start + 1..start + rel_end];
+        if let Some((_, hash)) = inside.rsplit_once(' ') {
+            if !hash.is_empty() && hash.chars().all(|c| c.is_ascii_hexdigit()) {
+                return hash.to_string();
+            }
+        }
+    }
+    String::new()
+}
+
+/// Outcome of a mutating git op, so the handler can map to 200 / 400 / 500.
+enum GitOutcome {
+    Ok(Value),
+    NotRepo,
+    Err(String),
+}
+
+fn git_status_blocking(path: &str) -> Result<Value, String> {
+    if !is_git_repo(path) {
+        return Ok(json!({ "isGitRepo": false, "branch": "", "staged": [], "unstaged": [], "untracked": [] }));
+    }
+    let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], path)?.trim().to_string();
+    let porcelain = run_git(&["status", "--porcelain"], path)?;
+    let (staged, unstaged, untracked) = parse_git_status(&porcelain);
+    Ok(json!({ "isGitRepo": true, "branch": branch, "staged": staged, "unstaged": unstaged, "untracked": untracked }))
+}
+
+fn git_log_blocking(path: &str) -> Result<Value, String> {
+    if !is_git_repo(path) {
+        return Ok(json!([]));
+    }
+    let raw = run_git(&["log", "-30", "--format=%H%x00%h%x00%B%x00%an%x00%cr%x00%D%x01"], path)?;
+    let mut commits = Vec::new();
+    for entry in raw.trim().split('\u{1}').filter(|e| !e.is_empty()) {
+        let parts: Vec<&str> = entry.trim().split('\0').collect();
+        let get = |i: usize| parts.get(i).copied().unwrap_or("");
+        let full = get(2).trim();
+        let subject = full.split('\n').next().unwrap_or("");
+        commits.push(json!({
+            "hash": get(0), "shortHash": get(1), "subject": subject,
+            "message": full, "author": get(3), "relativeDate": get(4), "refs": get(5).trim(),
+        }));
+    }
+    Ok(json!(commits))
+}
+
+fn git_diff_blocking(path: &str, staged: bool, file: Option<String>) -> Result<Value, String> {
+    if !is_git_repo(path) {
+        return Ok(json!({ "diff": "" }));
+    }
+    let mut args: Vec<&str> = vec!["diff"];
+    if staged {
+        args.push("--staged");
+    }
+    if let Some(f) = &file {
+        args.push("--");
+        args.push(f);
+    }
+    Ok(json!({ "diff": run_git(&args, path)? }))
+}
+
+fn git_stage_blocking(path: &str, files: Option<Vec<String>>, unstage: bool) -> GitOutcome {
+    if !is_git_repo(path) {
+        return GitOutcome::NotRepo;
+    }
+    let files = files.filter(|f| !f.is_empty());
+    let res = match (&files, unstage) {
+        (Some(files), false) => {
+            let mut args = vec!["add", "--"];
+            args.extend(files.iter().map(String::as_str));
+            run_git(&args, path)
+        }
+        (None, false) => run_git(&["add", "-A"], path),
+        (Some(files), true) => {
+            let mut args = vec!["restore", "--staged", "--"];
+            args.extend(files.iter().map(String::as_str));
+            run_git(&args, path)
+        }
+        (None, true) => run_git(&["reset", "HEAD"], path),
+    };
+    match res {
+        Ok(_) => GitOutcome::Ok(json!({ "ok": true })),
+        Err(e) => GitOutcome::Err(e),
+    }
+}
+
+fn git_commit_blocking(path: &str, message: &str) -> GitOutcome {
+    if !is_git_repo(path) {
+        return GitOutcome::NotRepo;
+    }
+    match run_git(&["commit", "-m", message], path) {
+        Ok(out) => GitOutcome::Ok(json!({ "ok": true, "hash": extract_commit_hash(&out) })),
+        Err(e) => GitOutcome::Err(e),
+    }
+}
+
+fn git_500(e: String) -> Response {
+    (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response()
+}
+
+/// Resolve the project + its on-disk path, or the early Response (404 / a graceful
+/// non-path body via `no_path`).
+async fn git_project_path(s: &AppState, id: &str, no_path: Value) -> Result<String, Response> {
+    let Some(project) = s.pm.get_project(id) else {
+        return Err(not_found_json("Project not found"));
+    };
+    match project.path {
+        Some(p) => Ok(p),
+        None => Err(Json(no_path).into_response()),
+    }
+}
+
+async fn pm_git_status(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let no_repo = json!({ "data": { "isGitRepo": false, "branch": "", "staged": [], "unstaged": [], "untracked": [] } });
+    let path = match git_project_path(&s, &id, no_repo).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || git_status_blocking(&path)).await {
+        Ok(Ok(data)) => Json(json!({ "data": data })).into_response(),
+        Ok(Err(e)) => git_500(e),
+        Err(_) => git_500("git task failed".into()),
+    }
+}
+
+async fn pm_git_log(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let path = match git_project_path(&s, &id, json!({ "data": [] })).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    match tokio::task::spawn_blocking(move || git_log_blocking(&path)).await {
+        Ok(Ok(data)) => Json(json!({ "data": data })).into_response(),
+        Ok(Err(e)) => git_500(e),
+        Err(_) => git_500("git task failed".into()),
+    }
+}
+
+async fn pm_git_diff(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let path = match git_project_path(&s, &id, json!({ "data": { "diff": "" } })).await {
+        Ok(p) => p,
+        Err(resp) => return resp,
+    };
+    let staged = matches!(q.get("staged").map(String::as_str), Some("1") | Some("true"));
+    let file = q.get("file").filter(|f| !f.is_empty()).cloned();
+    match tokio::task::spawn_blocking(move || git_diff_blocking(&path, staged, file)).await {
+        Ok(Ok(data)) => Json(json!({ "data": data })).into_response(),
+        Ok(Err(e)) => git_500(e),
+        Err(_) => git_500("git task failed".into()),
+    }
+}
+
+/// 400 "Not a git repo" (shared by stage/unstage/commit's no-path + non-repo paths).
+fn not_a_git_repo() -> Response {
+    (StatusCode::BAD_REQUEST, Json(json!({ "error": "Not a git repo" }))).into_response()
+}
+
+fn git_mutate_response(outcome: Result<GitOutcome, tokio::task::JoinError>) -> Response {
+    match outcome {
+        Ok(GitOutcome::Ok(v)) => Json(v).into_response(),
+        Ok(GitOutcome::NotRepo) => not_a_git_repo(),
+        Ok(GitOutcome::Err(e)) => git_500(e),
+        Err(_) => git_500("git task failed".into()),
+    }
+}
+
+async fn pm_git_stage(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return not_found_json("Project not found");
+    };
+    let Some(path) = project.path else {
+        return not_a_git_repo();
+    };
+    let files = parse_files(&body);
+    git_mutate_response(tokio::task::spawn_blocking(move || git_stage_blocking(&path, files, false)).await)
+}
+
+async fn pm_git_unstage(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return not_found_json("Project not found");
+    };
+    let Some(path) = project.path else {
+        return not_a_git_repo();
+    };
+    let files = parse_files(&body);
+    git_mutate_response(tokio::task::spawn_blocking(move || git_stage_blocking(&path, files, true)).await)
+}
+
+/// `{ files: [...] }` from a body, or None (→ stage/unstage all), matching Node's
+/// `try { files = JSON.parse(body).files } catch {}`.
+fn parse_files(body: &str) -> Option<Vec<String>> {
+    if body.is_empty() {
+        return None;
+    }
+    serde_json::from_str::<Value>(body)
+        .ok()
+        .and_then(|v| v.get("files").and_then(|f| f.as_array()).map(|a| {
+            a.iter().filter_map(|x| x.as_str().map(String::from)).collect()
+        }))
+}
+
+async fn pm_git_commit(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(project) = s.pm.get_project(&id) else {
+        return not_found_json("Project not found");
+    };
+    let Some(path) = project.path else {
+        return not_a_git_repo();
+    };
+    if body.is_empty() {
+        return bad_request("Body required");
+    }
+    let Ok(v) = serde_json::from_str::<Value>(&body) else {
+        return git_500("invalid JSON".into());
+    };
+    let message = v.get("message").and_then(Value::as_str).unwrap_or("");
+    if message.trim().is_empty() {
+        return bad_request("Commit message required");
+    }
+    let message = message.to_string();
+    git_mutate_response(tokio::task::spawn_blocking(move || git_commit_blocking(&path, &message)).await)
+}
+
 // ---- WebSocket ----
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl IntoResponse {
@@ -1684,5 +2007,88 @@ mod slice_d_tests {
         // No path → local scope falls back to <home>/CLAUDE.md.
         let (_, _, l2) = rules_paths(Some("k"), None);
         assert_eq!(l2, std::path::Path::new("/tmp/rs-home/CLAUDE.md"));
+    }
+}
+
+#[cfg(test)]
+mod slice_f_git_tests {
+    use super::{extract_commit_hash, git_log_blocking, git_status_blocking, is_git_repo, parse_git_status, run_git};
+
+    #[test]
+    fn parse_git_status_buckets_index_worktree_untracked_and_renames() {
+        // Build with join so the leading-space (worktree) columns survive — a
+        // Rust string line-continuation (`\` + newline) would strip them.
+        let porcelain = [
+            "M  staged_mod.rs",
+            " M worktree_mod.rs",
+            "MM both.rs",
+            "A  added.rs",
+            "?? new_file.rs",
+            "R  old.rs -> new.rs",
+            "D  deleted.rs",
+        ]
+        .join("\n");
+        let (staged, unstaged, untracked) = parse_git_status(&porcelain);
+        // staged: staged_mod(M), both(M), added(A), rename(R, oldPath), deleted(D)
+        assert_eq!(staged.len(), 5);
+        assert_eq!(staged[0]["path"], "staged_mod.rs");
+        assert_eq!(staged[0]["status"], "M");
+        // 'MM both.rs' → staged M + unstaged M
+        assert!(staged.iter().any(|s| s["path"] == "both.rs" && s["status"] == "M"));
+        // rename carries oldPath on the staged entry, path = new.
+        let rename = staged.iter().find(|s| s["status"] == "R").unwrap();
+        assert_eq!(rename["path"], "new.rs");
+        assert_eq!(rename["oldPath"], "old.rs");
+        // unstaged: worktree_mod(M) + both(M)
+        assert_eq!(unstaged.len(), 2);
+        assert!(unstaged.iter().any(|u| u["path"] == "worktree_mod.rs"));
+        assert!(unstaged.iter().all(|u| u.get("oldPath").is_none()), "unstaged entries omit oldPath");
+        // untracked
+        assert_eq!(untracked.len(), 1);
+        assert_eq!(untracked[0], serde_json::json!({ "path": "new_file.rs", "status": "?" }));
+    }
+
+    #[test]
+    fn extract_commit_hash_matches_node_regex() {
+        assert_eq!(extract_commit_hash("[main 1a2b3c4] my message\n 1 file changed"), "1a2b3c4");
+        assert_eq!(extract_commit_hash("[feature/x-y 0abc123] subject"), "0abc123");
+        assert_eq!(extract_commit_hash("nothing here"), "");
+    }
+
+    // Live-git checks against this very repo (the crate dir is inside it). Skipped
+    // gracefully if git isn't on PATH or this isn't a checkout.
+    fn repo_dir() -> &'static str {
+        env!("CARGO_MANIFEST_DIR")
+    }
+
+    #[test]
+    fn live_git_status_and_log_against_this_repo() {
+        let dir = repo_dir();
+        if !is_git_repo(dir) {
+            eprintln!("skip: not a git checkout");
+            return;
+        }
+        // status: real repo → isGitRepo true + a branch.
+        let status = git_status_blocking(dir).expect("status");
+        assert_eq!(status["isGitRepo"], true);
+        assert!(status["branch"].as_str().map(|b| !b.is_empty()).unwrap_or(false));
+
+        // rev-parse round-trips a non-empty branch name.
+        let branch = run_git(&["rev-parse", "--abbrev-ref", "HEAD"], dir).expect("rev-parse");
+        assert!(!branch.trim().is_empty());
+
+        // log: repo has commits → non-empty array with hash/shortHash/subject.
+        let log = git_log_blocking(dir).expect("log");
+        let arr = log.as_array().expect("array");
+        assert!(!arr.is_empty(), "repo should have commits");
+        let c0 = &arr[0];
+        assert!(c0["hash"].as_str().map(|h| h.len() == 40).unwrap_or(false), "full sha");
+        assert!(c0["shortHash"].as_str().map(|h| !h.is_empty()).unwrap_or(false));
+        assert!(c0["subject"].as_str().map(|s| !s.is_empty()).unwrap_or(false));
+    }
+
+    #[test]
+    fn is_git_repo_false_for_non_repo() {
+        assert!(!is_git_repo("/tmp"));
     }
 }

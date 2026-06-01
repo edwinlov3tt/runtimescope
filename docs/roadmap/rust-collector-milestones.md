@@ -181,15 +181,20 @@ releases = **fast-follow after v0.11.0 ships**.
 ## Milestone 7 — Gate, cutover, ship (serial, ~1 wk) — 🟡 GATE MET, cutover pending
 
 - [x] Full `npm run conformance` green against the Rust binary. **132/132 vs Node AND Rust (serial; parallel has the GPT #7 port-collision flake).**
-- [x] `npm run stress` 7/7; `npm run bench:compare -- node <rust>` within gates (target: Rust beats Node). **Stress 7/7 both ways. Bench: all 5 gates pass — throughput 100% of Node (56.5k ev/s after the txn-batching fix), steady-state RSS 0.13× Node (8× better), no leak, zero drops.** See `reviews/0003`.
-- [x] Signed-binary release workflow + the conformance/bench gate in CI. **`rust.yml` now runs conformance-vs-Rust (serial) + `bench:compare` on every PR/main; `release-binaries.yml` gates on conformance then ships universal (arm64+x86_64) codesigned macOS binaries + SHA256SUMS on a `v*` tag (signing optional — gated on `APPLE_CERTIFICATE_BASE64`/`APPLE_SIGNING_IDENTITY` secrets; unsigned + noticed if absent).**
+- [x] `npm run stress` 7/7; `npm run bench:compare -- node <rust>` within gates (target: Rust beats Node). **Stress 7/7 both ways. Bench: all 5 gates pass with margin — throughput 146% of Node, p99 0.26× (Rust 2.4ms vs Node 9.3ms after the group-commit + fsync work), RSS 0.13× (8× better), no leak, zero drops. Verified green in CI.** See `reviews/0003`.
+- [x] Signed-binary release workflow + the conformance/bench gate in CI. **GREEN IN CI (run 26788781393): `rust.yml` runs build/clippy/test + conformance-vs-Rust (serial) + `bench:compare` on every PR/main; `release-binaries.yml` gates on conformance then ships universal (arm64+x86_64) codesigned macOS binaries + SHA256SUMS on a `v*` tag (signing optional — gated on `APPLE_CERTIFICATE_BASE64`/`APPLE_SIGNING_IDENTITY` secrets; unsigned + noticed if absent).**
 - [ ] Delete `packages/collector|mcp-server|cli`; verify git-tag rollback. **(destructive — needs the safety tag + independent sign-off first)**
 - [ ] v0.11.0; deprecate Node packages (final v0.10.13) on npm; completion report; CURRENT_STATE + HANDOFF → Phase SDK-Channel-Migration.
 
 **Gate run 2026-06-01:** kicking off M7's gate before the irreversible delete caught
 **5 Rust divergences in HTTP surfaces conformance never covered** (Node 7/7 → Rust 3/7
-on stress) **+ a 2.4× ingest throughput regression** — all now fixed (commits `15d3ed0`,
-`67a4934`). Vindicates running the gate first. Detail: `reviews/0003-m7-gate-findings.md`.
+on stress) **+ ingest perf gaps** — all fixed (`15d3ed0` divergences, `67a4934` txn
+batching, `90228ec` WAL group-commit, `fc9b2e2` fsync-not-F_FULLFSYNC). Standing up
+the CI gate then exposed a 6th issue: the Rust build hard-depends on the gitignored
+`packages/dashboard/dist/` via rust-embed, so a fresh checkout couldn't compile —
+fixed with a `build.rs` that ensures the folder exists (`98eabe1`). Final: all three
+`rust.yml` jobs green in CI. Vindicates running the gate first. Detail:
+`reviews/0003-m7-gate-findings.md`.
 
 **Team?** No — this is the careful close. One author owns the destructive cutover.
 

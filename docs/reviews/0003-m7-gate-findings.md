@@ -60,29 +60,43 @@ npm run bench:compare -- bench/results/node-*.json bench/results/collector-serve
 
 ### Bench: ingest throughput regression (commit `67a4934`)
 
-6. **Rust ingest was 41% of Node** (23 226 vs 56 343 ev/s) — failing the ≥90% gate — *while using 8× less
-   memory with zero leak.* Root cause: the per-batch insert loop ran **one implicit SQLite transaction per
-   event** (~20 k tiny commits) and re-parsed the INSERT each time.
-   Fixed (durability-neutral — the JSONL WAL fsync already makes the batch durable *before* the SQLite
-   write): wrap each batch in one `unchecked_transaction()` + `prepare_cached` the INSERT.
-   **Result: 56 547 ev/s (100% of Node).**
+6. **Ingest perf** — three iterations, each durability-neutral:
+   - **41% of Node** (23k vs 56k ev/s) — the insert loop ran **one implicit SQLite transaction per event**
+     (~20k tiny commits) + re-parsed the INSERT. Fixed: one `unchecked_transaction()` per batch +
+     `prepare_cached`. → **100% of Node** (`67a4934`).
+   - **CI p99 2.49× → still 1.80×** after a **WAL group-commit** (drain queued AddBatch, one fsync for the
+     whole group) — helped throughput but the p99 metric is 50 *single-marker* round-trips, which don't
+     coalesce, so p99 = the cost of one durable write (`90228ec`).
+   - **CI p99 1.80× → 0.26×** — the single-write cost was macOS `F_FULLFSYNC` (`File::sync_all`). The
+     crash-recovery contract is SIGKILL, which plain `fsync(2)` survives; `F_FULLFSYNC` only adds power-loss
+     durability (which SQLite NORMAL/FULL doesn't promise on macOS, and Node never had). `Wal::commit` →
+     `fsync` (`fc9b2e2`). → **p99 2.4ms vs Node 9.3ms (0.26×), throughput 146%.**
 
-## Ending state — gate GREEN
+### Standing up the CI gate exposed a 7th issue (commit `98eabe1`)
+
+`collector-core` embeds `packages/dashboard/dist/` via `rust-embed` (`debug-embed` = compile-time, every
+profile), but that folder is a gitignored build artifact — so a **fresh checkout couldn't compile** ("folder
+does not exist"). It only built locally on a stale `dist/`. Had been silently reding `rust.yml`. Fixed with
+a `build.rs` that `create_dir_all`s the folder (empty → 404 until the SPA is built; the dashboard-embed
+conformance spec gates that the *real* dashboard shipped). The `conformance` + release jobs build the real
+dashboard before cargo.
+
+## Ending state — gate GREEN IN CI (run 26788781393)
 
 | Gate | Result |
 |------|--------|
-| conformance (serial) | **132/132 vs Node AND Rust** |
-| stress | **7/7 vs Node AND Rust** |
-| bench:compare | **5/5 gates** — throughput 100%, p99 1.33×, 0 drops, RSS **0.13×** (8× better), no leak |
-| clippy `--workspace --all-targets` | clean |
-| `cargo test --workspace` | 107 passed |
+| `rust.yml` build / clippy / test | ✅ (107 tests) |
+| conformance (serial, vs Rust, in CI) | ✅ **132/132** |
+| bench:compare (in CI) | ✅ **5/5** — throughput **146%**, p99 **0.26×** (2.4ms vs 9.3ms), RSS **0.13×**, no leak, 0 drops |
+| stress (local, both ways) | ✅ **7/7** |
+| durability conformance (SIGKILL+restart) | ✅ |
 
-Net: Rust now **matches Node on throughput, uses ~8× less memory, and is crash-durable** (Node's ring is
-RAM-only) — the "beyond-Node" goal met, with the contract held.
+Net: Rust **beats Node on throughput AND p99, uses ~8× less memory, and is crash-durable** (Node's ring is
+RAM-only) — the "beyond-Node" goal exceeded, with every contract held.
 
 ## Remaining before the irreversible cutover
 
-1. Signed-binary release workflow + conformance/bench gate in CI (roadmap M7 #3).
+1. ~~Signed-binary release workflow + conformance/bench gate in CI~~ — ✅ done, green in CI.
 2. **Tag the Node packages immediately before deletion** (the git-tag rollback the roadmap requires).
 3. **Independent confirmation** of this gate + the `0002` remediation ledger (the irreversible-delete gate).
 4. Then: delete `packages/collector|mcp-server|cli`, v0.11.0, deprecate Node on npm, completion report.

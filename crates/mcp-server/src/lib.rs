@@ -56,6 +56,30 @@ impl ServerHandler for Mcp {
 /// Run the MCP server (collector embedded in-process, ADR-0008) over stdio.
 /// The binary wrapper provides the tokio runtime (`#[tokio::main]`); this is a
 /// plain async entrypoint so the crate is a reusable library on crates.io.
+/// Is a healthy collector already serving `/readyz` on `127.0.0.1:port`? Used to
+/// decide whether this MCP server should start its own embedded collector or just
+/// attach to the standalone one. Short-timeout, dependency-free raw HTTP probe.
+async fn collector_already_running(port: u16) -> bool {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::time::{timeout, Duration};
+    let connect = timeout(Duration::from_millis(800), tokio::net::TcpStream::connect(("127.0.0.1", port))).await;
+    let Ok(Ok(mut stream)) = connect else { return false };
+    if stream.write_all(b"GET /readyz HTTP/1.0\r\nHost: 127.0.0.1\r\n\r\n").await.is_err() {
+        return false;
+    }
+    let mut buf = [0u8; 128];
+    let Ok(Ok(n)) = timeout(Duration::from_millis(800), stream.read(&mut buf)).await else {
+        return false;
+    };
+    // 2xx on /readyz ⇒ a healthy RuntimeScope collector owns the port.
+    String::from_utf8_lossy(&buf[..n])
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|c| c.parse::<u16>().ok())
+        .is_some_and(|code| (200..300).contains(&code))
+}
+
 pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
@@ -71,18 +95,32 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     // Embed the collector in-process (ADR-0008): WS + HTTP run alongside MCP so
     // the command channel's send is an in-process call, and the tools read the
     // same store the SDK feeds.
-    let serve_store = store.clone();
-    let serve_hub = hub.clone();
-    let serve_pm = pm.clone();
-    tokio::spawn(async move {
-        // MCP auth mode: config-file-only, ignores RUNTIMESCOPE_AUTH_TOKEN (Node
-        // parity, mcp-server/src/index.ts).
-        // process_monitor = true: mcp-server serves live /api/processes + /api/ports
-        // (Node `new ProcessMonitor(store)`); the standalone collector-server passes false.
-        if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp, true).await {
-            eprintln!("[RuntimeScope] embedded collector failed: {e}");
-        }
-    });
+    //
+    // BUT if a standalone collector is already serving this port (the common
+    // setup: a launchd/systemd `collector-server` the SDKs report to), DON'T start
+    // a second one — it would just fail to bind ("Address already in use") and,
+    // worse, run a duplicate retention sweep against the shared collector.db. We
+    // open the same data dir, so the read tools see the SDK's events either way;
+    // attach as a pure reader and let the standalone own ingestion/WS/retention.
+    if collector_already_running(http_port).await {
+        eprintln!(
+            "[RuntimeScope] attached to the collector already serving :{http_port} \
+             (reading its store; not starting a second collector)"
+        );
+    } else {
+        let serve_store = store.clone();
+        let serve_hub = hub.clone();
+        let serve_pm = pm.clone();
+        tokio::spawn(async move {
+            // MCP auth mode: config-file-only, ignores RUNTIMESCOPE_AUTH_TOKEN (Node
+            // parity, mcp-server/src/index.ts).
+            // process_monitor = true: mcp-server serves live /api/processes + /api/ports
+            // (Node `new ProcessMonitor(store)`); the standalone collector-server passes false.
+            if let Err(e) = serve(serve_store, serve_hub, serve_pm, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp, true).await {
+                eprintln!("[RuntimeScope] embedded collector failed: {e}");
+            }
+        });
+    }
 
     // The conformance mcp-driver waits for this exact marker before sending
     // JSON-RPC (and only then attaches — see the harness note). Print it before

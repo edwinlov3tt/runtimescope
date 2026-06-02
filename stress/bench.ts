@@ -277,6 +277,60 @@ function compare(a: BenchReport, b: BenchReport): boolean {
   return ok;
 }
 
+// ------------------------------------------------------------------ check (SLO)
+
+/**
+ * Absolute performance SLOs for the Rust collector. This is the post-M7 perf
+ * gate: after the Node reference was deleted (tag node-reference-v0.10.13) there
+ * is no live baseline to ratio against on the CI runner, so we assert absolute
+ * floors/ceilings instead. Thresholds carry generous headroom over observed Rust
+ * numbers (≈55–63k ev/s, p99 ≈2–5ms, RSS ≈16MB) so they catch a real regression
+ * without flaking on CI disk noise. For the historical Node comparison that
+ * justified the cutover, see docs/reviews/0003-m7-gate-findings.md.
+ */
+const SLO = {
+  minThroughput: 25_000, // ev/s — Rust does ~55k+; floor catches a major regression
+  maxP99Ms: 25, // ms — Rust ~2–5ms (fsync, not F_FULLFSYNC); ceiling absorbs CI disk noise
+  maxRssMb: 60, // MB steady-state — Rust ~16MB (Node was ~110MB); ceiling catches bloat/leak
+};
+
+function checkSlo(b: BenchReport): boolean {
+  console.log(`\n${BOLD}SLO check${RESET}  ${b.collector} ${DIM}(absolute gates — no live baseline post-cutover)${RESET}`);
+  console.log('─'.repeat(64));
+  let ok = true;
+  const line = (label: string, pass: boolean, detail: string) => {
+    if (!pass) ok = false;
+    console.log(`  ${pass ? GREEN + '✓' : RED + '✗'}${RESET} ${label.padEnd(34)} ${detail}`);
+  };
+
+  line(
+    `throughput ≥ ${SLO.minThroughput / 1000}k ev/s`,
+    b.throughput.eventsPerSec >= SLO.minThroughput,
+    `${b.throughput.eventsPerSec.toFixed(0)}/s`,
+  );
+  line(
+    `p99 ingest latency ≤ ${SLO.maxP99Ms}ms`,
+    b.throughput.latencyMs.p99 <= SLO.maxP99Ms,
+    `${b.throughput.latencyMs.p99.toFixed(1)}ms`,
+  );
+  line('zero dropped events', b.throughput.dropped === 0, `${b.throughput.dropped} dropped`);
+  line(
+    `steady-state RSS ≤ ${SLO.maxRssMb}MB`,
+    b.soak.lastRssMb <= SLO.maxRssMb,
+    `${b.soak.lastRssMb}MB`,
+  );
+  const leaking = b.soak.tailSlopeMbPerCycle > 0.5 && b.soak.tailR2 > 0.6;
+  line(
+    'no leak (steady-state tail)',
+    !leaking,
+    `tail slope ${b.soak.tailSlopeMbPerCycle}MB/cycle, R²=${b.soak.tailR2} ${DIM}(last ${b.soak.tailCycles} cycles)${RESET}`,
+  );
+
+  console.log('─'.repeat(64));
+  console.log(ok ? `${GREEN}${BOLD}✓ within SLO${RESET}` : `${RED}${BOLD}✗ SLO breached${RESET}`);
+  return ok;
+}
+
 // ----------------------------------------------------------------------- main
 
 async function main(): Promise<void> {
@@ -292,6 +346,15 @@ async function main(): Promise<void> {
     const a = readReport(rest[0]);
     const b = readReport(rest[1]);
     process.exit(compare(a, b) ? 0 : 1);
+  }
+
+  if (args.includes('--check')) {
+    const rest = args.filter((a) => !a.startsWith('--'));
+    if (rest.length !== 1) {
+      console.error('Usage: npm run bench:check -- <report>  (absolute SLO gate)');
+      process.exit(2);
+    }
+    process.exit(checkSlo(readReport(rest[0])) ? 0 : 1);
   }
 
   const quick = args.includes('--quick');

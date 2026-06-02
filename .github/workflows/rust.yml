@@ -70,9 +70,11 @@ jobs:
           RUNTIMESCOPE_MCP_CMD: ${{ github.workspace }}/target/release/mcp-server
         run: npx vitest run --config tests/conformance/vitest.config.ts --no-file-parallelism
 
-  # Perf gate: bench the Node standalone and the Rust collector on this runner,
-  # then assert the Rust candidate is within gates. Skipped on feature-branch
-  # pushes (bench is timing-sensitive); runs on PRs, main, and manual dispatch.
+  # Perf gate: bench the Rust collector and assert absolute SLOs. Post-M7 the
+  # Node reference is gone (tag node-reference-v0.10.13), so there's no live
+  # baseline to ratio against — we gate on absolute floors/ceilings instead (the
+  # Node comparison that justified the cutover is in reviews/0003). Skipped on
+  # feature-branch pushes (timing-sensitive); runs on PRs, main, manual dispatch.
   bench:
     runs-on: macos-14
     if: github.event_name != 'push' || github.ref == 'refs/heads/main'
@@ -85,23 +87,12 @@ jobs:
         run: npm ci
       - name: Build Rust collector (release)
         run: cargo build --release --locked --bin collector-server
-      # Node baseline standalone. Build order matters: sdk -> dashboard ->
-      # collector (the collector's tsup onSuccess copies the dashboard in).
-      - name: Build Node collector (bench baseline)
-        run: |
-          npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk
-          npm run build -w packages/dashboard
-          npm run build -w packages/collector
-      - name: Bench Node baseline
-        run: npm run bench
-      - name: Bench Rust candidate
+      - name: Bench Rust
         env:
           RUNTIMESCOPE_COLLECTOR_CMD: ${{ github.workspace }}/target/release/collector-server
         run: npm run bench
-      - name: Compare (gate)
+      - name: SLO check (gate)
         run: |
-          NODE_REPORT=$(ls -t bench/results/node-*.json | head -1)
           RUST_REPORT=$(ls -t bench/results/collector-server-*.json | head -1)
-          echo "baseline:  $NODE_REPORT"
-          echo "candidate: $RUST_REPORT"
-          npm run bench:compare -- "$NODE_REPORT" "$RUST_REPORT"
+          echo "report: $RUST_REPORT"
+          npm run bench:check -- "$RUST_REPORT"

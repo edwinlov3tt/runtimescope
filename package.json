@@ -7,18 +7,19 @@
     "playground"
   ],
   "scripts": {
-    "build": "npm run build --workspaces",
+    "build": "npm run build --workspaces --if-present",
     "dev": "npm run dev --workspaces --if-present",
     "clean": "npm run clean --workspaces --if-present",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dashboard": "node packages/collector/dist/dashboard.js",
+    "dashboard": "echo 'The dashboard is served by the Rust collector at http://localhost:6768/dashboard (run: runtimescope start, or target/release/collector-server).'",
     "playground": "npm run dev -w playground",
     "stress": "tsx stress/cli.ts",
     "stress:quick": "tsx stress/cli.ts -- --quick",
     "bench": "tsx stress/bench.ts",
     "bench:quick": "tsx stress/bench.ts --quick",
     "bench:compare": "tsx stress/bench.ts --compare",
+    "bench:check": "tsx stress/bench.ts --check",
     "conformance": "vitest run --config tests/conformance/vitest.config.ts",
     "prepush": "npm run build && npm test && npm run stress -- --quick"
   },

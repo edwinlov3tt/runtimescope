@@ -1,9 +1,14 @@
 name: Publish to npm
 
+# Publishes the JS/TS packages on a v* tag. Post-M7 the collector, mcp-server,
+# and CLI are Rust binaries (shipped via release-binaries.yml, NOT npm — see tag
+# node-reference-v0.10.13 for the final Node versions). The dashboard ships
+# embedded in the Rust binary. This workflow now publishes only the SDKs and the
+# framework integrations. The Rust wire-contract gate lives in rust.yml.
 on:
   push:
     tags:
-      - 'v*' # Triggered by: git tag v0.7.0 && git push --tags
+      - 'v*' # Triggered by: git tag v0.11.0 && git push --tags
 
 jobs:
   publish:
@@ -17,33 +22,12 @@ jobs:
           registry-url: https://registry.npmjs.org
 
       - run: npm ci
-      # Build extension first — mcp-server's tsup config bundles
-      # @runtimescope/extension via noExternal, so its dist/ must exist.
-      - run: npm run build -w packages/extension
-      # Build order matters here:
-      #   1. SDKs first — the dashboard imports @runtimescope/sdk in TS
-      #      source, so its tsc step needs the SDK types compiled.
-      #   2. Dashboard second — the collector's tsup `onSuccess` hook
-      #      copies packages/dashboard/dist/ into packages/collector/
-      #      dist/dashboard-assets/, so the SPA ships inside the
-      #      @runtimescope/collector npm package. If the dashboard
-      #      isn't built before the collector, the copy silently
-      #      no-ops with a warning that doesn't surface in CI logs —
-      #      exactly the bug that shipped in v0.10.10 (dashboard
-      #      route 404'd because the assets were missing).
-      #   3. Collector + mcp-server last (with the dashboard now on disk).
+      # SDKs first — the framework integrations import @runtimescope/sdk types.
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk
-      - run: npm run build -w packages/dashboard
-      - run: npm run build -w packages/collector -w packages/mcp-server
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite
       - run: npm test
-      # Wire-protocol conformance gate (ADR-0006): the executable contract the
-      # collector must honor. Runs against the Node collector built above; the
-      # Rust port (Phase Rust-Collector) runs the same suite via
-      # RUNTIMESCOPE_COLLECTOR_CMD before it's allowed to ship.
-      - run: npm run conformance
 
-      # Publish in dependency order (|| true skips already-published versions)
+      # Publish in dependency order (|| true skips already-published versions).
       - run: npm publish -w packages/sdk --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
@@ -69,19 +53,5 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - run: npm publish -w packages/vite --access public || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - run: npm publish -w packages/collector --access public || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      - run: npm publish -w packages/mcp-server --access public || true
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-
-      # Unscoped `runtimescope` CLI — depends on the above scoped packages
-      - run: npm run build -w packages/cli
-      - run: npm publish -w packages/cli --access public || true
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

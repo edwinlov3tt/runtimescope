@@ -51,16 +51,18 @@ export function resolveCollectorCmd(): { cmd: string; args: string[]; label: str
     const label = (cmd.split('/').pop() || cmd).replace(/\.[^.]+$/, '');
     return { cmd, args: parts.slice(1), label };
   }
-  const distPath = join(
+  // Post-M7 cutover: the Rust collector IS the implementation (the Node packages
+  // were deleted — see tag node-reference-v0.10.13). Default to the release
+  // binary; override with RUNTIMESCOPE_COLLECTOR_CMD for a custom build/path.
+  const binPath = join(
     new URL('.', import.meta.url).pathname,
     '..',
     '..',
-    'packages',
-    'collector',
-    'dist',
-    'standalone.js',
+    'target',
+    'release',
+    'collector-server',
   );
-  return { cmd: 'node', args: [distPath], label: 'node' };
+  return { cmd: binPath, args: [], label: 'collector-server' };
 }
 
 let nextPort = 47000 + Math.floor(Math.random() * 1000);

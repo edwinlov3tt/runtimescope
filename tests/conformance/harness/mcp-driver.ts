@@ -26,12 +26,15 @@ function resolveMcpCmd(): { cmd: string; args: string[] } {
     const parts = override.split(/\s+/);
     return { cmd: parts[0], args: parts.slice(1) };
   }
-  const distPath = join(
+  // Post-M7 cutover: the Rust mcp-server IS the implementation (the Node packages
+  // were deleted — see tag node-reference-v0.10.13). Default to the release
+  // binary; override with RUNTIMESCOPE_MCP_CMD for a custom build/path.
+  const binPath = join(
     new URL('.', import.meta.url).pathname,
     '..', '..', '..',
-    'packages', 'mcp-server', 'dist', 'index.js',
+    'target', 'release', 'mcp-server',
   );
-  return { cmd: 'node', args: [distPath] };
+  return { cmd: binPath, args: [] };
 }
 
 // MCP servers spawned by conformance use a distinct port band from the

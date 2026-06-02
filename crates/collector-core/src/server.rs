@@ -708,6 +708,13 @@ async fn pm_discover(State(s): State<AppState>, headers: HeaderMap) -> Response 
         r.sessions_discovered += r2.sessions_discovered;
         r.sessions_updated += r2.sessions_updated;
         r.errors.extend(r2.errors);
+        // Self-heal: remove pre-filter junk (raw-key names / null paths / home
+        // roots) left by Node-era over-discovery, so the dashboard + CSV export
+        // stay clean. New junk is already blocked by the discovery filter.
+        let pruned = pm_discovery::prune_junk_projects(&pm);
+        if pruned > 0 {
+            eprintln!("[RuntimeScope] discovery: pruned {pruned} junk project(s) (raw-key/null-path/root)");
+        }
         r
     })
     .await

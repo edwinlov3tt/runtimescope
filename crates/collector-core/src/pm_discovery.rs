@@ -356,6 +356,28 @@ fn build_session(session_id: &str, project_id: &str, jsonl_path: &Path, size: i6
     }
 }
 
+/// Remove clearly-junk projects left in `pm.db` by pre-filter discovery (the Node
+/// collector registered EVERY `~/.claude/projects` key, raw-name + un-decoded).
+/// The current filter prevents new ones; this self-heals existing data on each
+/// discover. Conservative — only removes the unambiguous junk so real projects
+/// (clean basename + a non-root path) are never touched:
+///   - a raw-key name (starts with `-` — decode never produced a basename),
+///   - a missing/empty path (a real discovery always stores the decoded path),
+///   - a home/system root path (`is_denied_root`).
+pub fn prune_junk_projects(pm: &PmStore) -> usize {
+    let mut removed = 0;
+    for p in pm.list_projects() {
+        let junk = p.name.starts_with('-')
+            || p.path.as_deref().map(str::trim).unwrap_or("").is_empty()
+            || p.path.as_deref().is_some_and(|s| is_denied_root(Path::new(s)));
+        if junk {
+            pm.delete_project(&p.id);
+            removed += 1;
+        }
+    }
+    removed
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -524,6 +546,33 @@ mod tests {
         let scratch = tmp();
         let skey = format!("-{}", scratch.to_str().unwrap().trim_start_matches('/').replace('/', "-"));
         assert_eq!(resolve_real_project(&skey), None);
+    }
+
+    // Self-heal: pre-filter junk (raw-key name / null path / home root) is pruned,
+    // while a real project (clean basename + a non-root path) is kept.
+    #[test]
+    fn prune_junk_projects_removes_stale_keeps_real() {
+        let base = tmp();
+        let pm = PmStore::open(&base.join("pm.db")).unwrap();
+        let mk = |id: &str, name: &str, path: Option<&str>| crate::pm_store::PmProject {
+            id: id.into(),
+            name: name.into(),
+            path: path.map(String::from),
+            ..Default::default()
+        };
+        // A real project (clean name + a non-root path) — must survive.
+        let real = base.join("real-app");
+        std::fs::create_dir_all(&real).unwrap();
+        pm.upsert_project(&mk("real", "real-app", real.to_str()));
+        // Junk: raw-key name, null path, and the home root.
+        pm.upsert_project(&mk("j1", "-Users-edwinlovettiii-Desktop-ad-generator", None));
+        pm.upsert_project(&mk("j2", "edwinlovettiii", std::env::var("HOME").ok().as_deref()));
+        pm.upsert_project(&mk("j3", "empty-path", Some("")));
+
+        let removed = prune_junk_projects(&pm);
+        assert_eq!(removed, 3, "the three junk entries are pruned");
+        let names: Vec<String> = pm.list_projects().into_iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["real-app"], "only the real project remains: {names:?}");
     }
 }
 

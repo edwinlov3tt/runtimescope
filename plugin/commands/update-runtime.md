@@ -36,8 +36,7 @@ Categorise the findings:
 
 - `@runtimescope/sdk`, `server-sdk`, `workers-sdk` → base SDKs
 - `@runtimescope/nextjs`, `remix`, `sveltekit`, `vite` → framework packages (bundle the relevant base SDK)
-- `@runtimescope/mcp-server`, `@runtimescope/collector` → internals (rarely installed directly — `npx` pulls them)
-- `runtimescope` (unscoped, global) → CLI / background service
+- `runtimescope` (native binary on PATH) → CLI + `collector-server` + `mcp-server` (Rust, v0.11.0+; the old `@runtimescope/mcp-server` / `@runtimescope/collector` npm packages are deprecated)
 - `runtimescope` (PyPI) → Python SDK
 - Plugin at user scope → `/runtimescope:*` slash commands and the skill
 
@@ -96,26 +95,24 @@ Framework packages bundle their matching base SDK. If the project uses `@runtime
 pip install -U runtimescope
 ```
 
-### 3.3 Unscoped CLI / background service
+### 3.3 CLI + collector + MCP server (the Rust binaries)
+
+As of v0.11.0 the `runtimescope` CLI, `collector-server`, and `mcp-server` are native
+binaries (one crate, three bins) — updated by reinstalling, not via npm.
 
 ```bash
-# Global install (CLI binary + service manager)
-npm install -g runtimescope@latest
+# cargo if present (cross-platform), else point at the GitHub release.
+which cargo >/dev/null && cargo install runtimescope --force || \
+  echo "No cargo — grab the latest binaries from https://github.com/edwinlov3tt/runtimescope/releases/latest"
 
-# If a service is already installed, update it in place
-runtimescope service update 2>/dev/null || true
+# Regenerate the launchd/systemd unit so it points at the refreshed binary + restart.
+runtimescope service install
 ```
 
-`runtimescope service update` pulls the newest published `@runtimescope/collector`, restarts the launchd/systemd unit, and verifies it's reachable.
-
-### 3.4 MCP server
-
-The MCP server is usually invoked via `npx -y @runtimescope/mcp-server@latest` and auto-updates on next launch. If the user has pinned a version in `~/.claude.json`, offer to bump it:
-
-```bash
-# Inspect current pin
-cat ~/.claude.json 2>/dev/null | grep -A 2 '"runtimescope"'
-```
+The MCP server picks up the new binary automatically: the plugin's `.mcp.json` runs
+`runtimescope mcp`, so the next Claude Code launch uses the updated binary. (If the user
+registered it manually without the plugin, `claude mcp` still points at the same
+`runtimescope mcp` command — no re-registration needed.)
 
 ### 3.5 Plugin
 
@@ -144,7 +141,7 @@ wait_for_session({ project_id: "<projectId from config>", timeout_seconds: 30, m
 ```
 
 - If it connects with events → report success.
-- If it times out → `/runtimescope:diagnose` for a detailed report, or run `npx runtimescope doctor` to check ports and SDK connectivity.
+- If it times out → `/runtimescope:diagnose` for a detailed report, or check `runtimescope service status` + `lsof -nP -iTCP:6768` for port conflicts.
 
 ---
 
@@ -159,8 +156,7 @@ wait_for_session({ project_id: "<projectId from config>", timeout_seconds: 30, m
 | @runtimescope/nextjs | [prev] | [target] |
 | @runtimescope/workers-sdk | [prev] | [target] |
 | runtimescope (Python) | [prev] | [target] |
-| runtimescope (CLI) | [prev] | [target] |
-| MCP server | auto (`npx -y ...@latest`) | — |
+| runtimescope (CLI + collector + mcp, Rust) | [prev] | [target] |
 | Plugin | [prev] | [target] |
 
 ## What's new in this version

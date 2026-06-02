@@ -3,18 +3,18 @@
   "owner": {
     "name": "RuntimeScope",
     "email": "edwin@edwinlovett.com",
-    "url": "https://github.com/runtimescope"
+    "url": "https://github.com/edwinlov3tt/runtimescope"
   },
   "metadata": {
     "description": "Official RuntimeScope marketplace — runtime monitoring plugins for Claude Code.",
-    "version": "0.10.16"
+    "version": "0.11.0"
   },
   "plugins": [
     {
       "name": "runtimescope",
       "source": "./",
       "description": "Runtime monitoring for Claude Code — capture network, console, state, renders, Web Vitals, DB queries, and server metrics from your running app and expose them as MCP tools.",
-      "version": "0.10.16",
+      "version": "0.11.0",
       "category": "devtools",
       "tags": [
         "runtime",

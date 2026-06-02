@@ -19,8 +19,8 @@ const STEPS = [
   },
   {
     label: 'Start collector',
-    command: 'npx runtimescope',
-    description: 'Start the collector server on port 6767',
+    command: 'cargo install runtimescope && runtimescope dashboard',
+    description: 'Install the Rust collector (or grab the GitHub release binary), then start it',
   },
   {
     label: 'Initialize',

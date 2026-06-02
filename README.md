@@ -48,10 +48,19 @@ Once the collector is running, wire the SDK into the app you want to monitor —
 
 ### Alternative: standalone MCP (no plugin)
 
-If you don't want the plugin's slash commands, you can register the MCP server alone:
+If you don't want the plugin's slash commands, you can register the MCP server alone.
+First install the binaries (Rust — no Node required for the collector/CLI):
 
 ```bash
-claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
+cargo install runtimescope          # installs runtimescope + collector-server + mcp-server
+# …or download the prebuilt binaries from the GitHub release:
+#   https://github.com/edwinlov3tt/runtimescope/releases/latest
+```
+
+Then register the MCP server:
+
+```bash
+claude mcp add runtimescope -s user -- runtimescope mcp
 ```
 
 For Claude Desktop, add to `claude_desktop_config.json`:
@@ -60,8 +69,8 @@ For Claude Desktop, add to `claude_desktop_config.json`:
 {
   "mcpServers": {
     "runtimescope": {
-      "command": "npx",
-      "args": ["-y", "@runtimescope/mcp-server"]
+      "command": "runtimescope",
+      "args": ["mcp"]
     }
   }
 }
@@ -238,7 +247,7 @@ Copy one of these into your project's `CLAUDE.md` to give Claude full context on
 You have access to RuntimeScope, a runtime profiling MCP server with 46 tools. RuntimeScope works with ANY tech stack — not just JavaScript/Node.js.
 
 When a user wants to install RuntimeScope:
-1. The MCP server should already be registered. If not: claude mcp add runtimescope -s user -- npx -y @runtimescope/mcp-server
+1. The MCP server should already be registered. If not: install the binary (`cargo install runtimescope`, or the GitHub release) then `claude mcp add runtimescope -s user -- runtimescope mcp`
 2. Use get_sdk_snippet to generate the correct installation code for their framework. It supports: React, Vue, Angular, Svelte, Next.js, Nuxt, plain HTML, Flask, Django, Rails, PHP, WordPress, and more.
 3. For npm-based projects (React, Vue, etc.): npm install @runtimescope/sdk
 4. For non-npm tech stacks (Flask, Django, Rails, PHP, WordPress, static HTML): use the <script> tag — no npm or build system required. The SDK bundle is served by the MCP server at http://localhost:6768/runtimescope.js.
@@ -715,15 +724,24 @@ Use get_historical_events to show me network events from the last 2 hours for my
 
 ---
 
-## npm Packages
+## Packages
+
+**SDKs (npm)** — for instrumenting your app:
 
 | Package | Install | Description |
 |---------|---------|-------------|
 | [`@runtimescope/sdk`](https://www.npmjs.com/package/@runtimescope/sdk) | `npm install @runtimescope/sdk` | Browser SDK (zero deps, ~3KB gzipped) |
 | [`@runtimescope/server-sdk`](https://www.npmjs.com/package/@runtimescope/server-sdk) | `npm install @runtimescope/server-sdk` | Node.js server SDK |
 | [`@runtimescope/workers-sdk`](https://www.npmjs.com/package/@runtimescope/workers-sdk) | `npm install @runtimescope/workers-sdk` | Cloudflare Workers SDK (zero deps) |
-| [`@runtimescope/mcp-server`](https://www.npmjs.com/package/@runtimescope/mcp-server) | `npx -y @runtimescope/mcp-server` | MCP server (46 tools) |
-| [`@runtimescope/collector`](https://www.npmjs.com/package/@runtimescope/collector) | Internal dependency | Event collector (used by mcp-server) |
+
+**Collector + MCP server + CLI (Rust)** — as of v0.11.0 these ship as native binaries, not npm packages:
+
+| Install | Provides |
+|---------|----------|
+| `cargo install runtimescope` | `runtimescope` (CLI), `collector-server`, `mcp-server` — the dashboard is embedded |
+| [GitHub release](https://github.com/edwinlov3tt/runtimescope/releases/latest) | Prebuilt universal macOS binaries + `SHA256SUMS` |
+
+> The Node `@runtimescope/collector`, `@runtimescope/mcp-server`, and `runtimescope` (npm CLI) packages are **deprecated** at v0.10.13 — replaced by the Rust binaries above.
 
 ## Project Structure
 

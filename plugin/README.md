@@ -22,7 +22,7 @@ Runtime monitoring for Claude Code. Captures live telemetry from your running ap
 
 That's it. The plugin:
 
-1. Registers the `@runtimescope/mcp-server` via `.mcp.json` (auto-installed via `npx`).
+1. Registers the MCP server via `.mcp.json`, which runs `runtimescope mcp` (the Rust binary — install it once with `cargo install runtimescope` or the GitHub release; see `/runtimescope:install`).
 2. Loads the `runtimescope` skill so Claude knows when and how to use the tools.
 3. Exposes 23 slash commands under `/runtimescope:*`.
 
@@ -90,7 +90,7 @@ All under the `/runtimescope:` namespace.
 
 ## Prerequisites
 
-- **Node.js 20+** on the user's machine (for `npx` to run the MCP server).
+- **The `runtimescope` binary** on PATH — `cargo install runtimescope` (cross-platform) or the prebuilt macOS binary from the [GitHub release](https://github.com/edwinlov3tt/runtimescope/releases/latest). The plugin's `.mcp.json` runs `runtimescope mcp`. (As of v0.11.0 the collector/MCP/CLI are native Rust — no Node needed.) Run `/runtimescope:install` to set this up once per machine.
 - **Port 6767** (WebSocket) and **6768** (HTTP) free on localhost. Override via `RUNTIMESCOPE_PORT` / `RUNTIMESCOPE_HTTP_PORT`. (Defaults migrated from 9090/9091 in v0.10.0.)
 
 ## Background collector (optional)
@@ -98,12 +98,12 @@ All under the `/runtimescope:` namespace.
 By default the collector lives inside the MCP server and dies when Claude Code exits. For persistent telemetry across sessions, install it as an OS service:
 
 ```bash
-npx runtimescope service install   # launchd on macOS, systemd on Linux
-npx runtimescope status
-npx runtimescope doctor            # diagnose ports, connectivity
+runtimescope service install   # launchd on macOS, systemd on Linux
+runtimescope service status
+runtimescope dashboard         # starts the collector if needed + opens the dashboard
 ```
 
-Only one collector can bind the WebSocket port at a time — don't run the background service and the MCP-embedded collector simultaneously. `doctor` flags this.
+Only one collector can bind the WebSocket port at a time — don't run the background service and the MCP-embedded collector simultaneously (the MCP server detects an existing collector on :6768 and attaches to it instead of starting its own).
 
 ## The one-projectId invariant
 
@@ -111,9 +111,10 @@ Every SDK in a project — browser, server, worker — **must share the same `pr
 
 ## Links
 
-- Main repo: https://github.com/runtimescope/runtimescope
-- SDK packages on npm: `@runtimescope/sdk`, `@runtimescope/server-sdk`, `@runtimescope/workers-sdk`, `@runtimescope/mcp-server`
-- Issues: https://github.com/runtimescope/runtimescope/issues
+- Main repo: https://github.com/edwinlov3tt/runtimescope
+- SDK packages on npm: `@runtimescope/sdk`, `@runtimescope/server-sdk`, `@runtimescope/workers-sdk`
+- Collector / MCP / CLI: `cargo install runtimescope` (crates.io) or the [GitHub release](https://github.com/edwinlov3tt/runtimescope/releases/latest)
+- Issues: https://github.com/edwinlov3tt/runtimescope/issues
 
 ## License
 

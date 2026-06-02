@@ -67,12 +67,17 @@ If `setup_project` is unavailable (older MCP versions), fall back to:
 
 By default the collector lives inside the MCP server process — it dies when Claude Code exits, losing the event buffer. For persistent monitoring, install it as an OS service (launchd on macOS, systemd on Linux):
 
+The CLI is the native `runtimescope` binary (Rust, v0.11.0+ — install once with
+`cargo install runtimescope` or the GitHub release):
+
 ```bash
-npx runtimescope service install   # installs and starts the service
-npx runtimescope status            # check health
-npx runtimescope doctor            # diagnose port conflicts, SDK connectivity
-npx runtimescope service logs      # tail service logs
-npx runtimescope service update    # pull the newest published version
+runtimescope service install   # install + start the service (launchd/systemd)
+runtimescope service status    # check health (PID + readyz)
+runtimescope dashboard         # start the collector if needed + open the dashboard
+runtimescope service restart   # restart;  service stop / uninstall to stop or remove
+# logs:   ~/.runtimescope/logs/
+# update: reinstall the binary (cargo install runtimescope / new release), then
+#         `runtimescope service install` to regenerate the unit
 ```
 
 MCP-side equivalents: `start_collector` and `stop_collector` tools. Use these when you need to confirm the collector is alive, restart it, or kick it after a port change.

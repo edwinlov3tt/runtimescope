@@ -1,14 +1,14 @@
 {
   "name": "runtimescope",
-  "version": "0.10.16",
+  "version": "0.11.0",
   "description": "Runtime monitoring for Claude Code — captures network, console, state, renders, Web Vitals, DB queries, and server metrics from your running app and exposes them as MCP tools.",
   "author": {
     "name": "RuntimeScope",
     "email": "edwin@edwinlovett.com",
-    "url": "https://github.com/runtimescope"
+    "url": "https://github.com/edwinlov3tt/runtimescope"
   },
-  "homepage": "https://github.com/runtimescope/runtimescope",
-  "repository": "https://github.com/runtimescope/runtimescope",
+  "homepage": "https://github.com/edwinlov3tt/runtimescope",
+  "repository": "https://github.com/edwinlov3tt/runtimescope",
   "license": "MIT",
   "keywords": [
     "runtime",

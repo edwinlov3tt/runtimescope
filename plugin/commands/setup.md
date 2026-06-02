@@ -96,7 +96,7 @@ wait_for_session({ project_id: "<projectId>", timeout_seconds: 30, min_events: 1
 Falls back to `get_session_info` if unavailable. If the SDK never connects:
 - Confirm the app is running.
 - Confirm `endpoint` matches the collector (default `ws://localhost:6767`).
-- If another process owns the port, run `npx runtimescope doctor`.
+- If another process owns the port, check it with `runtimescope service status` (or `lsof -nP -iTCP:6768`).
 
 ### 4. Confirm
 
@@ -191,4 +191,4 @@ If sessions exist for this project but with different `projectId` values, the id
 - **NEVER modify existing application code without showing the user first.**
 - Only scaffold or patch `.runtimescope/config.json` and generate snippets; the user starts their own app.
 - `setup_project` is idempotent — safe to run again on an existing install. It patches missing fields and leaves valid values alone.
-- If the collector isn't running, the SDK fails silently (no crash). That's expected — tell the user how to start it (`npx runtimescope service install` for a persistent service).
+- If the collector isn't running, the SDK fails silently (no crash). That's expected — tell the user how to start it (`runtimescope service install` for a persistent service, or `runtimescope dashboard` to start it + open the UI).

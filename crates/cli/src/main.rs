@@ -14,6 +14,7 @@ fn main() {
         }
         Some("service") => service::run(args.get(2).map(String::as_str)),
         Some("dashboard") => dashboard(&args[2..]),
+        Some("mcp") => mcp_serve(),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -25,6 +26,27 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `runtimescope mcp` — run the MCP server (embedded collector, ADR-0008) over
+/// stdio JSON-RPC. The stable entrypoint Claude Code / the plugin point at; same
+/// implementation as the `mcp-server` binary. Keeps stdout clean (logs → stderr
+/// inside `run()`); we print nothing here so the JSON-RPC stream isn't corrupted.
+fn mcp_serve() -> i32 {
+    let rt = match tokio::runtime::Runtime::new() {
+        Ok(rt) => rt,
+        Err(e) => {
+            eprintln!("[RuntimeScope] could not start the async runtime: {e}");
+            return 1;
+        }
+    };
+    match rt.block_on(runtimescope_mcp::run()) {
+        Ok(()) => 0,
+        Err(e) => {
+            eprintln!("[RuntimeScope] mcp server exited with error: {e}");
+            1
+        }
+    }
 }
 
 /// `runtimescope dashboard [--network]` — open the dashboard in the browser
@@ -81,6 +103,7 @@ fn print_help() {
     println!("  service <sub>   Manage the background collector service");
     println!("                  (install | stop | start | restart | status | uninstall)");
     println!("  dashboard       Start the collector if needed + open the dashboard (--network for the LAN URL)");
+    println!("  mcp             Run the MCP server over stdio (for Claude Code: claude mcp add runtimescope -- runtimescope mcp)");
     println!("  version         Print the version");
     println!("  help            Show this help");
 }

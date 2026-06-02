@@ -29,15 +29,16 @@ This is the canonical "latest stable" — every `@runtimescope/*` package ships 
 ## Step 3: Update the user-level pieces
 
 ```bash
-# Unscoped CLI (provides `runtimescope` binary, service manager)
-npm install -g runtimescope@latest
+# Binaries (runtimescope CLI + collector-server + mcp-server). v0.11.0+ ships
+# native Rust binaries — there is no npm CLI / npm collector to update anymore.
+which cargo >/dev/null && cargo install runtimescope --force || \
+  echo "No cargo — download the latest binaries from https://github.com/edwinlov3tt/runtimescope/releases/latest"
 
-# Background service binary (recompiles plist/unit if the wrapper changed)
-runtimescope service update 2>/dev/null || runtimescope service install
+# Regenerate the service unit so it points at the refreshed binary, then restart.
+runtimescope service install
 
-# MCP server — auto-updates via npx -y on next Claude Code restart, but
-# clear the cache so the next launch picks up the new version
-npx -y @runtimescope/mcp-server@latest --version 2>/dev/null
+# MCP server picks up the new binary automatically: the plugin's .mcp.json runs
+# `runtimescope mcp`, so the next Claude Code launch uses the updated binary.
 
 # Plugin — pulls latest commands + skill files
 claude plugin marketplace update runtimescope 2>&1 | tail -3
@@ -153,7 +154,7 @@ If a field went missing in the upgrade (rare — config schema is stable), call 
 - If `npm install` would change a lockfile in a way the user didn't expect (major version jump), surface it and ask for confirmation.
 - If a project pins a specific RuntimeScope version (`"@runtimescope/sdk": "0.9.3"` exact), respect it — skip with a "version-locked" note.
 - The cross-project sweep should not run any of the user's project scripts (no `npm run anything`). Just install.
-- If the collector goes down during the update (unlikely, but if `runtimescope service update` blips it), `/readyz` will return 503 briefly. Wait for it to come back before reporting success.
+- `runtimescope service install` restarts the collector to point at the refreshed binary, so `/readyz` returns 503 for a moment during the restart. Wait for it to come back before reporting success.
 
 ## Failure modes
 

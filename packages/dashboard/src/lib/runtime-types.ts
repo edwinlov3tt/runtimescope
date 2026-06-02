@@ -73,11 +73,19 @@ export interface RenderEvent extends BaseEvent {
 
 export type WebVitalRating = 'good' | 'needs-improvement' | 'poor';
 
+/** The unit a performance metric is reported in. Browser Web Vitals are `ms`
+ *  (CLS is unitless); server metrics carry their own unit (bytes/percent/count). */
+export type MetricUnit = 'ms' | 'bytes' | 'percent' | 'count';
+
 export interface PerformanceEvent extends BaseEvent {
   eventType: 'performance';
-  metricName: 'LCP' | 'FCP' | 'CLS' | 'TTFB' | 'FID' | 'INP';
+  /** Web Vitals (LCP/FCP/…) OR a server metric name (memory.rss, cpu.user, …). */
+  metricName: 'LCP' | 'FCP' | 'CLS' | 'TTFB' | 'FID' | 'INP' | (string & {});
   value: number;
-  rating: WebVitalRating;
+  /** Set by the server SDK; absent for browser Web Vitals (which are `ms`). */
+  unit?: MetricUnit;
+  /** Only browser Web Vitals are rated; server health metrics have no rating. */
+  rating?: WebVitalRating;
   element?: string;
   entries?: unknown[];
 }

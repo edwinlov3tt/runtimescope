@@ -106,7 +106,7 @@ export function PerformancePage() {
                   <Gauge
                     value={metric.metricName === 'CLS' ? metric.value : Math.round(metric.value)}
                     max={METRIC_MAX[metric.metricName]}
-                    rating={metric.rating}
+                    rating={metric.rating ?? 'good'}
                     label={metric.metricName}
                     unit={METRIC_UNIT[metric.metricName]}
                   />

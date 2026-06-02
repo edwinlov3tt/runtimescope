@@ -8,7 +8,23 @@ import type {
   DatabaseEvent,
 } from '@/lib/runtime-types';
 
+import { formatBytes, formatNumber } from '@/lib/format';
+
 type RuntimeEvent = NetworkEvent | ConsoleEvent | StateEvent | RenderEvent | PerformanceEvent | DatabaseEvent;
+
+/** Render a performance metric value with its real unit. Server metrics carry a
+ *  `unit` (bytes/percent/count); browser Web Vitals have none and are `ms`
+ *  (except CLS, which is unitless). The `percent` value is already a percentage,
+ *  so it's appended directly (NOT run through formatPercent's ×100). */
+function formatMetric(value: number, unit: string | undefined, metricName: string): string {
+  switch (unit) {
+    case 'bytes': return formatBytes(value);
+    case 'percent': return `${value}%`;
+    case 'count': return formatNumber(value);
+    case 'ms': return `${value}ms`;
+    default: return metricName === 'CLS' ? `${value}` : `${value}ms`;
+  }
+}
 
 export function eventsToActivity(events: RuntimeEvent[], limit = 20): ActivityItem[] {
   // Sort newest first
@@ -54,7 +70,9 @@ export function eventsToActivity(events: RuntimeEvent[], limit = 20): ActivityIt
         return {
           id: e.eventId,
           type: 'performance',
-          message: `${e.metricName}: ${e.value}${e.metricName === 'CLS' ? '' : 'ms'} (${e.rating})`,
+          // Format by the metric's actual unit (server metrics are bytes/percent/
+          // count, not ms) and only show a rating when one exists (Web Vitals).
+          message: `${e.metricName}: ${formatMetric(e.value, e.unit, e.metricName)}${e.rating ? ` (${e.rating})` : ''}`,
           timestamp: e.timestamp,
           meta: e.element,
         };

@@ -155,6 +155,8 @@ pub async fn serve(
         .route("/dashboard", get(serve_dashboard))
         .route("/dashboard/{*rest}", get(serve_dashboard))
         .route("/assets/{*rest}", get(serve_dashboard))
+        // dashboard live feed (the SPA's ws-client.ts) — events + session changes
+        .route("/api/ws/events", get(dashboard_ws))
         // gated
         .route("/api/sessions", get(sessions))
         .route("/api/v1/admin/snapshot", post(admin_snapshot))
@@ -2669,6 +2671,46 @@ async fn pm_git_commit(State(s): State<AppState>, headers: HeaderMap, Path(id): 
 
 async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl IntoResponse {
     ws.on_upgrade(move |socket| handle_socket(socket, s))
+}
+
+/// `GET /api/ws/events` (HTTP port) — the dashboard's live feed. The SPA's
+/// ws-client.ts opens this for `{type:"event"|"session_connected"|
+/// "session_disconnected", …}` push messages. Without it the dashboard shows
+/// "Connection lost" and falls back to polling. When auth is on, require a valid
+/// token via `?token=` (browsers can't set headers on a WebSocket) — Node parity.
+async fn dashboard_ws(
+    ws: WebSocketUpgrade,
+    State(s): State<AppState>,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if s.auth.enabled() && !s.auth.authorized(q.get("token").map(String::as_str)) {
+        return unauthorized();
+    }
+    let mut rx = s.store.subscribe();
+    ws.on_upgrade(move |socket| async move {
+        let (mut sink, mut stream) = socket.split();
+        loop {
+            tokio::select! {
+                // Push broadcast frames to the dashboard.
+                msg = rx.recv() => match msg {
+                    Ok(text) => {
+                        if sink.send(Message::Text(Utf8Bytes::from(text))).await.is_err() {
+                            break; // client gone
+                        }
+                    }
+                    // Slow client fell behind — keep serving (drop the gap), don't kill it.
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(_)) => continue,
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => break,
+                },
+                // Drain client→server frames (pings/closes); the dashboard is read-only.
+                incoming = stream.next() => match incoming {
+                    Some(Ok(Message::Close(_))) | None | Some(Err(_)) => break,
+                    _ => {}
+                },
+            }
+        }
+    })
+    .into_response()
 }
 
 async fn handle_socket(socket: WebSocket, s: AppState) {

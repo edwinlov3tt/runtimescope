@@ -144,18 +144,31 @@ enum Cmd {
     SessionHistory { project: String, limit: usize, reply: oneshot::Sender<Vec<SnapshotRow>> },
 }
 
-/// Cloneable async handle to the store. Cheap to clone (just the channel sender).
+/// Cloneable async handle to the store. Cheap to clone (just the channel senders).
 #[derive(Clone)]
 pub struct StoreHandle {
     tx: mpsc::Sender<Cmd>,
+    /// Live event/session feed for the dashboard's `/api/ws/events` socket. JSON
+    /// strings: `{"type":"event","data":…}` / `{"type":"session_connected",…}` /
+    /// `{"type":"session_disconnected",…}` (Node's dashboard broadcast).
+    events_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl StoreHandle {
+    /// Subscribe to the live dashboard feed (one receiver per `/api/ws/events` client).
+    pub fn subscribe(&self) -> tokio::sync::broadcast::Receiver<String> {
+        self.events_tx.subscribe()
+    }
+
     /// Open the store at `data_dir` (creating it), run WAL recovery, and return
     /// once recovery is complete (so `/readyz` is honest about being warm).
     pub async fn open(data_dir: PathBuf) -> Result<StoreHandle, String> {
         let (tx, mut rx) = mpsc::channel::<Cmd>(1024);
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
+        // Live feed for dashboard WS clients. Lagging/slow clients drop frames
+        // (Lagged) rather than back-pressure the hot ingest path.
+        let (events_tx, _) = tokio::sync::broadcast::channel::<String>(1024);
+        let bcast = events_tx.clone();
 
         std::thread::spawn(move || {
             let init = (|| -> Result<(Connection, Wal), String> {
@@ -292,7 +305,17 @@ impl StoreHandle {
                                 eprintln!("[RuntimeScope] WAL truncate failed: {e}");
                             }
                         }
-                        // 5) Ack each batch: the shared err, or its own stored count.
+                        // 5) Live feed: push each event to dashboard WS clients
+                        //    (Node's broadcastEvent). Skip the JSON cost when nobody
+                        //    is subscribed; lagging clients drop frames, never block.
+                        if bcast.receiver_count() > 0 {
+                            for (_, events, _) in &group {
+                                for ev in events {
+                                    let _ = bcast.send(serde_json::json!({ "type": "event", "data": ev }).to_string());
+                                }
+                            }
+                        }
+                        // 6) Ack each batch: the shared err, or its own stored count.
                         for (i, (_, _, reply)) in group.into_iter().enumerate() {
                             let _ = reply.send(match &err {
                                 Some(e) => Err(e.clone()),
@@ -345,11 +368,19 @@ impl StoreHandle {
                         if let Ok(true) = insert_event(&conn, &scope, &session_event) {
                             *counters.entry("session".to_string()).or_insert(0) += 1;
                         }
+                        // Tell dashboard WS clients to refresh the project list.
+                        let _ = bcast.send(
+                            serde_json::json!({ "type": "session_connected", "sessionId": session_id, "appName": app_name, "projectId": project_id })
+                                .to_string(),
+                        );
                     }
                     Cmd::MarkDisconnected { session_id } => {
                         if let Some(s) = sessions.iter_mut().find(|s| s.session_id == session_id) {
                             s.is_connected = false;
                         }
+                        let _ = bcast.send(
+                            serde_json::json!({ "type": "session_disconnected", "sessionId": session_id }).to_string(),
+                        );
                         let _ = conn.execute(
                             "UPDATE sessions SET is_connected = 0 WHERE session_id = ?1",
                             rusqlite::params![session_id],
@@ -435,7 +466,7 @@ impl StoreHandle {
         });
 
         ready_rx.await.map_err(|_| "store thread died during init".to_string())??;
-        Ok(StoreHandle { tx })
+        Ok(StoreHandle { tx, events_tx })
     }
 
     /// Persist a batch durably and await the ack: `Ok(stored)` once the WAL is

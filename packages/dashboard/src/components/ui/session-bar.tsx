@@ -16,10 +16,13 @@ interface SessionBarProps {
 }
 
 export function SessionBar({ connected = true, items, className }: SessionBarProps) {
+  // Neutral placeholders when no items are passed — never fabricate a
+  // session id / SDK version / uptime that looks real (the caller always
+  // passes `items`, so this is a latent-safety default, not a live path).
   const defaultItems: SessionBarItem[] = items ?? [
-    { icon: Wifi, label: 'Session', value: 'a06af01e' },
-    { icon: Package, label: 'SDK', value: 'v0.9.3' },
-    { icon: Clock, label: 'Uptime', value: '0m 0s' },
+    { icon: Wifi, label: 'Session', value: '—' },
+    { icon: Package, label: 'SDK', value: '—' },
+    { icon: Clock, label: 'Uptime', value: '—' },
     { icon: HardDrive, label: 'Events', value: '0' },
   ];
 

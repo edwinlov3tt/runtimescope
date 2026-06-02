@@ -6,7 +6,7 @@ import { useConnected } from '@/hooks/use-connected';
 import { computeOverviewStats } from '@/lib/overview-stats';
 import { eventsToActivity } from '@/lib/activity-mapper';
 import { detectIssues } from '@/lib/issue-detector';
-import { Globe, Clock, Layers, AlertTriangle, Wifi, Package, HardDrive } from 'lucide-react';
+import { Globe, Clock, Layers, AlertTriangle, Wifi, HardDrive } from 'lucide-react';
 
 export function OverviewPage() {
   const connected = useConnected();
@@ -44,7 +44,6 @@ export function OverviewPage() {
             connected={connected}
             items={[
               { icon: Wifi, label: 'Session', value: connected ? 'active' : 'none' },
-              { icon: Package, label: 'SDK', value: 'v0.9.3' },
               { icon: Clock, label: 'Uptime', value: connected ? 'live' : '—' },
               { icon: HardDrive, label: 'Events', value: totalEvents.toLocaleString() },
             ]}

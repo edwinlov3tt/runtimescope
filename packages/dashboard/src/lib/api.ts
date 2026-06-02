@@ -226,14 +226,3 @@ export async function killProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL' = '
     return null;
   }
 }
-
-// --- Bulk operations ---
-
-export async function clearEvents(): Promise<boolean> {
-  try {
-    const res = await fetch(`${BASE}/api/events`, { method: 'DELETE' });
-    return res.ok;
-  } catch {
-    return false;
-  }
-}

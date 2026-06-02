@@ -1,17 +1,32 @@
-import { useState, useCallback } from 'react';
+import { useState, useEffect } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DataTable, Badge, StatusDot, KpiCard } from '@/components/ui';
-import { useDataStore } from '@/stores/use-data-store';
-import { useConnected } from '@/hooks/use-connected';
 import { cn } from '@/lib/cn';
-import { killProcess } from '@/lib/api';
+import { killProcess, fetchProcesses, fetchPorts } from '@/lib/api';
+import type { DevProcess, PortUsage } from '@/lib/runtime-types';
 import { Square, Cpu, Radio, Gauge, HardDrive } from 'lucide-react';
 
 export function ProcessesPage() {
   const [activeTab, setActiveTab] = useState('processes');
-  const connected = useConnected();
-  const processes = useDataStore((s) => s.processes);
-  const ports = useDataStore((s) => s.ports);
+  // Processes/ports are HTTP-poll-only (the collector can't broadcast them as
+  // events) and the shared store's setters skip same-length updates — so poll
+  // into local state on a 3s interval, like sessions-page, to keep CPU/mem live.
+  // (Previously read the WS-gated store, which froze the page after first load.)
+  const [processes, setProcesses] = useState<DevProcess[]>([]);
+  const [ports, setPorts] = useState<PortUsage[]>([]);
+
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      const [procs, prts] = await Promise.all([fetchProcesses(), fetchPorts()]);
+      if (!active) return;
+      if (procs) setProcesses(procs as DevProcess[]);
+      if (prts) setPorts(prts as PortUsage[]);
+    };
+    load();
+    const timer = setInterval(load, 3000);
+    return () => { active = false; clearInterval(timer); };
+  }, []);
 
   const totalCpu = processes.reduce((s, p) => s + (p.cpuPercent ?? 0), 0);
   const totalMem = processes.reduce((s, p) => s + (p.memoryMB ?? 0), 0);

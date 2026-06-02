@@ -13,6 +13,9 @@ interface FilterBarProps {
   search?: string;
   onSearchChange?: (value: string) => void;
   searchPlaceholder?: string;
+  /** Render the search input (default true). Set false for filter-only bars
+   *  so callers don't wire a no-op `onSearchChange` to a dead search field. */
+  showSearch?: boolean;
   filters?: FilterPill[];
   onRemoveFilter?: (key: string) => void;
   onClearAll?: () => void;
@@ -24,6 +27,7 @@ export function FilterBar({
   search,
   onSearchChange,
   searchPlaceholder = 'Search...',
+  showSearch = true,
   filters = [],
   onRemoveFilter,
   onClearAll,
@@ -32,13 +36,15 @@ export function FilterBar({
 }: FilterBarProps) {
   return (
     <div className={cn('flex items-center gap-3 px-5 py-2.5 border-b border-border-default', className)}>
-      <div className="w-64 shrink-0">
-        <SearchInput
-          value={search}
-          onChange={(e) => onSearchChange?.(e.target.value)}
-          placeholder={searchPlaceholder}
-        />
-      </div>
+      {showSearch && (
+        <div className="w-64 shrink-0">
+          <SearchInput
+            value={search}
+            onChange={(e) => onSearchChange?.(e.target.value)}
+            placeholder={searchPlaceholder}
+          />
+        </div>
+      )}
       {children}
       {filters.length > 0 && (
         <div className="flex items-center gap-1.5 flex-wrap">

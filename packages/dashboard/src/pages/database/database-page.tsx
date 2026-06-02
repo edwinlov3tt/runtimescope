@@ -406,7 +406,7 @@ export function DatabasePage() {
           )}
 
           {activeTab === 'performance' && (
-            <FilterBar search="" onSearchChange={() => {}} searchPlaceholder="">
+            <FilterBar showSearch={false}>
               <div className="flex items-center gap-3 text-xs text-text-muted">
                 <span>{perfStats.length} patterns</span>
                 <span>{formatNumber(totalQueries)} total queries</span>

@@ -15,3 +15,6 @@ docs/.demo-data/
 docs/.DS_Store
 **/.DS_Store
 /target
+
+# Vendored dashboard SPA (build.rs mirrors packages/dashboard/dist here for rust-embed)
+crates/collector-core/dashboard/

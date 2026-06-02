@@ -595,8 +595,11 @@ async fn not_found(uri: Uri) -> impl IntoResponse {
 // no-cache, hashed assets cache-forever. Path traversal is inherently safe —
 // only embedded keys resolve. Public (no auth), like health/metrics.
 
+// Crate-internal vendored SPA (populated by build.rs from packages/dashboard/dist
+// in the repo, or shipped inside the published crate). Keeps the binary self-
+// contained and the published crate self-contained on crates.io.
 #[derive(rust_embed::RustEmbed)]
-#[folder = "../../packages/dashboard/dist/"]
+#[folder = "dashboard/"]
 struct DashboardAssets;
 
 fn dashboard_content_type(path: &str) -> &'static str {

@@ -40,6 +40,12 @@ fn dashboard(args: &[String]) -> i32 {
         println!("  Then open:  http://{host}:{port}/dashboard");
         return 0;
     }
+    // One command spins it all up: make sure a collector is serving (start the
+    // background service if none is), then open the embedded dashboard.
+    if !service::ensure_running() {
+        eprintln!("  Could not start the collector. Try `runtimescope service install` and check the logs.");
+        return 1;
+    }
     let url = format!("http://127.0.0.1:{port}/dashboard");
     println!("  Opening {url}");
     open_browser(&url)
@@ -74,7 +80,7 @@ fn print_help() {
     println!("COMMANDS:");
     println!("  service <sub>   Manage the background collector service");
     println!("                  (install | stop | start | restart | status | uninstall)");
-    println!("  dashboard       Open the dashboard in your browser (--network for the LAN URL)");
+    println!("  dashboard       Start the collector if needed + open the dashboard (--network for the LAN URL)");
     println!("  version         Print the version");
     println!("  help            Show this help");
 }

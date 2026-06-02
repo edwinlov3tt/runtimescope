@@ -6,6 +6,9 @@ edition.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
+# `dashboard/` is a gitignored build artifact (vendored by build.rs); `include`
+# forces it — and the source — into the published .crate so it's self-contained.
+include = ["src/**/*", "build.rs", "dashboard/**/*", "Cargo.toml"]
 
 [dependencies]
 tokio.workspace = true

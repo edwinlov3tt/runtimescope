@@ -115,6 +115,33 @@ fn wait_for_collector_ready(timeout: std::time::Duration) -> bool {
     false
 }
 
+/// Quick probe: is a collector already answering `/readyz` on the configured port?
+pub fn is_responding() -> bool {
+    wait_for_collector_ready(std::time::Duration::from_millis(600))
+}
+
+/// Ensure a collector is up so the dashboard has something to talk to. If one is
+/// already responding, do nothing. Otherwise install + start the background
+/// service (launchd/systemd) — which waits for `/readyz` — and report. Returns
+/// `true` once a collector is responding. Used by `runtimescope dashboard` so a
+/// single command spins everything up.
+pub fn ensure_running() -> bool {
+    if is_responding() {
+        return true;
+    }
+    info("No collector is running — installing + starting the background service…");
+    if run(Some("install")) != 0 {
+        return false;
+    }
+    // `service install` already waits for readyz; confirm before we open a browser.
+    if is_responding() {
+        info("Tip: `runtimescope service stop` / `uninstall` to manage or remove it.");
+        true
+    } else {
+        false
+    }
+}
+
 // ---------- launchd (macOS) ----------
 
 /// The launchd plist. ProgramArguments is the single `collector-server` binary

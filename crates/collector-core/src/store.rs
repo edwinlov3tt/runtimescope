@@ -986,6 +986,55 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // Drift 0004 #1: the dashboard WS filter (ws-client.ts) keys its "reliable"
+    // project-match branch off data.projectId; the per-event broadcast must
+    // inject the batch's scoping key, or live filtering degrades to the stale
+    // session-list fallback (the reported console-refresh bug). Also: an event
+    // that already carries a projectId is left untouched.
+    #[tokio::test]
+    async fn broadcast_frames_carry_scoping_project_id() {
+        let dir = std::env::temp_dir().join(format!("store-bcast-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.clone()).await.unwrap();
+
+        // subscribe() makes receiver_count > 0, so the broadcast path fires.
+        let mut rx = store.subscribe();
+        async fn next_frame(rx: &mut tokio::sync::broadcast::Receiver<String>) -> Value {
+            let s = tokio::time::timeout(std::time::Duration::from_secs(2), rx.recv())
+                .await
+                .expect("no broadcast frame within 2s")
+                .expect("broadcast channel closed");
+            serde_json::from_str::<Value>(&s).unwrap()
+        }
+
+        // 1) An event with no projectId gets the batch's scoping key injected.
+        let ev = serde_json::json!({
+            "eventId": "evt-1", "sessionId": "sidA", "timestamp": 1,
+            "eventType": "console", "level": "log", "message": "hi"
+        });
+        store.add_batch("proj_xyz".into(), vec![ev]).await.unwrap();
+        let v = next_frame(&mut rx).await;
+        assert_eq!(v.get("type").and_then(Value::as_str), Some("event"));
+        assert_eq!(
+            v.pointer("/data/projectId").and_then(Value::as_str),
+            Some("proj_xyz"),
+            "broadcast frame must carry the scoping projectId: {v}"
+        );
+        assert_eq!(v.pointer("/data/eventId").and_then(Value::as_str), Some("evt-1"));
+
+        // 2) An event that already carries a projectId is NOT overwritten.
+        let ev2 = serde_json::json!({
+            "eventId": "evt-2", "sessionId": "sidB", "timestamp": 2,
+            "eventType": "console", "level": "log", "message": "hi2",
+            "projectId": "explicit"
+        });
+        store.add_batch("proj_xyz".into(), vec![ev2]).await.unwrap();
+        let v2 = next_frame(&mut rx).await;
+        assert_eq!(v2.pointer("/data/projectId").and_then(Value::as_str), Some("explicit"));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
     // Retention sweep: events past the window are deleted, recent ones survive,
     // and retention_days <= 0 disables age-based pruning (durability gap fix).
     #[tokio::test]

@@ -7,7 +7,9 @@ import type { PerformanceEvent, ServerMetricName, MetricUnit } from '../types.js
 type EmitFn = (event: PerformanceEvent) => void;
 
 export interface PerfMetricsOptions {
-  /** Collection interval in ms (default: 5000) */
+  /** Collection interval in ms (default: 30000). Each tick emits one event per
+   *  enabled metric, so the interval directly sets the background event rate;
+   *  30s matches typical server-health sampling. Lower it for finer charts. */
   intervalMs?: number;
   /** Which metrics to collect (default: all) */
   metrics?: ServerMetricName[];
@@ -48,7 +50,7 @@ export function startPerfMetrics(
   sessionId: string,
   options?: PerfMetricsOptions
 ): () => void {
-  const intervalMs = options?.intervalMs ?? 5000;
+  const intervalMs = options?.intervalMs ?? 30000;
   const enabled = options?.metrics ?? ALL_METRICS;
 
   // Track CPU usage delta between intervals

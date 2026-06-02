@@ -131,8 +131,11 @@ jobs:
       - name: Rename assets for the release
         run: |
           cd dist
+          # Version-LESS asset names so `releases/latest/download/<name>` is a stable
+          # URL across releases (the release tag conveys the version; install docs
+          # don't go stale each release).
           for bin in collector-server mcp-server runtimescope; do
-            mv "$bin" "runtimescope-$bin-$TAG-macos-universal"
+            mv "$bin" "runtimescope-$bin-macos-universal"
           done
           ls -la
 

@@ -33,7 +33,7 @@ If `cargo` isn't available:
   mkdir -p ~/.runtimescope/bin && cd ~/.runtimescope/bin
   REL=https://github.com/edwinlov3tt/runtimescope/releases/latest/download
   for b in runtimescope collector-server mcp-server; do
-    curl -fsSL -o "$b" "$REL/runtimescope-$b-v0.11.0-macos-universal"
+    curl -fsSL -o "$b" "$REL/runtimescope-$b-macos-universal"
     chmod +x "$b"
   done
   xattr -dr com.apple.quarantine . 2>/dev/null || true   # ad-hoc unsigned binaries

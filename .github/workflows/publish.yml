@@ -13,7 +13,12 @@ on:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    # macos-14 (NOT ubuntu): the committed lockfile is generated on macOS (where
+    # the Rust gate runs), so its rollup native optional dep is the darwin one. On
+    # ubuntu, `npm ci` can't find @rollup/rollup-linux-x64-gnu (npm/cli#4828) and
+    # the tsup/rollup build fails. Matching the runner to the lock keeps `npm ci`
+    # deterministic; the published SDK artifacts are platform-independent JS.
+    runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
 
@@ -22,12 +27,7 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      # `npm install`, NOT `npm ci`: the committed lockfile is generated on macOS
-      # (the Rust gate runs there), so it omits rollup's linux native optional dep
-      # (@rollup/rollup-linux-x64-gnu) — `npm ci` on this ubuntu runner would then
-      # fail to build (npm/cli#4828). `npm install` resolves the platform-correct
-      # optionals. Published versions are pinned in each package.json regardless.
-      - run: npm install
+      - run: npm ci
       # SDKs first — the framework integrations import @runtimescope/sdk types.
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite

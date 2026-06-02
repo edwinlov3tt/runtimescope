@@ -9,6 +9,7 @@ on:
   push:
     tags:
       - 'v*' # Triggered by: git tag v0.11.0 && git push --tags
+  workflow_dispatch: # manual re-run (e.g. after a CI fix) without moving the tag
 
 jobs:
   publish:
@@ -21,7 +22,12 @@ jobs:
           node-version: 20
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci
+      # `npm install`, NOT `npm ci`: the committed lockfile is generated on macOS
+      # (the Rust gate runs there), so it omits rollup's linux native optional dep
+      # (@rollup/rollup-linux-x64-gnu) — `npm ci` on this ubuntu runner would then
+      # fail to build (npm/cli#4828). `npm install` resolves the platform-correct
+      # optionals. Published versions are pinned in each package.json regardless.
+      - run: npm install
       # SDKs first — the framework integrations import @runtimescope/sdk types.
       - run: npm run build -w packages/sdk -w packages/server-sdk -w packages/workers-sdk
       - run: npm run build -w packages/nextjs -w packages/remix -w packages/sveltekit -w packages/vite

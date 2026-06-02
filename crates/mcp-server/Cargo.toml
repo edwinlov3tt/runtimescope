@@ -1,15 +1,17 @@
 [package]
-name = "mcp-server"
+name = "runtimescope-mcp"
+description = "RuntimeScope MCP server — runtime monitoring tools over MCP with an embedded collector (library; the `runtimescope` crate ships the binary)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
-[[bin]]
-name = "mcp-server"
-path = "src/main.rs"
+[lib]
+path = "src/lib.rs"
 
 [dependencies]
-collector-core = { path = "../collector-core" }
+collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.11.0" }
 rmcp = { version = "1.7", features = ["server", "transport-io", "macros"] }
 tokio.workspace = true
 serde = { workspace = true }

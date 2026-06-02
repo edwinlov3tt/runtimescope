@@ -1,11 +1,19 @@
 [package]
-name = "cli"
+name = "runtimescope"
+description = "RuntimeScope — runtime monitoring for AI coding agents over MCP. Installs the runtimescope CLI plus the collector-server and mcp-server binaries."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
-[[bin]]
-name = "runtimescope"
-path = "src/main.rs"
+# Three binaries via target autodiscovery:
+#   src/main.rs           -> `runtimescope`     (the CLI; package-named bin)
+#   src/bin/collector-server.rs -> `collector-server` (standalone daemon)
+#   src/bin/mcp-server.rs       -> `mcp-server`       (MCP stdio server)
+# `cargo install runtimescope` installs all three into ~/.cargo/bin.
 
 [dependencies]
+collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.11.0" }
+runtimescope-mcp = { path = "../mcp-server", version = "0.11.0" }
+tokio.workspace = true

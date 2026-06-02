@@ -1,8 +1,11 @@
 [package]
-name = "collector-core"
+name = "runtimescope-core"
+description = "RuntimeScope collector core — event store (WAL + SQLite), WS/HTTP wire surface, and the dashboard embed shared by the collector and MCP server."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+repository.workspace = true
+homepage.workspace = true
 
 [dependencies]
 tokio.workspace = true

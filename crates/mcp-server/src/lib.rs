@@ -53,8 +53,10 @@ impl ServerHandler for Mcp {
     // Default get_info() advertises the tools capability (validated in the M0 spike).
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+/// Run the MCP server (collector embedded in-process, ADR-0008) over stdio.
+/// The binary wrapper provides the tokio runtime (`#[tokio::main]`); this is a
+/// plain async entrypoint so the crate is a reusable library on crates.io.
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
     // First-run cutover guard: back up legacy Node-era data before opening the

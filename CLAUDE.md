@@ -147,6 +147,8 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 |----------|---------|-------------|
 | `RUNTIMESCOPE_PORT` | `6767` | WebSocket collector port |
 | `RUNTIMESCOPE_HTTP_PORT` | `6768` | HTTP API port (for dashboard) |
-| `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Max events in ring buffer |
+| `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Hot-tier read window — caps how many newest events the read API + `buffer_size` gauge return (the durable store keeps more) |
+| `RUNTIMESCOPE_RETENTION_DAYS` | `90` | Retention window — a daily sweep deletes stored events + session snapshots older than this and `VACUUM`s. `0` keeps events forever. (The Rust collector stores durably with no ring eviction, so this bounds `collector.db` growth.) |
+| `RUNTIMESCOPE_MAX_SNAPSHOTS` | `10` | Max `VACUUM INTO` snapshot backups kept under `~/.runtimescope/snapshots/`; older ones are pruned by the same sweep |
 
 Both the MCP server and standalone collector use the same default ports (6767/6768). Only one should run at a time. The SDK defaults to `ws://localhost:6767`. The dashboard Vite proxy defaults to `http://127.0.0.1:6768`.

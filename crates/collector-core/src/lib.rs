@@ -32,8 +32,9 @@ pub use store::StoreHandle;
 
 use std::path::PathBuf;
 
-/// The collector version string reported by `/api/health`.
-pub const VERSION: &str = "0.11.0-dev";
+/// The collector version string reported by `/api/health`. Tracks the crate
+/// version so it never drifts from the release (was a hardcoded "0.11.0-dev").
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Default ports (overridable via RUNTIMESCOPE_PORT / RUNTIMESCOPE_HTTP_PORT).
 pub const DEFAULT_WS_PORT: u16 = 6767;

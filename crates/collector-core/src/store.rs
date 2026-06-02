@@ -97,6 +97,14 @@ pub struct MetricsSnapshot {
     pub total_events: usize,
 }
 
+/// Outcome of a retention sweep — what was reclaimed.
+#[derive(Default)]
+pub struct PruneResult {
+    pub events_deleted: usize,
+    pub snapshots_rows_deleted: usize,
+    pub snapshot_dirs_deleted: usize,
+}
+
 impl SessionInfo {
     /// The effective project-scoping key (projectId when present, else appName) —
     /// for filtering/grouping. Display uses `app_name` + `project_id` distinctly.
@@ -122,6 +130,7 @@ enum Cmd {
     EventCount { project: Option<String>, reply: oneshot::Sender<usize> },
     MetricsSnapshot { reply: oneshot::Sender<MetricsSnapshot> },
     Snapshot { reply: oneshot::Sender<Result<Value, String>> },
+    Prune { retention_days: i64, max_snapshots: usize, reply: oneshot::Sender<PruneResult> },
     EventsForApp { app: String, reply: oneshot::Sender<Vec<Value>> },
     EventCountForApp { app: String, reply: oneshot::Sender<usize> },
     SaveSnapshot {
@@ -418,6 +427,9 @@ impl StoreHandle {
                     Cmd::Snapshot { reply } => {
                         let _ = reply.send(make_snapshot(&conn, &data_dir));
                     }
+                    Cmd::Prune { retention_days, max_snapshots, reply } => {
+                        let _ = reply.send(prune_old(&conn, &data_dir, retention_days, max_snapshots));
+                    }
                 }
             }
         });
@@ -462,6 +474,16 @@ impl StoreHandle {
             return Err("store channel closed".into());
         }
         rx.await.unwrap_or_else(|_| Err("store dropped the snapshot reply".into()))
+    }
+
+    /// Run a retention sweep: drop events/snapshots older than `retention_days`
+    /// (<= 0 disables) + reclaim disk, and cap snapshot backups to `max_snapshots`.
+    pub async fn prune(&self, retention_days: i64, max_snapshots: usize) -> PruneResult {
+        let (reply, rx) = oneshot::channel();
+        if self.tx.send(Cmd::Prune { retention_days, max_snapshots, reply }).await.is_err() {
+            return PruneResult::default();
+        }
+        rx.await.unwrap_or_default()
     }
 
     /// A Prometheus-exposable snapshot of the live counters/gauges (`/metrics`).
@@ -726,6 +748,53 @@ fn make_snapshot(conn: &Connection, data_dir: &std::path::Path) -> Result<Value,
     }))
 }
 
+/// Retention sweep: the Rust collector stores every event durably (no in-memory
+/// ring eviction like Node), so without this the DB grows forever. Deletes events
+/// and session snapshots older than `retention_days`, caps the on-disk VACUUM-INTO
+/// snapshot dirs to the newest `max_snapshots`, and reclaims freed pages with
+/// `VACUUM`. A `retention_days` of 0 or less disables age-based pruning.
+fn prune_old(
+    conn: &Connection,
+    data_dir: &std::path::Path,
+    retention_days: i64,
+    max_snapshots: usize,
+) -> PruneResult {
+    let mut r = PruneResult::default();
+
+    if retention_days > 0 {
+        let cutoff = now_ms() - retention_days * 86_400_000;
+        r.events_deleted = conn
+            .execute("DELETE FROM events WHERE timestamp < ?1", rusqlite::params![cutoff])
+            .unwrap_or(0);
+        r.snapshots_rows_deleted = conn
+            .execute("DELETE FROM snapshots WHERE created_at < ?1", rusqlite::params![cutoff])
+            .unwrap_or(0);
+        // Reclaim disk only when we actually deleted rows (VACUUM rewrites the DB).
+        if r.events_deleted > 0 || r.snapshots_rows_deleted > 0 {
+            if let Err(e) = conn.execute_batch("VACUUM") {
+                eprintln!("[RuntimeScope] retention: VACUUM failed: {e}");
+            }
+        }
+    }
+
+    // Cap the VACUUM-INTO snapshot backups (admin snapshot endpoint) — keep the
+    // newest `max_snapshots` dirs (their names are epoch-ms, so lexical desc = newest).
+    let snap_dir = data_dir.join("snapshots");
+    if let Ok(entries) = std::fs::read_dir(&snap_dir) {
+        let mut dirs: Vec<std::path::PathBuf> =
+            entries.flatten().map(|e| e.path()).filter(|p| p.is_dir()).collect();
+        dirs.sort();
+        if dirs.len() > max_snapshots {
+            for old in &dirs[..dirs.len() - max_snapshots] {
+                if std::fs::remove_dir_all(old).is_ok() {
+                    r.snapshot_dirs_deleted += 1;
+                }
+            }
+        }
+    }
+    r
+}
+
 /// COUNT(*) of stored events for a project scope (or all events when `None`).
 fn count_events(conn: &Connection, project: Option<&str>) -> usize {
     conn.query_row(
@@ -864,6 +933,42 @@ mod tests {
         // The projectId scope, by contrast, holds BOTH apps' events.
         assert!(store.event_count(Some("projShared")).await > store.event_count_for_app("app-alpha").await);
         assert_eq!(store.event_count_for_app("app-alpha").await, alpha.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Retention sweep: events past the window are deleted, recent ones survive,
+    // and retention_days <= 0 disables age-based pruning (durability gap fix).
+    #[tokio::test]
+    async fn prune_drops_events_older_than_retention() {
+        let dir = std::env::temp_dir().join(format!("store-prune-{}-{:?}", std::process::id(), std::thread::current().id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.clone()).await.unwrap();
+
+        let now = now_ms();
+        let old = now - 100 * 86_400_000; // 100 days ago
+        let recent = now - 86_400_000; // 1 day ago
+        let ev = |id: &str, ts: i64| {
+            serde_json::json!({
+                "eventId": id, "sessionId": "s", "timestamp": ts,
+                "eventType": "network", "url": "https://x", "method": "GET", "status": 200
+            })
+        };
+        store
+            .add_batch("proj".into(), vec![ev("old1", old), ev("old2", old), ev("recent1", recent)])
+            .await
+            .unwrap();
+        assert_eq!(store.event_count(Some("proj")).await, 3);
+
+        let r = store.prune(90, 10).await;
+        assert_eq!(r.events_deleted, 2, "the two 100-day-old events are pruned at 90d retention");
+        assert_eq!(store.event_count(Some("proj")).await, 1, "the 1-day-old event survives");
+
+        // retention_days = 0 disables age-based pruning.
+        store.add_batch("proj".into(), vec![ev("old3", old)]).await.unwrap();
+        let r0 = store.prune(0, 10).await;
+        assert_eq!(r0.events_deleted, 0, "retention 0 keeps events forever");
+        assert_eq!(store.event_count(Some("proj")).await, 2);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

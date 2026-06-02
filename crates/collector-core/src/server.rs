@@ -228,6 +228,35 @@ pub async fn serve(
         .fallback(not_found)
         .with_state(state.clone());
 
+    // Retention sweep: the durable store keeps every event (no in-memory-ring
+    // eviction like Node), so without this collector.db grows forever. Prune
+    // events + session snapshots older than the configured window, and cap the
+    // on-disk snapshot backups. Default 90 days; RUNTIMESCOPE_RETENTION_DAYS=0
+    // keeps events forever (still bounds snapshot backups). Runs once ~60s after
+    // boot, then daily — off the hot path, on the store's owner thread.
+    let retention_store = state.store.clone();
+    let retention_days = std::env::var("RUNTIMESCOPE_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(90);
+    let max_snapshots = std::env::var("RUNTIMESCOPE_MAX_SNAPSHOTS")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        .unwrap_or(10);
+    tokio::spawn(async move {
+        tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+        loop {
+            let r = retention_store.prune(retention_days, max_snapshots).await;
+            if r.events_deleted + r.snapshots_rows_deleted + r.snapshot_dirs_deleted > 0 {
+                eprintln!(
+                    "[RuntimeScope] retention: pruned {} events, {} snapshot rows, {} backups (older than {} days)",
+                    r.events_deleted, r.snapshots_rows_deleted, r.snapshot_dirs_deleted, retention_days
+                );
+            }
+            tokio::time::sleep(std::time::Duration::from_secs(24 * 3600)).await;
+        }
+    });
+
     let ws = Router::new().route("/", get(ws_upgrade)).with_state(state);
 
     let http_listener = tokio::net::TcpListener::bind(("127.0.0.1", http_port)).await?;

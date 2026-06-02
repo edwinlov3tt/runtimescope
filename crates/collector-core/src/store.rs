@@ -309,9 +309,27 @@ impl StoreHandle {
                         //    (Node's broadcastEvent). Skip the JSON cost when nobody
                         //    is subscribed; lagging clients drop frames, never block.
                         if bcast.receiver_count() > 0 {
-                            for (_, events, _) in &group {
+                            for (project, events, _) in &group {
                                 for ev in events {
-                                    let _ = bcast.send(serde_json::json!({ "type": "event", "data": ev }).to_string());
+                                    // Inject the batch's scoping key (projectId-or-appName,
+                                    // see server.rs ingest) into `data.projectId`. Raw events
+                                    // don't carry it, and the dashboard's WS filter
+                                    // (ws-client.ts) keys its "reliable" project-match branch
+                                    // off `data.projectId` — without this it always degrades to
+                                    // the ~5s sessions-list fallback and drops live events from
+                                    // freshly-connected sessions (the console-refresh bug).
+                                    let data = match ev {
+                                        Value::Object(_) => {
+                                            let mut d = ev.clone();
+                                            if let Value::Object(map) = &mut d {
+                                                map.entry("projectId")
+                                                    .or_insert_with(|| Value::String(project.clone()));
+                                            }
+                                            d
+                                        }
+                                        _ => ev.clone(),
+                                    };
+                                    let _ = bcast.send(serde_json::json!({ "type": "event", "data": data }).to_string());
                                 }
                             }
                         }

@@ -336,6 +336,9 @@ pub async fn serve(
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
+        .route("/api/analytics/feature-trends", get(analytics_feature_trends))
+        .route("/api/analytics/event-mix", get(analytics_event_mix))
+        .route("/api/analytics/cohorts", get(analytics_cohorts))
         .route("/api/analytics/funnel", get(analytics_funnel))
         .route("/api/analytics/compare", get(analytics_compare))
         .route("/api/analytics/users", get(analytics_users))
@@ -626,9 +629,74 @@ async fn analytics_funnel(
     Json(json!({ "data": f })).into_response()
 }
 
-/// GET /api/analytics/compare?by=role&window=&project_id= — current-vs-prior per
-/// entity. `by=role` is implemented; `by=app` awaits app attribution on custom
-/// events. value/$ is slice 3.
+/// GET /api/analytics/feature-trends?window=&buckets=&top=&project_id= — stacked
+/// per-feature event series (top-N + other) for the Trends chart.
+async fn analytics_feature_trends(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("12w");
+    let buckets = q.get("buckets").and_then(|b| b.parse().ok()).unwrap_or(12);
+    let top = q.get("top").and_then(|t| t.parse().ok()).unwrap_or(4);
+    let events = s.store.events_by_type("custom", project).await;
+    let t = crate::analytics_rollups::feature_trends(&events, now_ms(), window, buckets, top);
+    Json(json!({ "data": t })).into_response()
+}
+
+/// GET /api/analytics/event-mix?window=&project_id= — event counts by eventType
+/// (the donut). Queries the user-facing types and counts within the window.
+async fn analytics_event_mix(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    const MIX_TYPES: &[&str] =
+        &["custom", "ui", "network", "console", "database", "render", "performance", "navigation", "state"];
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let cutoff = crate::analytics_rollups::window_cutoff(now_ms(), window);
+    let mut out: Vec<Value> = Vec::new();
+    for t in MIX_TYPES {
+        let evs = s.store.events_by_type(t, project).await;
+        let count = evs
+            .iter()
+            .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
+            .count();
+        if count > 0 {
+            out.push(json!({ "type": t, "count": count }));
+        }
+    }
+    out.sort_by(|a, b| b["count"].as_u64().unwrap_or(0).cmp(&a["count"].as_u64().unwrap_or(0)));
+    Json(json!({ "data": out })).into_response()
+}
+
+/// GET /api/analytics/cohorts?weeks=&project_id= — weekly signup-cohort retention.
+async fn analytics_cohorts(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let weeks = q.get("weeks").and_then(|w| w.parse().ok()).unwrap_or(8);
+    let events = s.store.events_by_type("custom", project).await;
+    let rows = crate::analytics_rollups::cohort_retention(&events, now_ms(), weeks);
+    let count = rows.len();
+    Json(json!({ "data": rows, "count": count })).into_response()
+}
+
+/// GET /api/analytics/compare?by=role|app&window=&project_id= — current-vs-prior
+/// per entity. value/$ is slice 3.
 async fn analytics_compare(
     State(s): State<AppState>,
     headers: HeaderMap,
@@ -638,17 +706,33 @@ async fn analytics_compare(
         return unauthorized();
     }
     let by = q.get("by").map(String::as_str).unwrap_or("role");
-    if by != "role" {
-        return Json(json!({ "data": [], "note": format!("compare by={by} not implemented yet (only by=role)") })).into_response();
-    }
     let project = q.get("project_id").map(String::as_str);
     let window = q.get("window").map(String::as_str).unwrap_or("30d");
     let events = s.store.events_by_type("custom", project).await;
-    let roles: HashMap<String, String> =
-        s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
-    let rows = crate::analytics_rollups::compare_by_role(&events, &roles, now_ms(), window);
+    let rows = match by {
+        "app" => {
+            // custom events don't carry the app; derive sessionId → appName from
+            // the persisted `session` events.
+            let sessions = s.store.events_by_type("session", project).await;
+            let mut session_app: HashMap<String, String> = HashMap::new();
+            for se in &sessions {
+                if let (Some(sid), Some(app)) =
+                    (se.get("sessionId").and_then(Value::as_str), se.get("appName").and_then(Value::as_str))
+                {
+                    session_app.insert(sid.to_string(), app.to_string());
+                }
+            }
+            crate::analytics_rollups::compare_by_app(&events, &session_app, now_ms(), window)
+        }
+        _ => {
+            let roles: HashMap<String, String> =
+                s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+            crate::analytics_rollups::compare_by_role(&events, &roles, now_ms(), window)
+        }
+    };
     let count = rows.len();
-    Json(json!({ "data": rows, "count": count, "by": "role" })).into_response()
+    let by_label = if by == "app" { "app" } else { "role" };
+    Json(json!({ "data": rows, "count": count, "by": by_label })).into_response()
 }
 
 /// GET /api/analytics/users — anonymized end-users (NO PII), enriched with

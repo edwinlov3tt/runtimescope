@@ -226,13 +226,20 @@ pub fn funnel(events: &[Value], now: i64, invited: usize) -> Value {
     })
 }
 
-/// Per-role current-vs-prior comparison: the prior window is the equal-length
-/// span immediately before the current one. `roles` maps anonId → role (from
-/// analytics_users). Drives Compare (by role). value/$ is slice 3; by-app awaits
-/// app attribution on custom events.
-pub fn compare_by_role(events: &[Value], roles: &HashMap<String, String>, now: i64, window: &str) -> Vec<Value> {
+/// Current-vs-prior comparison grouped by an arbitrary key (the prior window is
+/// the equal-length span immediately before the current one). `key_of` returns
+/// the group for an event (None ⇒ skip); `key_name` is the emitted field
+/// (`role`/`app`). `count_users` keys distinct users on `anonId`. value/$ → slice 3.
+pub fn compare_grouped<F: Fn(&Value) -> Option<String>>(
+    events: &[Value],
+    key_of: F,
+    key_name: &str,
+    now: i64,
+    window: &str,
+) -> Vec<Value> {
     let cur_cut = window_cutoff(now, window).unwrap_or(now - 30 * DAY_MS);
     let prev_cut = cur_cut - (now - cur_cut);
+    #[derive(Default)]
     struct R {
         cu: HashSet<String>,
         ce: u64,
@@ -241,26 +248,142 @@ pub fn compare_by_role(events: &[Value], roles: &HashMap<String, String>, now: i
     }
     let mut m: HashMap<String, R> = HashMap::new();
     for e in events {
-        let Some(a) = anon_of(e) else { continue };
-        let role = roles.get(a).cloned().unwrap_or_else(|| "unknown".to_string());
+        let Some(key) = key_of(e) else { continue };
         let ts = ts_of(e);
-        let r = m.entry(role).or_insert(R { cu: HashSet::new(), ce: 0, pu: HashSet::new(), pe: 0 });
+        let user = anon_of(e).map(str::to_string);
+        let r = m.entry(key).or_default();
         if ts >= cur_cut && ts <= now {
             r.ce += 1;
-            r.cu.insert(a.to_string());
+            if let Some(u) = user {
+                r.cu.insert(u);
+            }
         } else if ts >= prev_cut && ts < cur_cut {
             r.pe += 1;
-            r.pu.insert(a.to_string());
+            if let Some(u) = user {
+                r.pu.insert(u);
+            }
         }
     }
     let mut out: Vec<Value> = m
         .into_iter()
-        .map(|(role, r)| {
-            json!({ "role": role, "users": r.cu.len(), "events": r.ce, "prevUsers": r.pu.len(), "prevEvents": r.pe })
+        .map(|(key, r)| {
+            json!({ key_name: key, "users": r.cu.len(), "events": r.ce, "prevUsers": r.pu.len(), "prevEvents": r.pe })
         })
         .collect();
     out.sort_by(|a, b| b["events"].as_u64().unwrap_or(0).cmp(&a["events"].as_u64().unwrap_or(0)));
     out
+}
+
+/// Compare by role — `roles` maps anonId → role (from analytics_users).
+pub fn compare_by_role(events: &[Value], roles: &HashMap<String, String>, now: i64, window: &str) -> Vec<Value> {
+    compare_grouped(
+        events,
+        |e| anon_of(e).map(|a| roles.get(a).cloned().unwrap_or_else(|| "unknown".to_string())),
+        "role",
+        now,
+        window,
+    )
+}
+
+/// Compare by app — `session_app` maps sessionId → appName (from `session`
+/// events, since `custom` events don't carry the app directly).
+pub fn compare_by_app(events: &[Value], session_app: &HashMap<String, String>, now: i64, window: &str) -> Vec<Value> {
+    compare_grouped(
+        events,
+        |e| session_of(e).map(|s| session_app.get(s).cloned().unwrap_or_else(|| "unknown".to_string())),
+        "app",
+        now,
+        window,
+    )
+}
+
+/// Stacked per-feature event series over `window`: the top-N features by total
+/// events each get a bucketed series; the rest fold into `other`. Drives the
+/// "Events by Feature / week" chart.
+pub fn feature_trends(events: &[Value], now: i64, window: &str, buckets: usize, top_n: usize) -> Value {
+    let buckets = buckets.clamp(1, 365);
+    let cutoff = window_cutoff(now, window).unwrap_or(now - 90 * DAY_MS);
+    let span = (((now - cutoff) as f64) / buckets as f64).max(1.0);
+    let starts: Vec<i64> = (0..buckets).map(|b| cutoff + (span * b as f64) as i64).collect();
+
+    // Total per feature (windowed) → pick the top-N.
+    let mut totals: HashMap<&str, u64> = HashMap::new();
+    for e in events {
+        let ts = ts_of(e);
+        if ts < cutoff || ts > now {
+            continue;
+        }
+        if let Some(n) = name_of(e) {
+            *totals.entry(n).or_insert(0) += 1;
+        }
+    }
+    let mut ranked: Vec<(&str, u64)> = totals.into_iter().collect();
+    ranked.sort_by_key(|x| std::cmp::Reverse(x.1));
+    let top: Vec<String> = ranked.iter().take(top_n).map(|(n, _)| n.to_string()).collect();
+    let top_set: HashSet<&str> = top.iter().map(String::as_str).collect();
+
+    let mut series: HashMap<String, Vec<u64>> = top.iter().map(|n| (n.clone(), vec![0u64; buckets])).collect();
+    let mut other = vec![0u64; buckets];
+    for e in events {
+        let ts = ts_of(e);
+        if ts < cutoff || ts > now {
+            continue;
+        }
+        let Some(n) = name_of(e) else { continue };
+        let idx = (((ts - cutoff) as f64 / span) as usize).min(buckets - 1);
+        if top_set.contains(n) {
+            series.get_mut(n).unwrap()[idx] += 1;
+        } else {
+            other[idx] += 1;
+        }
+    }
+    let mut out: Vec<Value> = top.iter().map(|n| json!({ "feature": n, "data": series[n] })).collect();
+    if other.iter().any(|&c| c > 0) {
+        out.push(json!({ "feature": "other", "data": other }));
+    }
+    json!({ "bucketStartMs": starts, "series": out })
+}
+
+/// Weekly cohort retention: each anon's signup week = its first event; `cells[k]`
+/// = % of that cohort active k weeks later. Triangular (null for future weeks).
+pub fn cohort_retention(events: &[Value], now: i64, weeks: usize) -> Vec<Value> {
+    const WEEK_MS: i64 = 7 * DAY_MS;
+    let weeks = weeks.clamp(1, 53);
+    let start = now - (weeks as i64) * WEEK_MS;
+    // first-seen ts per anon (signup) + the set of week-indices each was active.
+    let mut first: HashMap<&str, i64> = HashMap::new();
+    let mut active_weeks: HashMap<&str, HashSet<i64>> = HashMap::new();
+    for e in events {
+        let Some(a) = anon_of(e) else { continue };
+        let ts = ts_of(e);
+        if ts < start || ts > now {
+            continue;
+        }
+        first.entry(a).and_modify(|f| *f = (*f).min(ts)).or_insert(ts);
+        let wk = (ts - start) / WEEK_MS;
+        active_weeks.entry(a).or_default().insert(wk);
+    }
+    // group anons by signup week
+    let mut cohorts: HashMap<i64, Vec<&str>> = HashMap::new();
+    for (a, f) in &first {
+        cohorts.entry((*f - start) / WEEK_MS).or_default().push(a);
+    }
+    let mut rows: Vec<Value> = Vec::new();
+    for cohort_wk in 0..weeks as i64 {
+        let Some(members) = cohorts.get(&cohort_wk) else { continue };
+        let size = members.len();
+        let max_offset = (weeks as i64) - cohort_wk;
+        let cells: Vec<Value> = (0..weeks as i64 - cohort_wk)
+            .map(|off| {
+                let target = cohort_wk + off;
+                let active = members.iter().filter(|a| active_weeks.get(**a).is_some_and(|w| w.contains(&target))).count();
+                json!(((active as f64 / size as f64) * 100.0).round())
+            })
+            .chain((max_offset..weeks as i64).map(|_| Value::Null))
+            .collect();
+        rows.push(json!({ "cohortStartMs": start + cohort_wk * WEEK_MS, "size": size, "cells": cells }));
+    }
+    rows
 }
 
 #[cfg(test)]
@@ -352,5 +475,65 @@ mod tests {
         assert_eq!(dir["users"], 0); // none current
         assert_eq!(dir["prevUsers"], 1); // C in prior window
         assert_eq!(dir["prevEvents"], 1);
+    }
+
+    #[test]
+    fn feature_trends_top_n_folds_rest_into_other() {
+        let now = 1_000 * DAY_MS;
+        let events = vec![
+            ev("A", "geocode", "s1", now - 1 * DAY_MS),
+            ev("A", "geocode", "s1", now - 2 * DAY_MS),
+            ev("A", "export", "s1", now - 1 * DAY_MS),
+            ev("A", "minor", "s1", now - 1 * DAY_MS), // top_n=2 → folded into "other"
+        ];
+        let t = feature_trends(&events, now, "30d", 3, 2);
+        let series = t["series"].as_array().unwrap();
+        let names: Vec<&str> = series.iter().map(|s| s["feature"].as_str().unwrap()).collect();
+        assert!(names.contains(&"geocode") && names.contains(&"export") && names.contains(&"other"));
+        let geo = series.iter().find(|s| s["feature"] == "geocode").unwrap();
+        let sum: u64 = geo["data"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum();
+        assert_eq!(sum, 2);
+    }
+
+    #[test]
+    fn compare_by_app_groups_via_session_app_map() {
+        let now = 1_000 * DAY_MS;
+        let events = vec![
+            ev("A", "f", "s1", now - 1 * DAY_MS),
+            ev("B", "f", "s2", now - 1 * DAY_MS),
+            ev("C", "f", "s3", now - 45 * DAY_MS), // prior window
+        ];
+        let mut sa = HashMap::new();
+        sa.insert("s1".to_string(), "web".to_string());
+        sa.insert("s2".to_string(), "web".to_string());
+        sa.insert("s3".to_string(), "api".to_string());
+        let rows = compare_by_app(&events, &sa, now, "30d");
+        let web = rows.iter().find(|r| r["app"] == "web").unwrap();
+        assert_eq!(web["users"], 2);
+        assert_eq!(web["events"], 2);
+        let api = rows.iter().find(|r| r["app"] == "api").unwrap();
+        assert_eq!(api["users"], 0);
+        assert_eq!(api["prevUsers"], 1);
+    }
+
+    #[test]
+    fn cohort_retention_indexes_by_weeks_since_signup() {
+        let now = 1_000 * DAY_MS;
+        let d = DAY_MS;
+        let events = vec![
+            ev("A", "f", "s1", now - 27 * d), // cohort week 0
+            ev("A", "f", "s1", now - 6 * d),  // active again ~week 3
+            ev("B", "f", "s2", now - 6 * d),  // cohort week 3
+        ];
+        let rows = cohort_retention(&events, now, 4);
+        assert_eq!(rows.len(), 2);
+        // oldest cohort (A): active at offset 0 and 3, not 1.
+        assert_eq!(rows[0]["size"], 1);
+        assert_eq!(rows[0]["cells"][0], 100.0);
+        assert_eq!(rows[0]["cells"][1], 0.0);
+        assert_eq!(rows[0]["cells"][3], 100.0);
+        // newest cohort (B): one real cell, rest null (triangular).
+        assert_eq!(rows[1]["cells"][0], 100.0);
+        assert!(rows[1]["cells"][1].is_null());
     }
 }

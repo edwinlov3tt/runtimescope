@@ -3,6 +3,7 @@ import { cn } from '@/lib/cn';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useWorkspaceStore } from '@/stores/use-workspace-store';
+import { useHiddenProjects } from '@/stores/use-hidden-projects';
 import { findRuntimeProjects } from '@/lib/api';
 import { NotificationDropdown } from '@/components/layout/notification-dropdown';
 import { WorkspacePicker } from '@/components/layout/workspace-picker';
@@ -13,8 +14,10 @@ import {
   PanelLeft,
   Search,
   ChevronDown,
+  Eye,
   EyeOff,
   Maximize2,
+  Settings,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -26,8 +29,12 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
   const runtimeProjects = useAppStore((s) => s.projects);
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
   const selectPmProject = useAppStore((s) => s.selectPmProject);
+  const setActiveView = useAppStore((s) => s.setActiveView);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const hiddenIds = useHiddenProjects((s) => s.hiddenIds);
+  const toggleHidden = useHiddenProjects((s) => s.toggleHidden);
   const [search, setSearch] = useState('');
+  const [showHidden, setShowHidden] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -45,9 +52,12 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
   const scoped = activeWorkspaceId
     ? projects.filter((p) => p.workspaceId === activeWorkspaceId)
     : projects;
+  const hiddenCount = scoped.filter((p) => hiddenIds.has(p.id)).length;
+  // Hide hidden projects unless the user toggled "Show hidden".
+  const visible = showHidden ? scoped : scoped.filter((p) => !hiddenIds.has(p.id));
   const filtered = search.trim()
-    ? scoped.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()))
-    : scoped;
+    ? visible.filter((p) => p.name.toLowerCase().includes(search.trim().toLowerCase()))
+    : visible;
 
   return (
     <div
@@ -68,8 +78,11 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
       <div className="max-h-60 overflow-y-auto p-1">
         {filtered.map((p) => {
           const isSelected = p.id === selectedPmProject;
+          const isHidden = hiddenIds.has(p.id);
+          const rps = findRuntimeProjects(runtimeProjects, { runtimescopeProject: p.runtimescopeProject, runtimeApps: p.runtimeApps, name: p.name });
+          const isLive = rps.some((r) => r.isConnected);
           return (
-            <button
+            <div
               key={p.id}
               onClick={(e) => {
                 e.stopPropagation();
@@ -77,33 +90,102 @@ function ProjectDropdown({ open, onClose }: { open: boolean; onClose: () => void
                 onClose();
               }}
               className={cn(
-                'w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors cursor-pointer',
+                'group w-full flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left transition-colors cursor-pointer',
                 isSelected ? 'bg-accent-muted' : 'hover:bg-bg-hover',
+                isHidden && 'opacity-50',
               )}
             >
-              {(() => {
-                const rps = findRuntimeProjects(runtimeProjects, { runtimescopeProject: p.runtimescopeProject, runtimeApps: p.runtimeApps, name: p.name });
-                const isLive = rps.some((r) => r.isConnected);
-                return (
-                  <>
-                    <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', isLive ? 'bg-green animate-pulse-dot' : 'bg-text-muted')} />
-                    <span className="flex-1 text-[13px] font-medium text-text-primary truncate">{p.name}</span>
-                    <span className="text-[11px] text-text-muted font-mono">{isLive ? 'live' : 'offline'}</span>
-                  </>
-                );
-              })()}
-            </button>
+              <span className={cn('w-1.5 h-1.5 rounded-full shrink-0', isLive ? 'bg-green animate-pulse-dot' : 'bg-text-muted')} />
+              <span className="flex-1 text-[13px] font-medium text-text-primary truncate">{p.name}</span>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); toggleHidden(p.id); }}
+                title={isHidden ? 'Unhide project' : 'Hide project'}
+                aria-label={isHidden ? 'Unhide project' : 'Hide project'}
+                className={cn(
+                  'shrink-0 p-1 rounded-sm text-text-muted hover:text-text-primary hover:bg-bg-overlay transition-all cursor-pointer',
+                  isHidden ? 'opacity-100' : 'opacity-0 group-hover:opacity-100',
+                )}
+              >
+                {isHidden ? <Eye size={12} /> : <EyeOff size={12} />}
+              </button>
+              <span className="w-[42px] text-right text-[11px] text-text-muted font-mono shrink-0">{isLive ? 'live' : 'offline'}</span>
+            </div>
           );
         })}
+        {filtered.length === 0 && (
+          <div className="px-2.5 py-6 text-center text-[12px] text-text-muted">
+            {hiddenCount > 0 && !showHidden ? 'All projects hidden' : 'No projects'}
+          </div>
+        )}
       </div>
       <div className="flex items-center justify-between px-3 py-2 border-t border-border-muted">
-        <button className="text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover px-2 py-1 rounded-sm flex items-center gap-1 cursor-pointer">
-          <EyeOff size={12} /> Show hidden
+        <button
+          onClick={(e) => { e.stopPropagation(); setShowHidden((v) => !v); }}
+          disabled={hiddenCount === 0}
+          className="text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover px-2 py-1 rounded-sm flex items-center gap-1 cursor-pointer disabled:opacity-40 disabled:cursor-default disabled:hover:bg-transparent disabled:hover:text-text-tertiary"
+        >
+          {showHidden ? <EyeOff size={12} /> : <Eye size={12} />}
+          {showHidden ? 'Hide hidden' : `Show hidden${hiddenCount > 0 ? ` (${hiddenCount})` : ''}`}
         </button>
-        <button className="text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover px-2 py-1 rounded-sm flex items-center gap-1 cursor-pointer">
+        <button
+          onClick={(e) => { e.stopPropagation(); setActiveView('home'); onClose(); }}
+          className="text-[11px] text-text-tertiary hover:text-text-primary hover:bg-bg-hover px-2 py-1 rounded-sm flex items-center gap-1 cursor-pointer"
+        >
           <Maximize2 size={12} /> Full view
         </button>
       </div>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Avatar menu
+// ---------------------------------------------------------------------------
+
+function AvatarMenu() {
+  const setActiveView = useAppStore((s) => s.setActiveView);
+  const workspaces = useWorkspaceStore((s) => s.workspaces);
+  const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('click', handleClick);
+    return () => document.removeEventListener('click', handleClick);
+  }, [open]);
+
+  const workspaceName = workspaces.find((w) => w.id === activeWorkspaceId)?.name ?? 'All workspaces';
+
+  return (
+    <div className="relative" ref={ref}>
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+        className="flex items-center gap-2 cursor-pointer px-2 py-1 rounded-md hover:bg-bg-hover transition-colors"
+      >
+        <div className="w-8 h-8 rounded-full bg-border-strong" />
+        <div className="flex flex-col leading-tight text-left">
+          <span className="text-[12px] font-semibold text-text-primary truncate max-w-[120px]">{workspaceName}</span>
+          <span className="text-[10px] text-text-muted">Workspace</span>
+        </div>
+        <ChevronDown size={12} className="text-text-muted" />
+      </button>
+
+      {open && (
+        <div className="absolute top-[calc(100%+4px)] right-0 w-[180px] bg-bg-surface border border-border-strong rounded-lg shadow-lg z-[100] overflow-hidden p-1">
+          <button
+            onClick={(e) => { e.stopPropagation(); setActiveView('settings'); setOpen(false); }}
+            className="w-full flex items-center gap-2 px-2.5 py-2 rounded-md text-[13px] text-left text-text-secondary hover:bg-bg-hover hover:text-text-primary transition-colors cursor-pointer"
+          >
+            <Settings size={14} /> Settings
+          </button>
+        </div>
+      )}
     </div>
   );
 }
@@ -202,14 +284,8 @@ export const Header = memo(function Header({
         {/* Notification bell */}
         <NotificationDropdown />
 
-        {/* Avatar */}
-        <div className="flex items-center gap-2 cursor-pointer px-2 py-1 rounded-md hover:bg-bg-hover transition-colors">
-          <div className="w-8 h-8 rounded-full bg-border-strong" />
-          <div className="flex flex-col leading-tight">
-            <span className="text-[12px] font-semibold">Edwin L.</span>
-            <span className="text-[10px] text-text-muted">Admin</span>
-          </div>
-        </div>
+        {/* Avatar / workspace menu */}
+        <AvatarMenu />
       </div>
     </header>
   );

@@ -27,6 +27,17 @@ Two checks per component: **Mounted** (rendered somewhere in the tree) and
 | `useAppStore.focusedEventId` (`string \| null`) | `CommandPalette` (sets on event-result select); `network-page`/`console-page` (clear after flash) | `network-page`/`console-page` (scroll-to + transient highlight) | ✅ both sides present |
 | `useDataStore.pruneOlderThan(cutoffMs)` action | — | `use-live-data` prune effect (evicts events aged past the window) | ✅ consumed |
 | `useDetectedIssues()` shared hook (module-memoized `detectIssues`) | — | `NotificationDropdown`, `overview-page`, `issues-page` (replaces 3 inline copies) | ✅ consumed |
+| `useHiddenProjects` (`hiddenIds: Set`; persisted `localStorage` key `rs.hiddenProjects`) | `header.tsx` project dropdown (`toggleHidden` per-row eye button) | `header.tsx` project dropdown (filters hidden rows; "Show hidden" toggle) | ✅ both sides present |
+| `useAppStore.restoreNav(nav)` action | `use-url-sync` (URL → state on load/popstate) | — (it's a setter) | ✅ consumed |
+
+## URL deep-linking
+
+`hooks/use-url-sync.ts` (mounted in `App.tsx`) is the two-way bridge between nav
+state and the URL query string, so refresh restores the page and back/forward
+work. Scheme: `?view=home` · `?view=runtime&tab=<id>` · `?view=settings` ·
+`?view=project&project=<id>&ptab=<tab>[&sub=<runtime sub-tab>]`. Writes only
+`pushState` when the URL changes (applying a URL no-ops), and hydrates via the
+side-effect-free `restoreNav` store action.
 
 **Removed because orphaned** (review finding #15): `timeRangeToDates()` (zero call
 sites) and the `'custom'` preset + `customSinceSeconds` field (unreachable — the
@@ -64,13 +75,15 @@ If you touch the header or these stores, these are the load-bearing wires:
   derive from them via `detectIssues`; they update live via the WS feed
   (`ws-client.ts` → `appendEvent`).
 
-## Known still-dead chrome (pre-existing, out of scope for this branch)
+## Formerly-dead chrome — now wired by this branch
 
-Rendered but no handler (audit 0004, Category 4) — *not* introduced here:
+All header controls now have real behavior:
 
-- `header.tsx` project dropdown footer: **"Show hidden"** and **"Full view"** (no `onClick`).
-- `header.tsx` **avatar / "Edwin L."** block (`cursor-pointer`, no menu).
+- ⌘K search box → `CommandPalette`; "Today, Apr 6" pill → `DateRangePicker`;
+  fabricated notification bell → real `detectIssues` output.
+- Project dropdown **"Show hidden"** → toggles `useHiddenProjects` visibility;
+  per-row eye button hides/unhides; **"Full view"** → Home projects list.
+- **Avatar** → `AvatarMenu` (workspace-derived label + Settings link); the
+  hardcoded "Edwin L. / Admin" is gone.
 
-Three former orphans are now wired by this branch: the ⌘K search box →
-`CommandPalette`, the "Today, Apr 6" pill → `DateRangePicker`, the fabricated
-notification bell → real `detectIssues` output.
+No known dead (rendered-but-unwired) controls remain in the dashboard chrome.

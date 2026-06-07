@@ -3,7 +3,9 @@ import { useAppStore } from '@/stores/use-app-store';
 import { useDataStore } from '@/stores/use-data-store';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useDevServerStore } from '@/stores/use-dev-server-store';
+import { useAuthStore } from '@/stores/use-auth-store';
 import { AppShell } from '@/components/layout/app-shell';
+import { LoginScreen } from '@/components/auth/login-screen';
 import { checkHealth, fetchProjects } from '@/lib/api';
 import { connectWs, setDevServerHandler } from '@/lib/ws-client';
 import { useLiveData } from '@/hooks/use-live-data';
@@ -26,8 +28,23 @@ export function boostProjectPoll(): void {
 export function App() {
   const projectPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // On mount: check if collector is running → set source + connect WS + discover projects
+  const authReady = useAuthStore((s) => s.ready);
+  const authRequired = useAuthStore((s) => s.required);
+  const authed = useAuthStore((s) => s.authed);
+  const gated = authReady && authRequired && !authed;
+
+  // Bootstrap auth once: ask /api/health whether a token is required and validate
+  // any stored one. Until this resolves we render nothing (sub-second).
   useEffect(() => {
+    useAuthStore.getState().bootstrap();
+  }, []);
+
+  // On mount (and after a successful login): check if collector is running →
+  // set source + connect WS + discover projects. Gated on auth so we don't fire
+  // a wall of 401s before the token is in hand.
+  useEffect(() => {
+    if (!authReady || gated) return;
+
     // Fetch PM projects + workspaces (always — works even without live connection)
     usePmStore.getState().fetchProjects();
     import('@/stores/use-workspace-store').then((m) => m.useWorkspaceStore.getState().fetchWorkspaces());
@@ -75,10 +92,13 @@ export function App() {
       if (boostInterval) clearInterval(boostInterval);
       if (boostTimer) clearTimeout(boostTimer);
     };
-  }, []);
+  }, [authReady, gated]);
 
   // Poll data for the active tab when in live mode
   useLiveData();
+
+  if (!authReady) return null; // brief: waiting on the /api/health auth probe
+  if (gated) return <LoginScreen />;
 
   return <AppShell />;
 }

@@ -1,6 +1,7 @@
 import { useDataStore } from '@/stores/use-data-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { fetchProjects } from '@/lib/api';
+import { withWsToken } from '@/lib/auth';
 
 const MAX_RECONNECT_DELAY = 30_000;
 
@@ -37,7 +38,9 @@ let stopped = false;
 
 function getWsUrl(): string {
   const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
-  return `${proto}://${window.location.host}/api/ws/events`;
+  // Append ?token= when auth is active — the dashboard WS gate reads it
+  // (browsers can't set Authorization headers on a WebSocket).
+  return withWsToken(`${proto}://${window.location.host}/api/ws/events`);
 }
 
 function doConnect(): void {

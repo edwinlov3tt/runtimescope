@@ -12,8 +12,20 @@ import type {
   PortUsage,
 } from '@/lib/runtime-types';
 
+import { authHeaders } from '@/lib/auth';
+import { useAuthStore } from '@/stores/use-auth-store';
+
 // Base URL is empty — Vite proxy forwards /api/* to the collector
 const BASE = '';
+
+// A 401 means our token is missing/stale — drop it and re-show the login gate.
+function on401(res: Response): boolean {
+  if (res.status === 401) {
+    useAuthStore.getState().markUnauthorized();
+    return true;
+  }
+  return false;
+}
 
 interface ApiResponse<T> {
   data: T[];
@@ -37,8 +49,11 @@ async function get<T>(path: string, params?: Record<string, string | number | un
   }
 
   try {
-    const res = await fetch(url.toString());
-    if (!res.ok) return null;
+    const res = await fetch(url.toString(), { headers: authHeaders() });
+    if (!res.ok) {
+      on401(res);
+      return null;
+    }
     const json: ApiResponse<T> = await res.json();
     return json.data;
   } catch {
@@ -216,10 +231,13 @@ export async function killProcess(pid: number, signal: 'SIGTERM' | 'SIGKILL' = '
   try {
     const res = await fetch(`${BASE}/api/processes`, {
       method: 'DELETE',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: JSON.stringify({ pid, signal }),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      on401(res);
+      return null;
+    }
     const data = await res.json();
     return data?.data ?? null;
   } catch {

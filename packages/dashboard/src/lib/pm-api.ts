@@ -22,9 +22,16 @@ import type {
   PmApiKey,
 } from './pm-types';
 
+import { authHeaders } from '@/lib/auth';
+import { useAuthStore } from '@/stores/use-auth-store';
+
 const BASE = '';
 
 async function json<T>(res: Response): Promise<T | null> {
+  if (res.status === 401) {
+    useAuthStore.getState().markUnauthorized();
+    return null;
+  }
   if (!res.ok) return null;
   return res.json();
 }
@@ -37,7 +44,7 @@ async function get<T>(path: string, params?: Record<string, string | number | bo
     }
   }
   try {
-    const res = await fetch(url.toString());
+    const res = await fetch(url.toString(), { headers: authHeaders() });
     return json<T>(res);
   } catch {
     return null;
@@ -54,7 +61,7 @@ async function post<T>(path: string, body?: unknown): Promise<T | null> {
   try {
     const res = await fetch(`${BASE}${path}`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: body ? JSON.stringify(body) : undefined,
     });
     return json<T>(res);
@@ -67,7 +74,7 @@ async function put<T>(path: string, body?: unknown): Promise<T | null> {
   try {
     const res = await fetch(`${BASE}${path}`, {
       method: 'PUT',
-      headers: { 'Content-Type': 'application/json' },
+      headers: authHeaders({ 'Content-Type': 'application/json' }),
       body: body ? JSON.stringify(body) : undefined,
     });
     return json<T>(res);
@@ -78,7 +85,8 @@ async function put<T>(path: string, body?: unknown): Promise<T | null> {
 
 async function del(path: string): Promise<boolean> {
   try {
-    const res = await fetch(`${BASE}${path}`, { method: 'DELETE' });
+    const res = await fetch(`${BASE}${path}`, { method: 'DELETE', headers: authHeaders() });
+    if (res.status === 401) useAuthStore.getState().markUnauthorized();
     return res.ok;
   } catch {
     return false;

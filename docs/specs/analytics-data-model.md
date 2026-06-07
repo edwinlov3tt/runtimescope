@@ -99,6 +99,104 @@ Roll up by user / feature / role / app / time bucket for every view above.
 **SDK:** `identify({email, role, consent})` → anon id; existing `track(name, props)`
 stamped with the anon id; `show_survey` command (slice 4).
 
+## Additional props (round 2 — full read of all 8 sub-prototypes)
+
+Things the first pass missed, by page. These are the data the real views need.
+
+### Cross-cutting (every page)
+- **KPI cards carry a `sparkData[]`** (≈6-pt mini-series) + `change`/`changeDir`
+  (up/down/neutral) + `footerLabel`/`footerExtra` — not just a current value. So
+  every KPI needs a short trend series + a prior-period delta, not a scalar.
+- **Swappable KPI rows:** each page defines a *pool* of ~6-7 metrics; the `⋯`
+  menu swaps which 4 show. → KPI endpoints return the whole pool, not 4 fixed.
+- **Window + scope filters everywhere:** date presets (`7d/30d/90d/12w/12mo/all`)
+  + app/category pills (`?app=`) + the existing `?role=/feature=/seg=` drill-downs.
+  Every aggregate endpoint takes a window + optional app/role/feature filter.
+- **Explicit UI states:** loading / **empty** ("once your app calls
+  `RuntimeScope.identify()`…") / **thin** ("meaningful around ~50 users") / error.
+  The envelope should distinguish *no data* from *too little data* (a thin-data
+  threshold) so the UI can show the right state.
+- **CSV export** on most pages (trends, compare, users, features, projections) —
+  support server-side CSV or document client-side from the JSON.
+- **Annotations + goals:** charts render deploy **vlines** (version markers, e.g.
+  `v2.0` at a week index) and goal **hlines** (`MAU goal 300`, `$100k goal`). Need
+  a deploys/annotations source + configurable goals per metric.
+
+### Trends — additional charts (each its own data shape)
+- **Event Mix donut:** event counts **by eventType** (custom/track, ui, network,
+  console, error) + total.
+- **Events by Feature / week:** stacked weekly series — top-N features + `other`.
+- **Activation funnel:** `Identified → Activated (used a feature) → Repeat (≥2
+  sessions) → Power user (weekly active)` with counts + drill links (`?seg=`).
+  **Adoption denominator = "invited"** (Identified 459 vs Activated 312) — needs an
+  invited/identified count distinct from activated users.
+- **Cohort retention heatmap:** per signup-week cohort → `size` + `W0..W6` % still
+  active (triangular; null for future weeks).
+- KPIs: MAU, DAU, **WAU/MAU stickiness**, **Events/day (7-day avg)**, Adoption
+  (% of invited), Value, Hours.
+
+### Compare — prior-period machinery
+- Three modes: **Period** (current vs prior), **Apps**, **Roles**.
+- Needs **two windows** (current + prior, e.g. "May 30d" → "Apr 30d") and returns
+  both: per-entity `users/events/value/hours` **plus** `prevUsers/prevEvents/
+  prevValue`. Derived client-side: top-by-value, most-improved (ratio, filtered to
+  meaningful volume ≥$5k), declining (`value < prev`), share-of-total, ranked.
+- Per-mode CSV columns differ (period: `*_cur/_prev`; entity: `valueK/prevValueK`).
+
+### Users — additions
+- **Per-user "Survey" button** → a *targeted* `show_survey` to one `anon_id`
+  (slice 4 must support targeting, not just broadcast).
+- Detail field **"Value attributed"** (the user's ROI sum), `top` features with
+  per-feature score, recent `evs` with relative time.
+
+### Features — additions
+- Per feature: **`perUse`** (avg time/use, e.g. `2.4m`), **`dau[]`** (daily usage,
+  ~10d), **`topUsers` `[[anon_id, uses]]`**, **`status`** (core/growing/niche by
+  adoption threshold), `app`, `trend[]`, `color`.
+- **Adoption % = feature users / identified users.** App-filter pills.
+- Detail links: top users → `users?feature=`, baseline → `baselines` (feature
+  surfaces its own baseline: manual→tool, per-item).
+
+### Baselines — the ROI editing surface
+- **Crowdsourced submissions:** `{fn, anon_id, est_manual_min, current}` with a
+  **>20% divergence flag**; per-submission **Accept / Dismiss** mutations.
+- **Per-baseline history timeline** (`title, desc, time` — the audit trail UI).
+- **`uses` count** per baseline (from events); **confirmed/locked** state
+  (`Confirmed 6/8`); **avg time saved weighted by uses** KPI.
+- Actions: New baseline, inline edit manual/tool (PUT), per-item toggle.
+- ⚠ **Rate source:** the baseline page multiplies by a single per-`fn` `rate`, but
+  canonical ROI sums **per event by the acting user's role rate**. Treat the
+  per-fn rate as a display approximation; the real `get_roi_report` joins each
+  event's user → role → rate.
+
+### Projections — additions
+- New-projection form: `quarter, proj_hours, proj_value, **notes**` (+ `set_by`,
+  e.g. Director). **Actuals are computed LIVE** from baselines × usage for the
+  quarter window — *not* stored/entered. (Revisit `analytics_projections.actual_*`:
+  treat as a derived cache or drop; the prototype states "no manual entry".)
+- KPIs: Target Hours, Actual Hours (% of goal), Projected/Actual Value, % to Goal,
+  Value Variance (actual − projected).
+
+### Admin — the PII gate specifics
+- Dedicated **`X-Admin-Key`** header (separate from the workspace bearer) — the
+  reveal/de-anon gate.
+- **Admin login audit:** count, failed count, rate-limited (a `login_attempts`
+  table) — surfaced as an "Admin Logins" KPI.
+- **PII export is consented-only** (the export button filters to `consent = true`).
+
+### Status (slice 5) — monitoring mechanics
+- **`monitored_apps`:** `id, name, url, state (up|degraded|down), uptime_pct,
+  resp_ms, last_check`, + an **SDK hourly heartbeat** (last heartbeat + missed
+  count) AND an **active probe every 60s** (hits the app URL/`/heartbeat`).
+- **`uptime_checks`:** 60-day daily status strip (0 up / 1 degraded / 2 down).
+- **`incidents`:** `app, status (ongoing|resolved), started, duration, type`
+  (e.g. "No heartbeat (3 missed)", "Slow response (512ms > 400ms)", "503 on
+  /heartbeat", "Deploy lock"), severity.
+- Thresholds: slow response **>400ms → degraded**; **N missed heartbeats → down**.
+- Actions: "Check all now" (force probe), "Monitor app" (add). KPIs: Apps
+  Monitored (+healthy), Overall Uptime (90-day), Active Incidents (down/degraded),
+  Avg Response (healthy only), Healthy N/total, Incidents (30d, resolved).
+
 ## Slice plan (ADR-0012)
 1. **Identity** — `analytics.db` + `analytics_users`/`_pii`/`_roles`, SDK
    `identify()`, anon-id stamping. Unblocks everything.

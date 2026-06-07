@@ -6,12 +6,13 @@
 //! sets these and waits for /readyz).
 
 use collector_core::{
-    data_dir, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore, DEFAULT_HTTP_PORT,
-    DEFAULT_WS_PORT, VERSION,
+    data_dir, host_from_env, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore,
+    DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
 };
 
 #[tokio::main]
 async fn main() -> std::io::Result<()> {
+    let host = host_from_env();
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
 
@@ -27,14 +28,20 @@ async fn main() -> std::io::Result<()> {
         .map_err(|e| std::io::Error::other(format!("pm store init failed: {e}")))?;
 
     eprintln!("[RuntimeScope] collector-server (rust {VERSION})");
-    eprintln!("[RuntimeScope]   WebSocket: ws://127.0.0.1:{ws_port}");
-    eprintln!("[RuntimeScope]   HTTP API:  http://127.0.0.1:{http_port}");
+    eprintln!("[RuntimeScope]   WebSocket: ws://{host}:{ws_port}");
+    eprintln!("[RuntimeScope]   HTTP API:  http://{host}:{http_port}");
+    if !host.is_loopback() {
+        eprintln!(
+            "[RuntimeScope]   ⚠ bound to {host} (non-loopback) — expose ONLY behind a \
+             reverse proxy/tunnel with TLS + access control (ADR-0010)"
+        );
+    }
 
     // Standalone daemon has no MCP, so the command hub is unused here (sessions
     // still register; commands simply never get issued). Standalone auth mode:
     // honors RUNTIMESCOPE_AUTH_TOKEN (Node parity, standalone.ts).
     // process_monitor = false: the standalone collector serves empty /api/processes
     // + /api/ports (Node `standalone.ts` passes no ProcessMonitor to HttpServer).
-    serve(store, CommandHub::new(), pm, ws_port, http_port, VERSION.to_string(), AuthMode::Standalone, false)
+    serve(store, CommandHub::new(), pm, host, ws_port, http_port, VERSION.to_string(), AuthMode::Standalone, false)
         .await
 }

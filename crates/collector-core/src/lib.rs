@@ -45,6 +45,43 @@ pub fn port_from_env(var: &str, default: u16) -> u16 {
     std::env::var(var).ok().and_then(|v| v.parse().ok()).unwrap_or(default)
 }
 
+/// The bind address for the standalone collector, from `RUNTIMESCOPE_HOST`
+/// (default `127.0.0.1`). Set `0.0.0.0` to expose the collector on all
+/// interfaces — only do this behind a reverse proxy / tunnel that terminates
+/// TLS and enforces access (ADR-0010). An unparseable value falls back to
+/// loopback rather than failing open. The embedded MCP collector does NOT call
+/// this — it always binds loopback.
+pub fn host_from_env() -> std::net::IpAddr {
+    parse_host(std::env::var("RUNTIMESCOPE_HOST").ok().as_deref())
+}
+
+/// Pure core of [`host_from_env`] (env split out so it's testable without
+/// mutating process-global state). Unparseable/absent ⇒ loopback (fail closed).
+fn parse_host(v: Option<&str>) -> std::net::IpAddr {
+    use std::net::{IpAddr, Ipv4Addr};
+    v.and_then(|s| s.trim().parse::<IpAddr>().ok())
+        .unwrap_or(IpAddr::V4(Ipv4Addr::LOCALHOST))
+}
+
+#[cfg(test)]
+mod host_tests {
+    use super::parse_host;
+    use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
+
+    #[test]
+    fn host_defaults_to_loopback_and_fails_closed() {
+        let loop4 = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert_eq!(parse_host(None), loop4, "absent ⇒ loopback");
+        assert_eq!(parse_host(Some("")), loop4, "empty ⇒ loopback");
+        assert_eq!(parse_host(Some("garbage")), loop4, "unparseable ⇒ loopback (fail closed)");
+        assert_eq!(parse_host(Some("example.com")), loop4, "hostnames are not IPs ⇒ loopback");
+        // Valid binds are honored, including whitespace-padded env values.
+        assert_eq!(parse_host(Some("0.0.0.0")), IpAddr::V4(Ipv4Addr::UNSPECIFIED));
+        assert_eq!(parse_host(Some("  127.0.0.1  ")), loop4);
+        assert_eq!(parse_host(Some("::1")), IpAddr::V6(Ipv6Addr::LOCALHOST));
+    }
+}
+
 /// The data directory: `$HOME/.runtimescope` (the conformance harness sets HOME
 /// to an isolated temp dir, so a restart-at-same-HOME finds the prior data).
 pub fn data_dir() -> PathBuf {

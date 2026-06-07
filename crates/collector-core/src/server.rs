@@ -119,6 +119,7 @@ pub async fn serve(
     store: StoreHandle,
     hub: CommandHub,
     pm: PmStore,
+    host: std::net::IpAddr,
     ws_port: u16,
     http_port: u16,
     version: String,
@@ -261,8 +262,8 @@ pub async fn serve(
 
     let ws = Router::new().route("/", get(ws_upgrade)).with_state(state);
 
-    let http_listener = tokio::net::TcpListener::bind(("127.0.0.1", http_port)).await?;
-    let ws_listener = tokio::net::TcpListener::bind(("127.0.0.1", ws_port)).await?;
+    let http_listener = tokio::net::TcpListener::bind((host, http_port)).await?;
+    let ws_listener = tokio::net::TcpListener::bind((host, ws_port)).await?;
 
     tokio::try_join!(
         async { axum::serve(http_listener, http).await },

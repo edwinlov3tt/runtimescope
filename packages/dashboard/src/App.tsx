@@ -7,6 +7,7 @@ import { AppShell } from '@/components/layout/app-shell';
 import { checkHealth, fetchProjects } from '@/lib/api';
 import { connectWs, setDevServerHandler } from '@/lib/ws-client';
 import { useLiveData } from '@/hooks/use-live-data';
+import { useUrlSync } from '@/hooks/use-url-sync';
 
 // Boost project polling temporarily (750ms for 15s) after starting a dev server
 let boostTimer: ReturnType<typeof setTimeout> | null = null;
@@ -76,6 +77,9 @@ export function App() {
       if (boostTimer) clearTimeout(boostTimer);
     };
   }, []);
+
+  // Keep the URL in sync with nav state (deep-linking + refresh restore)
+  useUrlSync();
 
   // Poll data for the active tab when in live mode
   useLiveData();

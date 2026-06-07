@@ -97,6 +97,16 @@ interface AppState {
   // --- Focused event (palette → deep-link to a specific row) ---
   focusedEventId: string | null;
   setFocusedEventId: (id: string | null) => void;
+
+  // --- URL deep-linking: hydrate nav state from the URL. Sets only the provided
+  //     fields; switching projects flushes buffers like selectPmProject does. ---
+  restoreNav: (nav: Partial<{
+    view: ActiveView;
+    tab: string;
+    projectTab: ProjectTab;
+    runtimeSubTab: string;
+    pmProject: string | null;
+  }>) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -126,6 +136,23 @@ export const useAppStore = create<AppState>((set, get) => ({
       activeProjectTab: 'sessions',
       detailPanel: { open: false, rowIndex: null },
     });
+  },
+
+  restoreNav: (nav) => {
+    const cur = get();
+    if (nav.pmProject !== undefined && nav.pmProject !== cur.selectedPmProject) {
+      // Switching projects — drop the runtime app filter + flush buffers
+      // (mirrors selectPmProject) so a deep-linked project can't show another's data.
+      set({ selectedProject: null });
+      useDataStore.getState().clearAll();
+    }
+    const patch: Partial<AppState> = {};
+    if (nav.view !== undefined) patch.activeView = nav.view;
+    if (nav.tab !== undefined) patch.activeTab = nav.tab;
+    if (nav.projectTab !== undefined) patch.activeProjectTab = nav.projectTab;
+    if (nav.runtimeSubTab !== undefined) patch.runtimeSubTab = nav.runtimeSubTab;
+    if (nav.pmProject !== undefined) patch.selectedPmProject = nav.pmProject;
+    set(patch);
   },
 
   detailPanel: { open: false, rowIndex: null },

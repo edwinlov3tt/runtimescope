@@ -13,6 +13,7 @@
 
 use rusqlite::{params, Connection, OptionalExtension};
 use serde::Serialize;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
@@ -119,6 +120,35 @@ CREATE TABLE IF NOT EXISTS analytics_incidents (
   FOREIGN KEY (app_id) REFERENCES analytics_monitored_apps(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_incidents_app_open ON analytics_incidents(app_id, resolved_at);
+-- Headless surveys (slice 4, ADR-0014). Definitions scoped to a workspace;
+-- end-users addressed by projectId at fetch time. answers/questions/targeting JSON.
+CREATE TABLE IF NOT EXISTS analytics_surveys (
+  id           TEXT PRIMARY KEY,
+  workspace_id TEXT,
+  name         TEXT NOT NULL,
+  status       TEXT NOT NULL DEFAULT 'draft', -- draft | active | inactive
+  questions    TEXT NOT NULL DEFAULT '[]',
+  targeting    TEXT NOT NULL DEFAULT '{}',
+  created_at   INTEGER NOT NULL,
+  updated_at   INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS analytics_survey_responses (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  survey_id    TEXT NOT NULL,
+  anon_id      TEXT NOT NULL,
+  external_id  TEXT,
+  answers      TEXT NOT NULL,
+  submitted_at INTEGER NOT NULL,
+  FOREIGN KEY (survey_id) REFERENCES analytics_surveys(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_survey_responses ON analytics_survey_responses(survey_id, anon_id);
+CREATE TABLE IF NOT EXISTS analytics_survey_dismissals (
+  survey_id    TEXT NOT NULL,
+  anon_id      TEXT NOT NULL,
+  dismissed_at INTEGER NOT NULL,
+  PRIMARY KEY (survey_id, anon_id),
+  FOREIGN KEY (survey_id) REFERENCES analytics_surveys(id) ON DELETE CASCADE
+);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -184,6 +214,9 @@ impl AnalyticsStore {
         // CREATE IF NOT EXISTS won't add columns; ALTER + ignore "duplicate column".
         let _ = conn.execute("ALTER TABLE analytics_projections ADD COLUMN notes TEXT", []);
         let _ = conn.execute("ALTER TABLE analytics_projections ADD COLUMN set_by TEXT", []);
+        // external_id (slice 4): the app's own user id, set via identify, for joining
+        // survey responses back to the app's user table.
+        let _ = conn.execute("ALTER TABLE analytics_users ADD COLUMN external_id TEXT", []);
         let store = AnalyticsStore { conn: Arc::new(Mutex::new(conn)) };
         store.seed_roles()?;
         Ok(store)
@@ -223,6 +256,7 @@ impl AnalyticsStore {
         email: &str,
         role: Option<&str>,
         consent: Option<bool>,
+        external_id: Option<&str>,
         ip: Option<&str>,
     ) -> Result<String, String> {
         let anon = Self::anon_id_for(email);
@@ -230,13 +264,14 @@ impl AnalyticsStore {
         let consent_i: Option<i64> = consent.map(|c| c as i64);
         let conn = self.conn.lock().unwrap();
         conn.execute(
-            "INSERT INTO analytics_users (anon_id, role, consent, first_seen, last_seen)
-             VALUES (?1, COALESCE(?2, ''), COALESCE(?3, 0), ?4, ?4)
+            "INSERT INTO analytics_users (anon_id, role, consent, external_id, first_seen, last_seen)
+             VALUES (?1, COALESCE(?2, ''), COALESCE(?3, 0), ?5, ?4, ?4)
              ON CONFLICT(anon_id) DO UPDATE SET
                role = COALESCE(?2, analytics_users.role),
                consent = COALESCE(?3, analytics_users.consent),
+               external_id = COALESCE(?5, analytics_users.external_id),
                last_seen = ?4",
-            params![anon, role, consent_i, now],
+            params![anon, role, consent_i, now, external_id],
         )
         .map_err(|e| e.to_string())?;
         // On an explicit consent revocation, CLEAR any previously-stored IP (don't
@@ -830,6 +865,224 @@ impl AnalyticsStore {
     }
 }
 
+// ── Headless surveys (slice 4) ──────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Survey {
+    pub id: String,
+    #[serde(rename = "workspaceId")]
+    pub workspace_id: Option<String>,
+    pub name: String,
+    pub status: String,
+    pub questions: Value,
+    pub targeting: Value,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+    #[serde(rename = "updatedAt")]
+    pub updated_at: i64,
+}
+
+fn json_text(v: &Value) -> String {
+    serde_json::to_string(v).unwrap_or_else(|_| "null".to_string())
+}
+fn parse_json(s: &str, fallback: Value) -> Value {
+    serde_json::from_str(s).unwrap_or(fallback)
+}
+
+impl AnalyticsStore {
+    fn row_to_survey(r: &rusqlite::Row) -> rusqlite::Result<Survey> {
+        let q: String = r.get(4)?;
+        let t: String = r.get(5)?;
+        Ok(Survey {
+            id: r.get(0)?,
+            workspace_id: r.get(1)?,
+            name: r.get(2)?,
+            status: r.get(3)?,
+            questions: parse_json(&q, Value::Array(vec![])),
+            targeting: parse_json(&t, json!({})),
+            created_at: r.get(6)?,
+            updated_at: r.get(7)?,
+        })
+    }
+
+    /// Create a survey. `id` is `sv_<8hex>` derived from name+time (stable per call).
+    pub fn create_survey(
+        &self,
+        workspace_id: Option<&str>,
+        name: &str,
+        status: &str,
+        questions: &Value,
+        targeting: &Value,
+    ) -> Result<Survey, String> {
+        let now = now_ms();
+        let mut h = Sha256::new();
+        h.update(name.as_bytes());
+        h.update(now.to_le_bytes());
+        let id = format!("sv_{}", h.finalize()[..4].iter().map(|b| format!("{b:02x}")).collect::<String>());
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analytics_surveys (id, workspace_id, name, status, questions, targeting, created_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?7)",
+            params![id, workspace_id, name, status, json_text(questions), json_text(targeting), now],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(Survey {
+            id,
+            workspace_id: workspace_id.map(String::from),
+            name: name.to_string(),
+            status: status.to_string(),
+            questions: questions.clone(),
+            targeting: targeting.clone(),
+            created_at: now,
+            updated_at: now,
+        })
+    }
+
+    /// Surveys, optionally scoped to a workspace (None ⇒ all).
+    pub fn list_surveys(&self, workspace_id: Option<&str>) -> Vec<Survey> {
+        let conn = self.conn.lock().unwrap();
+        let sql = "SELECT id, workspace_id, name, status, questions, targeting, created_at, updated_at
+                   FROM analytics_surveys WHERE (?1 IS NULL OR workspace_id = ?1) ORDER BY created_at DESC";
+        let mut stmt = match conn.prepare(sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_surveys failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![workspace_id], Self::row_to_survey);
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_surveys failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    pub fn get_survey(&self, id: &str) -> Option<Survey> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, workspace_id, name, status, questions, targeting, created_at, updated_at
+             FROM analytics_surveys WHERE id = ?1",
+            params![id],
+            Self::row_to_survey,
+        )
+        .optional()
+        .unwrap_or_else(|e| {
+            tracing::warn!("analytics get_survey failed: {e}");
+            None
+        })
+    }
+
+    /// Update a survey's editable fields. Returns true if the row existed.
+    pub fn update_survey(&self, id: &str, name: &str, status: &str, questions: &Value, targeting: &Value) -> Result<bool, String> {
+        let conn = self.conn.lock().unwrap();
+        let n = conn
+            .execute(
+                "UPDATE analytics_surveys SET name = ?2, status = ?3, questions = ?4, targeting = ?5, updated_at = ?6 WHERE id = ?1",
+                params![id, name, status, json_text(questions), json_text(targeting), now_ms()],
+            )
+            .map_err(|e| e.to_string())?;
+        Ok(n > 0)
+    }
+
+    pub fn delete_survey(&self, id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM analytics_surveys WHERE id = ?1", params![id]).map(|n| n > 0).unwrap_or(false)
+    }
+
+    /// True if the user already answered OR dismissed the survey (once-per-user).
+    pub fn has_interacted(&self, survey_id: &str, anon_id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        let answered: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM analytics_survey_responses WHERE survey_id = ?1 AND anon_id = ?2",
+                params![survey_id, anon_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        if answered > 0 {
+            return true;
+        }
+        let dismissed: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM analytics_survey_dismissals WHERE survey_id = ?1 AND anon_id = ?2",
+                params![survey_id, anon_id],
+                |r| r.get(0),
+            )
+            .unwrap_or(0);
+        dismissed > 0
+    }
+
+    pub fn record_response(&self, survey_id: &str, anon_id: &str, external_id: Option<&str>, answers: &Value) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        // Fall back to the user's stored external_id when the call omits one.
+        let ext: Option<String> = match external_id {
+            Some(e) => Some(e.to_string()),
+            None => conn
+                .query_row("SELECT external_id FROM analytics_users WHERE anon_id = ?1", params![anon_id], |r| r.get(0))
+                .optional()
+                .ok()
+                .flatten(),
+        };
+        conn.execute(
+            "INSERT INTO analytics_survey_responses (survey_id, anon_id, external_id, answers, submitted_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![survey_id, anon_id, ext, json_text(answers), now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn dismiss_survey(&self, survey_id: &str, anon_id: &str) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analytics_survey_dismissals (survey_id, anon_id, dismissed_at) VALUES (?1, ?2, ?3)
+             ON CONFLICT(survey_id, anon_id) DO UPDATE SET dismissed_at = excluded.dismissed_at",
+            params![survey_id, anon_id, now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    pub fn response_count(&self, survey_id: &str) -> i64 {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row("SELECT COUNT(*) FROM analytics_survey_responses WHERE survey_id = ?1", params![survey_id], |r| r.get(0))
+            .unwrap_or(0)
+    }
+
+    /// Responses for a survey (admin) — `{anonId, externalId, answers, submittedAt}`.
+    pub fn list_responses(&self, survey_id: &str) -> Vec<Value> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT anon_id, external_id, answers, submitted_at FROM analytics_survey_responses WHERE survey_id = ?1 ORDER BY submitted_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_responses failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![survey_id], |r| {
+            let answers: String = r.get(2)?;
+            Ok(json!({
+                "anonId": r.get::<_, String>(0)?,
+                "externalId": r.get::<_, Option<String>>(1)?,
+                "answers": parse_json(&answers, json!({})),
+                "submittedAt": r.get::<_, i64>(3)?,
+            }))
+        });
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_responses failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -849,13 +1102,13 @@ mod tests {
         let s = AnalyticsStore::open(&path).unwrap();
 
         // identify is deterministic: same email → same anon id.
-        let a1 = s.identify("Sara.Chen@Company.com", Some("Specialist"), Some(true), Some("10.0.0.1")).unwrap();
-        let a2 = s.identify("sara.chen@company.com ", Some("Specialist"), Some(true), None).unwrap();
+        let a1 = s.identify("Sara.Chen@Company.com", Some("Specialist"), Some(true), Some("ext-42"), Some("10.0.0.1")).unwrap();
+        let a2 = s.identify("sara.chen@company.com ", Some("Specialist"), Some(true), None, None).unwrap();
         assert_eq!(a1, a2, "same email (case/space-insensitive) → same anon id");
         assert_eq!(a1.len(), 16, "anon id is 16 hex chars (8 bytes)");
 
         // Re-identify with consent omitted (None) must NOT revoke prior consent.
-        s.identify("sara.chen@company.com", None, None, None).unwrap();
+        s.identify("sara.chen@company.com", None, None, None, None).unwrap();
         assert!(s.get_user(&a1).unwrap().consent, "omitted consent must be preserved, not revoked");
         assert_eq!(s.get_user(&a1).unwrap().role, "Specialist", "omitted role preserved");
 
@@ -876,7 +1129,7 @@ mod tests {
         assert!(u.first_seen <= u.last_seen);
 
         // Consent revocation CLEARS the stored IP (not just stops capturing new).
-        s.identify("sara.chen@company.com", None, Some(false), None).unwrap();
+        s.identify("sara.chen@company.com", None, Some(false), None, None).unwrap();
         assert!(!s.get_user(&a1).unwrap().consent, "consent revoked");
         assert!(s.get_pii(&a1).unwrap().ip.is_none(), "IP cleared on consent revocation");
 
@@ -971,6 +1224,44 @@ mod tests {
         assert!(s.delete_app(&app.id));
         assert_eq!(s.recent_checks(&app.id, 0).len(), 0);
         assert_eq!(s.list_incidents("all", None).len(), 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn surveys_create_target_respond_dismiss() {
+        let path = tmp();
+        let s = AnalyticsStore::open(&path).unwrap();
+        let anon = s.identify("dev@co.com", Some("Specialist"), Some(true), Some("ext-99"), None).unwrap();
+
+        let q = json!([{ "id": "q1", "type": "rating", "required": true }, { "id": "q2", "type": "text" }]);
+        let t = json!({ "roles": ["Specialist"], "samplePct": 100 });
+        let sv = s.create_survey(Some("ws1"), "CSAT", "active", &q, &t).unwrap();
+        assert!(sv.id.starts_with("sv_"));
+        assert_eq!(s.list_surveys(Some("ws1")).len(), 1);
+        assert_eq!(s.list_surveys(Some("other")).len(), 0, "workspace-scoped");
+        assert_eq!(s.get_survey(&sv.id).unwrap().questions[0]["id"], "q1");
+
+        // respond (externalId omitted → resolved from the user's stored ext-99).
+        assert!(!s.has_interacted(&sv.id, &anon));
+        s.record_response(&sv.id, &anon, None, &json!({ "q1": 5, "q2": "great" })).unwrap();
+        assert!(s.has_interacted(&sv.id, &anon), "answered ⇒ once-per-user suppress");
+        assert_eq!(s.response_count(&sv.id), 1);
+        let resp = s.list_responses(&sv.id);
+        assert_eq!(resp[0]["externalId"], "ext-99", "external_id resolved from the user record");
+        assert_eq!(resp[0]["answers"]["q1"], 5);
+
+        // a different user: dismissal suppresses too.
+        let anon2 = s.identify("b@co.com", Some("Director"), Some(true), None, None).unwrap();
+        s.dismiss_survey(&sv.id, &anon2).unwrap();
+        assert!(s.has_interacted(&sv.id, &anon2), "dismissed ⇒ suppress");
+
+        // update + delete (cascades responses/dismissals).
+        assert!(s.update_survey(&sv.id, "CSAT v2", "inactive", &q, &t).unwrap());
+        assert_eq!(s.get_survey(&sv.id).unwrap().status, "inactive");
+        assert!(s.delete_survey(&sv.id));
+        assert!(s.get_survey(&sv.id).is_none());
+        assert_eq!(s.response_count(&sv.id), 0);
 
         let _ = std::fs::remove_file(&path);
     }

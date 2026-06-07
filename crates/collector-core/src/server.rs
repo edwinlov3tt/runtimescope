@@ -609,6 +609,8 @@ struct IdentifyBody {
     email: String,
     role: Option<String>,
     consent: Option<bool>,
+    #[serde(rename = "externalId")]
+    external_id: Option<String>,
 }
 
 /// POST /api/analytics/identify — the SDK's `identify()`. Records/refreshes an
@@ -636,7 +638,7 @@ async fn analytics_identify(
     // captured with explicit consent.
     let role = b.role.filter(|r| !r.trim().is_empty());
     let ip = if b.consent == Some(true) { s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string()) } else { None };
-    match s.analytics.identify(b.email.trim(), role.as_deref(), b.consent, ip.as_deref()) {
+    match s.analytics.identify(b.email.trim(), role.as_deref(), b.consent, b.external_id.as_deref(), ip.as_deref()) {
         Ok(anon) => {
             // Echo the PERSISTED role/consent (post-COALESCE), not the request — a
             // re-identify that omits them must report the durable value, not null.
@@ -4766,7 +4768,7 @@ mod slice_g_dev_server_tests {
         let pm = PmStore::open(&dir.join("pm.db")).unwrap();
         let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
         analytics.upsert_baseline("geocode", 8.0, 2.4, true, "admin", None, Some("seed")).unwrap();
-        let anon = analytics.identify("sara@co.com", Some("Specialist"), Some(true), None).unwrap(); // $50
+        let anon = analytics.identify("sara@co.com", Some("Specialist"), Some(true), None, None).unwrap(); // $50
         let now = now_ms();
         let ev = |id: &str, ts: i64| {
             json!({ "eventId": id, "sessionId": "s1", "timestamp": ts, "eventType": "custom", "name": "geocode", "anonId": anon, "properties": { "count": 10 } })

@@ -9,6 +9,7 @@
 //! crash recovery. The full 19 event types, auth, and the command channel
 //! widen this in later milestones.
 
+pub mod analytics_store;
 pub mod auth;
 pub mod command;
 pub mod dev_server;
@@ -23,6 +24,7 @@ pub mod server;
 pub mod store;
 pub mod wal;
 
+pub use analytics_store::AnalyticsStore;
 pub use auth::AuthMode;
 pub use command::CommandHub;
 pub use pm_project_manager::{discover_runtimescope_projects, ProjectManager};

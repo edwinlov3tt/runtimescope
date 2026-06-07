@@ -94,8 +94,10 @@ pub fn is_blocked_ip(ip: &IpAddr) -> bool {
                 || v6.is_unspecified()
                 || (v6.segments()[0] & 0xfe00) == 0xfc00 // fc00::/7 unique-local
                 || (v6.segments()[0] & 0xffc0) == 0xfe80 // fe80::/10 link-local
-                // IPv4-mapped (::ffff:a.b.c.d) — re-check the embedded v4
-                || v6.to_ipv4_mapped().is_some_and(|m| is_blocked_ip(&IpAddr::V4(m)))
+                || (v6.segments()[0] == 0x0064 && v6.segments()[1] == 0xff9b) // NAT64 64:ff9b::/96
+                // ::ffff:a.b.c.d (mapped) AND ::a.b.c.d (deprecated compatible) —
+                // re-check the embedded v4 (to_ipv4 covers both forms).
+                || v6.to_ipv4().is_some_and(|m| is_blocked_ip(&IpAddr::V4(m)))
         }
     }
 }
@@ -181,6 +183,9 @@ mod tests {
         assert!(b("::1"));
         assert!(b("fe80::1"));
         assert!(b("fc00::1"));
+        assert!(b("64:ff9b::a00:1"), "NAT64 embedding a private IPv4");
+        assert!(b("::ffff:10.0.0.1"), "IPv4-mapped private");
+        assert!(b("::127.0.0.1"), "deprecated IPv4-compatible loopback");
         // public addresses pass
         assert!(!b("93.184.216.34")); // example.com
         assert!(!b("8.8.8.8"));

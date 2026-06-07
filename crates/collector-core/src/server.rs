@@ -438,7 +438,10 @@ pub async fn serve(
         // Not-yet-built analytics backend surfaces (greppable; the dashboard stubs
         // reference the same tags). Specs: docs/specs/analytics-data-model.md.
         //   TODO(analytics-mcp):     MCP tools get_adoption_metrics / get_feature_usage / get_user_funnel / get_roi_report
-        //   TODO(analytics-status-heartbeat): SDK auto-heartbeat client wiring + missed-heartbeat→down detection (endpoint exists)
+        //   TODO(analytics-status-heartbeat): SDK auto-heartbeat client wiring + missed-heartbeat→down detection (endpoint exists).
+        //     Also harden: heartbeat is unauthenticated + trusts a guessable appId slug (spoofable 'up'); add a per-app heartbeat
+        //     token at monitored-app creation. And escalate an ONGOING incident's type/severity on a degraded→down transition
+        //     (probe_all currently only opens when none is ongoing, so the type can go stale). Both phase-review Low/Medium.
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
@@ -685,11 +688,16 @@ fn roi_ctx(s: &AppState) -> crate::analytics_roi::RoiCtx {
 }
 
 /// Filter events to a window (the $-enriched reads compute ROI over the window).
+/// Drops future-dated (clock-skewed) events too, so valueSaved/hoursSaved exclude
+/// the same events the usage rollups (active/adoption) do — one consistent payload.
 fn window_filter(events: Vec<Value>, now: i64, window: &str) -> Vec<Value> {
     let cutoff = crate::analytics_rollups::window_cutoff(now, window);
     events
         .into_iter()
-        .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
+        .filter(|e| {
+            let t = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+            t <= now && cutoff.is_none_or(|c| t >= c)
+        })
         .collect()
 }
 
@@ -1524,8 +1532,9 @@ async fn analytics_active_surveys(
     };
     let project = q.get("projectId").map(String::as_str);
     let ws = project.and_then(|p| s.pm.get_project(p)).and_then(|pr| pr.workspace_id);
-    let surveys: Vec<crate::analytics_store::Survey> =
-        s.analytics.list_surveys(ws.as_deref()).into_iter().filter(|sv| sv.status == "active").collect();
+    // Scoped to the project's workspace + global surveys — NEVER all tenants'
+    // (a missing/unknown projectId yields global-only, not everyone's).
+    let surveys = s.analytics.list_active_surveys_for(ws.as_deref());
     let role = s.analytics.get_user(anon).map(|u| u.role);
 
     // Fetch this user's custom events only if some active survey has a feature trigger.
@@ -1585,6 +1594,11 @@ async fn analytics_submit_response(
     let Some(sv) = s.analytics.get_survey(&id) else {
         return (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response();
     };
+    // Once-per-user (ADR-0014): reject a second answer/dismissal up front (the
+    // UNIQUE(survey_id, anon_id) constraint is the race backstop).
+    if s.analytics.has_interacted(&id, &b.anon_id) {
+        return (StatusCode::CONFLICT, Json(json!({ "code": "ALREADY_RESPONDED", "error": "this user already answered or dismissed the survey" }))).into_response();
+    }
     if let Err(e) = crate::analytics_surveys::validate_answers(&sv.questions, &b.answers) {
         return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_ANSWERS", "error": e }))).into_response();
     }
@@ -1601,6 +1615,11 @@ struct SurveyDismissBody {
 }
 
 /// POST /api/analytics/surveys/{id}/dismiss — end-user (rate-limited).
+// NOTE (phase-review Low): like respond, this trusts the body anonId (a no-secret
+// browser endpoint, design-accepted by ADR-0014). Since anonId = SHA-256(email)
+// truncated, someone who knows a target's email could POST /dismiss to suppress
+// their survey. Mitigation if this matters: a per-session survey token.
+// TODO(analytics-survey-anonbind).
 async fn analytics_dismiss_survey(
     State(s): State<AppState>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
@@ -1660,7 +1679,9 @@ async fn analytics_admin_users(State(s): State<AppState>, ConnectInfo(peer): Con
         return admin_forbidden();
     }
     let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
-    s.analytics.log_admin_access("list_users", None, ip.as_deref());
+    if s.analytics.log_admin_access("list_users", None, ip.as_deref()).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "audit write failed — PII withheld" }))).into_response();
+    }
     let data = s.analytics.list_users_deanon();
     let count = data.len();
     Json(json!({ "data": data, "count": count })).into_response()
@@ -1678,7 +1699,9 @@ async fn analytics_admin_user_by_id(
         return admin_forbidden();
     }
     let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
-    s.analytics.log_admin_access("deanon_user", Some(&anon), ip.as_deref());
+    if s.analytics.log_admin_access("deanon_user", Some(&anon), ip.as_deref()).is_err() {
+        return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": "audit write failed — PII withheld" }))).into_response();
+    }
     match s.analytics.get_user_deanon(&anon) {
         Some(u) => Json(json!({ "data": u })).into_response(),
         None => (StatusCode::NOT_FOUND, Json(json!({ "error": "user not found" }))).into_response(),
@@ -5339,6 +5362,9 @@ mod slice_g_dev_server_tests {
         let ok = format!(r#"{{"anonId":"{anon}","answers":{{"q1":5}}}}"#);
         let (s, _v) = read_json(app.clone().oneshot(conn("POST", &format!("/api/analytics/surveys/{sid}/responses"), Some(&ok))).await.unwrap()).await;
         assert_eq!(s, 200);
+        // once-per-user on the WRITE path: a second response is rejected (409).
+        let (s, _v) = read_json(app.clone().oneshot(conn("POST", &format!("/api/analytics/surveys/{sid}/responses"), Some(&ok))).await.unwrap()).await;
+        assert_eq!(s, 409, "duplicate response rejected");
 
         // once-per-user: now suppressed for the Specialist.
         let (_s, v) = read_json(app.clone().oneshot(conn("GET", &format!("/api/analytics/surveys/active?anonId={anon}"), None)).await.unwrap()).await;
@@ -5408,6 +5434,49 @@ mod slice_g_dev_server_tests {
         let (s, v) = read_json(app.clone().oneshot(mk(&key_a, None)).await.unwrap()).await;
         assert_eq!(s, 200);
         assert_eq!(v["data"]["workspaceId"], ws_a.id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Slice 4 security (phase-review High): /surveys/active must NOT leak another
+    // tenant's surveys — a missing/unknown projectId returns GLOBAL surveys only.
+    #[tokio::test]
+    async fn survey_active_scoped_to_workspace_plus_global_not_all_tenants() {
+        let dir = std::env::temp_dir().join(format!("sv-scope-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        // Seed a tenant-A survey (workspace_id set) + a global one (no workspace).
+        let q = json!([{ "id": "q1", "type": "text" }]);
+        analytics.create_survey(Some("ws-a"), "TenantA", "active", &q, &json!({})).unwrap();
+        analytics.create_survey(None, "Global", "active", &q, &json!({})).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/surveys/active", get(analytics_active_surveys))
+            .with_state(state);
+
+        // active with NO projectId → GLOBAL only, never tenant A's.
+        let mut r = Request::builder().method("GET").uri("/api/analytics/surveys/active?anonId=u").body(Body::empty()).unwrap();
+        r.extensions_mut().insert(axum::extract::ConnectInfo("127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap()));
+        let (s, v) = read_json(app.clone().oneshot(r).await.unwrap()).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["count"], 1, "no projectId ⇒ global-only, not every tenant's; got {v}");
+        assert_eq!(v["data"][0]["name"], "Global");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

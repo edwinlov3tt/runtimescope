@@ -139,6 +139,7 @@ CREATE TABLE IF NOT EXISTS analytics_survey_responses (
   external_id  TEXT,
   answers      TEXT NOT NULL,
   submitted_at INTEGER NOT NULL,
+  UNIQUE (survey_id, anon_id), -- once-per-user (ADR-0014); handler also 409s early
   FOREIGN KEY (survey_id) REFERENCES analytics_surveys(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_survey_responses ON analytics_survey_responses(survey_id, anon_id);
@@ -969,6 +970,34 @@ impl AnalyticsStore {
         }
     }
 
+    /// Active surveys an end-user in workspace `ws` may see: that workspace's
+    /// surveys PLUS global (workspace_id IS NULL) ones. When `ws` is None (the
+    /// project is unknown / has no workspace), ONLY global surveys — never every
+    /// tenant's (the cross-tenant leak guard).
+    pub fn list_active_surveys_for(&self, ws: Option<&str>) -> Vec<Survey> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT id, workspace_id, name, status, questions, targeting, created_at, updated_at
+             FROM analytics_surveys
+             WHERE status = 'active' AND (workspace_id IS NULL OR (?1 IS NOT NULL AND workspace_id = ?1))
+             ORDER BY created_at DESC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_active_surveys_for failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![ws], Self::row_to_survey);
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_active_surveys_for failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
     pub fn get_survey(&self, id: &str) -> Option<Survey> {
         let conn = self.conn.lock().unwrap();
         conn.query_row(
@@ -1177,13 +1206,17 @@ impl AnalyticsStore {
         })
     }
 
-    /// Record a PII-access event (every admin de-anon read).
-    pub fn log_admin_access(&self, action: &str, target: Option<&str>, ip: Option<&str>) {
+    /// Record a PII-access event (every admin de-anon read). Returns the Result —
+    /// callers MUST fail closed (don't reveal PII if the audit write didn't land).
+    #[must_use = "fail closed: do not return PII if the audit write failed"]
+    pub fn log_admin_access(&self, action: &str, target: Option<&str>, ip: Option<&str>) -> Result<(), String> {
         let conn = self.conn.lock().unwrap();
-        let _ = conn.execute(
+        conn.execute(
             "INSERT INTO analytics_admin_audit (action, target, accessed_at, ip) VALUES (?1, ?2, ?3, ?4)",
             params![action, target, now_ms(), ip],
-        );
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
     }
 
     pub fn list_admin_audit(&self, limit: i64) -> Vec<AdminAuditEntry> {
@@ -1409,8 +1442,8 @@ mod tests {
         assert!(s.get_user_deanon("ZZZZZZZZ").is_none());
 
         // Audit log (newest first).
-        s.log_admin_access("list_users", None, Some("10.0.0.1"));
-        s.log_admin_access("deanon_user", Some(&anon), Some("10.0.0.1"));
+        s.log_admin_access("list_users", None, Some("10.0.0.1")).unwrap();
+        s.log_admin_access("deanon_user", Some(&anon), Some("10.0.0.1")).unwrap();
         let audit = s.list_admin_audit(50);
         assert_eq!(audit.len(), 2);
         assert_eq!(audit[0].action, "deanon_user");

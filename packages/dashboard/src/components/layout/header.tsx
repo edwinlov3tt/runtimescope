@@ -6,6 +6,8 @@ import { useWorkspaceStore } from '@/stores/use-workspace-store';
 import { findRuntimeProjects } from '@/lib/api';
 import { NotificationDropdown } from '@/components/layout/notification-dropdown';
 import { WorkspacePicker } from '@/components/layout/workspace-picker';
+import { CommandPalette } from '@/components/layout/command-palette';
+import { useCommandPalette } from '@/hooks/use-command-palette';
 import {
   PanelLeft,
   Search,
@@ -122,6 +124,7 @@ export const Header = memo(function Header({
   sidebarOpen: boolean;
 }) {
   const [projectOpen, setProjectOpen] = useState(false);
+  const palette = useCommandPalette();
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
   const projects = usePmStore((s) => s.projects);
 
@@ -176,14 +179,20 @@ export const Header = memo(function Header({
         </>
       )}
 
-      {/* Search */}
-      <div className="ml-auto flex items-center gap-2 h-9 w-[280px] px-3 bg-bg-surface border border-border-default rounded-lg text-text-muted text-[12px] cursor-pointer hover:border-border-hover transition-colors">
+      {/* Search — opens the command palette (⌘K) */}
+      <button
+        type="button"
+        onClick={() => palette.setOpen(true)}
+        aria-label="Open command palette"
+        className="ml-auto flex items-center gap-2 h-9 w-[280px] px-3 bg-bg-surface border border-border-default rounded-lg text-text-muted text-[12px] cursor-pointer hover:border-border-hover transition-colors text-left"
+      >
         <Search size={14} />
         <span className="flex-1">Search events, errors, routes...</span>
         <kbd className="font-mono text-[11px] px-1.5 py-0.5 bg-bg-elevated border border-accent-border rounded text-text-tertiary">
           ⌘K
         </kbd>
-      </div>
+      </button>
+      <CommandPalette open={palette.open} onClose={palette.close} />
 
       {/* Right section */}
       <div className="flex items-center gap-2">

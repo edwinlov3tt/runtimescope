@@ -431,9 +431,12 @@ pub async fn serve(
         .route("/api/analytics/surveys/{id}", put(analytics_update_survey).delete(analytics_delete_survey))
         .route("/api/analytics/surveys/{id}/responses", get(analytics_list_responses).post(analytics_submit_response))
         .route("/api/analytics/surveys/{id}/dismiss", post(analytics_dismiss_survey))
+        // Admin de-anon (slice 6) — X-Admin-Key gated (RUNTIMESCOPE_ADMIN_KEY), audited.
+        .route("/api/analytics/admin/users", get(analytics_admin_users))
+        .route("/api/analytics/admin/users/{anon_id}", get(analytics_admin_user_by_id))
+        .route("/api/analytics/admin/audit", get(analytics_admin_audit))
         // Not-yet-built analytics backend surfaces (greppable; the dashboard stubs
         // reference the same tags). Specs: docs/specs/analytics-data-model.md.
-        //   TODO(analytics-admin):   de-anon route (X-Admin-Key → AnalyticsStore::get_pii, already in the store) + login audit — slice 6
         //   TODO(analytics-mcp):     MCP tools get_adoption_metrics / get_feature_usage / get_user_funnel / get_roi_report
         //   TODO(analytics-status-heartbeat): SDK auto-heartbeat client wiring + missed-heartbeat→down detection (endpoint exists)
         .route("/api/analytics/overview", get(analytics_overview))
@@ -1618,6 +1621,79 @@ async fn analytics_dismiss_survey(
         Ok(()) => Json(json!({ "data": { "ok": true } })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     }
+}
+
+// ── Admin de-anon + audit (slice 6) ─────────────────────────────────────────
+
+/// The PII de-anon gate. Requires `X-Admin-Key` to match `RUNTIMESCOPE_ADMIN_KEY`
+/// (constant-time). If the env key is UNSET the gate is CLOSED — PII de-anon is
+/// opt-in (an ops-set secret), never reachable by default, distinct from the
+/// dashboard/workspace tokens.
+/// Constant-time match of the presented admin key against the configured one.
+/// An empty/absent expected key ⇒ closed (false) — PII de-anon is opt-in.
+fn admin_key_ok(expected: Option<&str>, provided: Option<&str>) -> bool {
+    use subtle::ConstantTimeEq;
+    match (expected.filter(|k| !k.is_empty()), provided) {
+        (Some(e), Some(p)) => bool::from(p.as_bytes().ct_eq(e.as_bytes())),
+        _ => false,
+    }
+}
+
+fn admin_authorized(headers: &HeaderMap) -> bool {
+    admin_key_ok(
+        std::env::var("RUNTIMESCOPE_ADMIN_KEY").ok().as_deref(),
+        headers.get("x-admin-key").and_then(|v| v.to_str().ok()),
+    )
+}
+
+fn admin_forbidden() -> Response {
+    (
+        StatusCode::FORBIDDEN,
+        Json(json!({ "error": "admin de-anon disabled or X-Admin-Key invalid", "code": "ADMIN_FORBIDDEN" })),
+    )
+        .into_response()
+}
+
+/// GET /api/analytics/admin/users — de-anonymized user list (PII). Audited.
+async fn analytics_admin_users(State(s): State<AppState>, ConnectInfo(peer): ConnectInfo<SocketAddr>, headers: HeaderMap) -> Response {
+    if !admin_authorized(&headers) {
+        return admin_forbidden();
+    }
+    let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
+    s.analytics.log_admin_access("list_users", None, ip.as_deref());
+    let data = s.analytics.list_users_deanon();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// GET /api/analytics/admin/users/{anonId} — single de-anon. Audited (the attempt
+/// is logged even when the anon id is unknown).
+async fn analytics_admin_user_by_id(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(anon): Path<String>,
+) -> Response {
+    if !admin_authorized(&headers) {
+        return admin_forbidden();
+    }
+    let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
+    s.analytics.log_admin_access("deanon_user", Some(&anon), ip.as_deref());
+    match s.analytics.get_user_deanon(&anon) {
+        Some(u) => Json(json!({ "data": u })).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "user not found" }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/admin/audit?limit= — the PII-access audit log.
+async fn analytics_admin_audit(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !admin_authorized(&headers) {
+        return admin_forbidden();
+    }
+    let limit = q.get("limit").and_then(|v| v.parse::<i64>().ok()).unwrap_or(200);
+    let data = s.analytics.list_admin_audit(limit);
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
 }
 
 /// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
@@ -5332,6 +5408,59 @@ mod slice_g_dev_server_tests {
         let (s, v) = read_json(app.clone().oneshot(mk(&key_a, None)).await.unwrap()).await;
         assert_eq!(s, 200);
         assert_eq!(v["data"]["workspaceId"], ws_a.id);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn admin_key_ok_is_closed_by_default() {
+        assert!(!admin_key_ok(None, Some("x")), "no configured key ⇒ closed");
+        assert!(!admin_key_ok(Some(""), Some("x")), "empty configured key ⇒ closed");
+        assert!(!admin_key_ok(Some("k"), None), "missing header ⇒ closed");
+        assert!(!admin_key_ok(Some("k"), Some("nope")));
+        assert!(admin_key_ok(Some("secret"), Some("secret")));
+    }
+
+    // Slice 6: with no RUNTIMESCOPE_ADMIN_KEY set, the PII de-anon path is CLOSED
+    // (403) even though a user with PII exists. (We don't set the env in tests to
+    // avoid a process-global env race; the match logic is unit-tested above.)
+    #[tokio::test]
+    async fn admin_deanon_gate_closed_by_default() {
+        let dir = std::env::temp_dir().join(format!("admin-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        analytics.identify("jo@co.com", Some("Director"), Some(true), None, Some("1.2.3.4")).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/admin/users", get(analytics_admin_users))
+            .route("/api/analytics/admin/audit", get(analytics_admin_audit))
+            .with_state(state);
+
+        // admin/users extracts ConnectInfo → provide it; gate still 403 (no key).
+        let mut r = Request::builder().method("GET").uri("/api/analytics/admin/users").body(Body::empty()).unwrap();
+        r.extensions_mut().insert(axum::extract::ConnectInfo("127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap()));
+        let (s, v) = read_json(app.clone().oneshot(r).await.unwrap()).await;
+        assert_eq!(s, 403);
+        assert_eq!(v["code"], "ADMIN_FORBIDDEN");
+        // audit endpoint also closed.
+        let (s, _v) = req(&app, "GET", "/api/analytics/admin/audit", None).await;
+        assert_eq!(s, 403);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

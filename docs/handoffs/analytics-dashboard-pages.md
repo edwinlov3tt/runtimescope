@@ -28,7 +28,7 @@ nav entries (see "Nav" below). Each row lists the **live endpoint(s)** and the
 | `analytics-baselines.html` | `analytics-baselines` | **3a (landing):** `GET/PUT /api/analytics/baselines`, `POST /baselines/submissions` + accept/dismiss, history | nothing extra once 3a lands; until then `TODO(analytics-3a)` |
 | `analytics-projections.html` | `analytics-projections` | **3a (landing):** `GET/POST /api/analytics/projections` (targets; actuals live-derived) | forecast / forward projection (`TODO(analytics-3b)` — Mosaic fitted model) |
 | `analytics-status.html` | `analytics-status` | **none** | whole page — uptime/incidents (`TODO(analytics-status)` — slice 5, no backend) |
-| `analytics-admin.html` | `analytics-admin` | **none** (only anon reads exist) | de-anon table via `X-Admin-Key` (`TODO(analytics-admin)` — slice 6, no backend) |
+| `analytics-admin.html` | `analytics-admin` | **slice 6 (built):** `GET /api/analytics/admin/users` (+ `/users/{anonId}`, `/audit`) — PII de-anon gated by `X-Admin-Key` (constant-time; closed unless `RUNTIMESCOPE_ADMIN_KEY` is set), every access audited | wire the de-anon table + audit view; the admin key is an ops secret entered by the operator, never shipped to the browser by default |
 
 **Endpoint envelopes:** list endpoints return `{ data: [...], count }`; singletons
 return `{ data: {...} }`. All are auth-gated — see "Data layer" below. Exact field

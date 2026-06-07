@@ -149,6 +149,15 @@ CREATE TABLE IF NOT EXISTS analytics_survey_dismissals (
   PRIMARY KEY (survey_id, anon_id),
   FOREIGN KEY (survey_id) REFERENCES analytics_surveys(id) ON DELETE CASCADE
 );
+-- Admin de-anon audit (slice 6): every PII reveal through the X-Admin-Key path is
+-- logged here (who/when/what), so PII access is itself auditable.
+CREATE TABLE IF NOT EXISTS analytics_admin_audit (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  action      TEXT NOT NULL,   -- list_users | deanon_user
+  target      TEXT,            -- anon_id, when applicable
+  accessed_at INTEGER NOT NULL,
+  ip          TEXT
+);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -1083,6 +1092,124 @@ impl AnalyticsStore {
     }
 }
 
+// ── Admin de-anon + audit (slice 6) ─────────────────────────────────────────
+
+/// A de-anonymized user record — **PII**, only ever returned through the
+/// X-Admin-Key path (slice 6), never the dashboard reads.
+#[derive(Clone, Debug, Serialize)]
+pub struct AnalyticsUserDeanon {
+    #[serde(rename = "anonId")]
+    pub anon_id: String,
+    pub email: Option<String>,
+    pub ip: Option<String>,
+    pub role: String,
+    pub consent: bool,
+    #[serde(rename = "externalId")]
+    pub external_id: Option<String>,
+    #[serde(rename = "firstSeen")]
+    pub first_seen: i64,
+    #[serde(rename = "lastSeen")]
+    pub last_seen: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AdminAuditEntry {
+    pub id: i64,
+    pub action: String,
+    pub target: Option<String>,
+    #[serde(rename = "accessedAt")]
+    pub accessed_at: i64,
+    pub ip: Option<String>,
+}
+
+impl AnalyticsStore {
+    fn row_to_deanon(r: &rusqlite::Row) -> rusqlite::Result<AnalyticsUserDeanon> {
+        Ok(AnalyticsUserDeanon {
+            anon_id: r.get(0)?,
+            role: r.get(1)?,
+            consent: r.get::<_, i64>(2)? != 0,
+            external_id: r.get(3)?,
+            first_seen: r.get(4)?,
+            last_seen: r.get(5)?,
+            email: r.get(6)?,
+            ip: r.get(7)?,
+        })
+    }
+
+    /// De-anonymized user list (anon + PII joined). Admin path only.
+    pub fn list_users_deanon(&self) -> Vec<AnalyticsUserDeanon> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT u.anon_id, u.role, u.consent, u.external_id, u.first_seen, u.last_seen, p.email, p.ip
+             FROM analytics_users u LEFT JOIN analytics_user_pii p ON p.anon_id = u.anon_id
+             ORDER BY u.last_seen DESC",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_users_deanon failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map([], Self::row_to_deanon);
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_users_deanon failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// One de-anonymized user, or None if the anon id is unknown.
+    pub fn get_user_deanon(&self, anon_id: &str) -> Option<AnalyticsUserDeanon> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT u.anon_id, u.role, u.consent, u.external_id, u.first_seen, u.last_seen, p.email, p.ip
+             FROM analytics_users u LEFT JOIN analytics_user_pii p ON p.anon_id = u.anon_id
+             WHERE u.anon_id = ?1",
+            params![anon_id],
+            Self::row_to_deanon,
+        )
+        .optional()
+        .unwrap_or_else(|e| {
+            tracing::warn!("analytics get_user_deanon failed: {e}");
+            None
+        })
+    }
+
+    /// Record a PII-access event (every admin de-anon read).
+    pub fn log_admin_access(&self, action: &str, target: Option<&str>, ip: Option<&str>) {
+        let conn = self.conn.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO analytics_admin_audit (action, target, accessed_at, ip) VALUES (?1, ?2, ?3, ?4)",
+            params![action, target, now_ms(), ip],
+        );
+    }
+
+    pub fn list_admin_audit(&self, limit: i64) -> Vec<AdminAuditEntry> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn
+            .prepare("SELECT id, action, target, accessed_at, ip FROM analytics_admin_audit ORDER BY accessed_at DESC LIMIT ?1")
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_admin_audit failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![limit.max(1)], |r| {
+            Ok(AdminAuditEntry { id: r.get(0)?, action: r.get(1)?, target: r.get(2)?, accessed_at: r.get(3)?, ip: r.get(4)? })
+        });
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_admin_audit failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1262,6 +1389,32 @@ mod tests {
         assert!(s.delete_survey(&sv.id));
         assert!(s.get_survey(&sv.id).is_none());
         assert_eq!(s.response_count(&sv.id), 0);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn deanon_joins_pii_and_audit_logs() {
+        let path = tmp();
+        let s = AnalyticsStore::open(&path).unwrap();
+        let anon = s.identify("Jo@Co.com", Some("Director"), Some(true), Some("ext-1"), Some("1.2.3.4")).unwrap();
+
+        // De-anon joins the PII the anon reads never expose.
+        let d = s.get_user_deanon(&anon).expect("deanon record");
+        assert_eq!(d.email.as_deref(), Some("jo@co.com"));
+        assert_eq!(d.ip.as_deref(), Some("1.2.3.4"));
+        assert_eq!(d.role, "Director");
+        assert_eq!(d.external_id.as_deref(), Some("ext-1"));
+        assert_eq!(s.list_users_deanon().len(), 1);
+        assert!(s.get_user_deanon("ZZZZZZZZ").is_none());
+
+        // Audit log (newest first).
+        s.log_admin_access("list_users", None, Some("10.0.0.1"));
+        s.log_admin_access("deanon_user", Some(&anon), Some("10.0.0.1"));
+        let audit = s.list_admin_audit(50);
+        assert_eq!(audit.len(), 2);
+        assert_eq!(audit[0].action, "deanon_user");
+        assert_eq!(audit[0].target.as_deref(), Some(anon.as_str()));
 
         let _ = std::fs::remove_file(&path);
     }

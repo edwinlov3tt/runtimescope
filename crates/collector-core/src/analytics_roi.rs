@@ -117,6 +117,19 @@ impl RoiCtx {
         m
     }
 
+    /// value$ grouped by an arbitrary key (`key_of(e)` → group, None ⇒ skip).
+    /// Takes the key fn by reference so callers can reuse it across windows
+    /// (current vs prior) — used by Compare for value/prevValue per role or app.
+    pub fn value_by(&self, events: &[Value], key_of: &dyn Fn(&Value) -> Option<String>) -> HashMap<String, f64> {
+        let mut m: HashMap<String, f64> = HashMap::new();
+        for e in events {
+            if let (Some(k), Some((_, v, _))) = (key_of(e), self.event(e)) {
+                *m.entry(k).or_insert(0.0) += v;
+            }
+        }
+        m
+    }
+
     /// anonId → (value, hours).
     pub fn by_user(&self, events: &[Value]) -> HashMap<String, (f64, f64)> {
         let mut m: HashMap<String, (f64, f64)> = HashMap::new();

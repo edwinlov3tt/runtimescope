@@ -27,7 +27,7 @@ use axum::{
     },
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
-    routing::{get, post, put},
+    routing::{delete, get, post, put},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -332,8 +332,16 @@ pub async fn serve(
         .route("/api/events/{kind}", get(events_by_kind))
         // analytics subsystem (ADR-0012, slice 1-2): end-user identity + reads
         .route("/api/analytics/identify", post(analytics_identify))
-        .route("/api/analytics/roles", get(analytics_roles))
+        .route("/api/analytics/roles", get(analytics_roles).put(analytics_put_role))
         .route("/api/analytics/baselines", get(analytics_baselines).put(analytics_put_baseline))
+        .route("/api/analytics/baselines/history", get(analytics_baseline_history))
+        .route(
+            "/api/analytics/baselines/submissions",
+            get(analytics_submissions).post(analytics_post_submission),
+        )
+        .route("/api/analytics/baselines/submissions/{id}", delete(analytics_dismiss_submission))
+        .route("/api/analytics/baselines/submissions/{id}/accept", post(analytics_accept_submission))
+        .route("/api/analytics/projections", get(analytics_projections).post(analytics_post_projection))
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
@@ -650,6 +658,209 @@ async fn analytics_put_baseline(State(s): State<AppState>, headers: HeaderMap, b
     }
 }
 
+#[derive(serde::Deserialize)]
+struct RoleBody {
+    role: String,
+    #[serde(rename = "hourlyRate")]
+    hourly_rate: f64,
+}
+
+/// PUT /api/analytics/roles — set a role's hourly rate.
+async fn analytics_put_role(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<RoleBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {role, hourlyRate}" }))).into_response();
+    };
+    match s.analytics.set_role_rate(&b.role, b.hourly_rate) {
+        Ok(()) => Json(json!({ "data": { "role": b.role, "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/baselines/history?fn= — audited change history.
+async fn analytics_baseline_history(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(fn_name) = q.get("fn") else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "?fn= is required" }))).into_response();
+    };
+    let h = s.analytics.baseline_history(fn_name);
+    let count = h.len();
+    Json(json!({ "data": h, "count": count })).into_response()
+}
+
+/// GET /api/analytics/baselines/submissions — crowd estimates + current baseline +
+/// a >20% divergence flag.
+async fn analytics_submissions(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let current: HashMap<String, f64> =
+        s.analytics.list_baselines().into_iter().map(|b| (b.fn_name, b.manual_min)).collect();
+    let data: Vec<Value> = s
+        .analytics
+        .list_submissions()
+        .into_iter()
+        .map(|sub| {
+            let mut base = serde_json::to_value(&sub).unwrap_or_else(|_| json!({}));
+            let cur = current.get(&sub.fn_name).copied();
+            if let Some(o) = base.as_object_mut() {
+                o.insert("currentManualMin".into(), json!(cur));
+                if let Some(c) = cur.filter(|c| *c > 0.0) {
+                    let diff = ((sub.est_manual_min - c).abs() / c * 100.0).round();
+                    o.insert("diffPct".into(), json!(diff));
+                    o.insert("flagged".into(), json!(diff > 20.0));
+                }
+            }
+            base
+        })
+        .collect();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct SubmissionBody {
+    #[serde(rename = "fn")]
+    fn_name: String,
+    #[serde(rename = "manualMin")]
+    manual_min: f64,
+    #[serde(rename = "anonId")]
+    anon_id: Option<String>,
+}
+
+/// POST /api/analytics/baselines/submissions — a crowd estimate.
+async fn analytics_post_submission(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<SubmissionBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {fn, manualMin, anonId?}" }))).into_response();
+    };
+    match s.analytics.add_submission(&b.fn_name, b.manual_min, b.anon_id.as_deref()) {
+        Ok(id) => Json(json!({ "data": { "id": id, "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// POST /api/analytics/baselines/submissions/{id}/accept — promote to the baseline.
+async fn analytics_accept_submission(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.analytics.accept_submission(id) {
+        Ok(true) => Json(json!({ "data": { "accepted": true } })).into_response(),
+        Ok(false) => (StatusCode::NOT_FOUND, Json(json!({ "error": "Submission not found" }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// DELETE /api/analytics/baselines/submissions/{id} — dismiss.
+async fn analytics_dismiss_submission(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<i64>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.analytics.delete_submission(id) {
+        Json(json!({ "data": { "dismissed": true } })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "Submission not found" }))).into_response()
+    }
+}
+
+/// "Q1 2026" → [start, end) epoch-ms (UTC), for live projection actuals.
+fn quarter_bounds(q: &str) -> Option<(i64, i64)> {
+    use chrono::{TimeZone, Utc};
+    let mut it = q.split_whitespace();
+    let qn: u32 = it.next()?.trim_start_matches(['Q', 'q']).parse().ok()?;
+    let year: i32 = it.next()?.parse().ok()?;
+    if !(1..=4).contains(&qn) {
+        return None;
+    }
+    let sm = (qn - 1) * 3 + 1;
+    let start = Utc.with_ymd_and_hms(year, sm, 1, 0, 0, 0).single()?;
+    let (ey, em) = if qn == 4 { (year + 1, 1) } else { (year, sm + 3) };
+    let end = Utc.with_ymd_and_hms(ey, em, 1, 0, 0, 0).single()?;
+    Some((start.timestamp_millis(), end.timestamp_millis()))
+}
+
+/// GET /api/analytics/projections — manager targets + LIVE-derived actuals (ROI
+/// over each quarter's window). The `actual_*` columns are NOT used (derived).
+async fn analytics_projections(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let events = s.store.events_by_type("custom", project).await;
+    let ctx = roi_ctx(&s);
+    let data: Vec<Value> = s
+        .analytics
+        .list_projections()
+        .into_iter()
+        .map(|p| {
+            let mut base = serde_json::to_value(&p).unwrap_or_else(|_| json!({}));
+            let (ah, av) = match quarter_bounds(&p.quarter) {
+                Some((start, end)) => {
+                    let win: Vec<Value> = events
+                        .iter()
+                        .filter(|e| {
+                            let t = e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+                            t >= start && t < end
+                        })
+                        .cloned()
+                        .collect();
+                    let tot = ctx.totals(&win);
+                    (tot["hours"].as_f64().unwrap_or(0.0), tot["value"].as_f64().unwrap_or(0.0))
+                }
+                None => (0.0, 0.0),
+            };
+            if let Some(o) = base.as_object_mut() {
+                o.insert("actualHours".into(), json!(round2(ah)));
+                o.insert("actualValue".into(), json!(round2(av)));
+            }
+            base
+        })
+        .collect();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct ProjectionBody {
+    quarter: String,
+    #[serde(rename = "projHours")]
+    proj_hours: f64,
+    #[serde(rename = "projValue")]
+    proj_value: f64,
+    notes: Option<String>,
+    #[serde(rename = "setBy")]
+    set_by: Option<String>,
+}
+
+/// POST /api/analytics/projections — set a manager target.
+async fn analytics_post_projection(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<ProjectionBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {quarter, projHours, projValue, notes?, setBy?}" }))).into_response();
+    };
+    match s.analytics.upsert_projection(&b.quarter, b.proj_hours, b.proj_value, b.notes.as_deref(), b.set_by.as_deref()) {
+        Ok(()) => Json(json!({ "data": { "quarter": b.quarter, "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 /// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
 /// adoption, events, DAU/WAU/MAU, stickiness). ROI/$ deferred to slice 3.
 async fn analytics_overview(
@@ -826,30 +1037,51 @@ async fn analytics_compare(
     let project = q.get("project_id").map(String::as_str);
     let window = q.get("window").map(String::as_str).unwrap_or("30d");
     let events = s.store.events_by_type("custom", project).await;
-    let rows = match by {
-        "app" => {
-            // custom events don't carry the app; derive sessionId → appName from
-            // the persisted `session` events.
-            let sessions = s.store.events_by_type("session", project).await;
-            let mut session_app: HashMap<String, String> = HashMap::new();
-            for se in &sessions {
-                if let (Some(sid), Some(app)) =
-                    (se.get("sessionId").and_then(Value::as_str), se.get("appName").and_then(Value::as_str))
-                {
-                    session_app.insert(sid.to_string(), app.to_string());
-                }
+    let now = now_ms();
+    let ctx = roi_ctx(&s);
+    // Current + prior windows (for value$/prevValue$), same split the rollup uses.
+    let cur_cut = crate::analytics_rollups::window_cutoff(now, window).unwrap_or(now - 30 * 86_400_000);
+    let prev_cut = cur_cut - (now - cur_cut);
+    let ts = |e: &Value| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
+    let cur_events: Vec<Value> = events.iter().filter(|e| ts(e) >= cur_cut && ts(e) <= now).cloned().collect();
+    let prev_events: Vec<Value> = events.iter().filter(|e| ts(e) >= prev_cut && ts(e) < cur_cut).cloned().collect();
+
+    let (mut rows, key_name, cur_val, prev_val) = if by == "app" {
+        // custom events don't carry the app; derive sessionId → appName from the
+        // persisted `session` events.
+        let sessions = s.store.events_by_type("session", project).await;
+        let mut session_app: HashMap<String, String> = HashMap::new();
+        for se in &sessions {
+            if let (Some(sid), Some(app)) =
+                (se.get("sessionId").and_then(Value::as_str), se.get("appName").and_then(Value::as_str))
+            {
+                session_app.insert(sid.to_string(), app.to_string());
             }
-            crate::analytics_rollups::compare_by_app(&events, &session_app, now_ms(), window)
         }
-        _ => {
-            let roles: HashMap<String, String> =
-                s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
-            crate::analytics_rollups::compare_by_role(&events, &roles, now_ms(), window)
-        }
+        let keyf = |e: &Value| {
+            e.get("sessionId").and_then(Value::as_str).map(|s| session_app.get(s).cloned().unwrap_or_else(|| "unknown".to_string()))
+        };
+        let rows = crate::analytics_rollups::compare_by_app(&events, &session_app, now, window);
+        (rows, "app", ctx.value_by(&cur_events, &keyf), ctx.value_by(&prev_events, &keyf))
+    } else {
+        let roles: HashMap<String, String> =
+            s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+        let keyf = |e: &Value| {
+            e.get("anonId").and_then(Value::as_str).map(|a| roles.get(a).cloned().unwrap_or_else(|| "unknown".to_string()))
+        };
+        let rows = crate::analytics_rollups::compare_by_role(&events, &roles, now, window);
+        (rows, "role", ctx.value_by(&cur_events, &keyf), ctx.value_by(&prev_events, &keyf))
     };
+    for r in rows.iter_mut() {
+        if let Some(k) = r.get(key_name).and_then(Value::as_str).map(str::to_string) {
+            if let Some(o) = r.as_object_mut() {
+                o.insert("value".into(), json!(round2(cur_val.get(&k).copied().unwrap_or(0.0))));
+                o.insert("prevValue".into(), json!(round2(prev_val.get(&k).copied().unwrap_or(0.0))));
+            }
+        }
+    }
     let count = rows.len();
-    let by_label = if by == "app" { "app" } else { "role" };
-    Json(json!({ "data": rows, "count": count, "by": by_label })).into_response()
+    Json(json!({ "data": rows, "count": count, "by": key_name })).into_response()
 }
 
 /// GET /api/analytics/users — anonymized end-users (NO PII), enriched with

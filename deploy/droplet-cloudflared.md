@@ -21,15 +21,19 @@ Two hostnames, two trust models:
 
 ---
 
-## 0. The dashboard-token caveat (read this first)
+## 0. Dashboard auth (token login — bearer injection now optional)
 
-When `RUNTIMESCOPE_AUTH_TOKEN` is set, the collector's **read API requires that
-token** — and the embedded dashboard does not yet send one (tracked: first-party
-dashboard auth, ADR-0010 §"NOT doing"). So a bare token-protected collector shows
-an empty dashboard *everywhere*, even locally. Until first-party dashboard auth
-lands, the dashboard hostname sits behind **Cloudflare Access** (SSO gates *who*
-gets in) and a **local Caddy injects the bearer** on the dashboard's behalf (so
-the read API is satisfied). The ingest hostname carries no injection — SDKs send
+When `RUNTIMESCOPE_AUTH_TOKEN` is set, the collector's read API + dashboard WS
+require that token. The dashboard now has a **first-party login screen**: it reads
+`authRequired` from `/api/health` and, when on, prompts for the token and sends it
+on every call (`Authorization: Bearer`) and the WS (`?token=`). So you can simply
+**open the dashboard and enter the token** — no proxy header injection needed.
+
+**Recommended (defense-in-depth):** still put **Cloudflare Access** (SSO) in front
+of the dashboard hostname so the login screen isn't even reachable without your
+identity, *and* the token gates the API. The bearer-injection in §2 is now an
+**optional** convenience (skip the token prompt for SSO'd users); the WS/HTTP
+split it performs is still needed. The ingest hostname never injects — SDKs send
 their own token.
 
 ---
@@ -156,7 +160,8 @@ RuntimeScope.connect({
 
 ## Hardening follow-ups (tracked, ADR-0010)
 
-- **First-party dashboard auth** — removes the bearer-injection hack in §2.
+- ✅ **First-party dashboard auth** — landed (token login screen); the §2
+  bearer-injection is now optional.
 - **Ingest rate-limiting / quota** on `POST /api/events` + the WS handshake.
 - **DSN single-443 mode** — so deployed apps can use a bare
   `runtimescopes://proj_xxx:token@ingest.example.com` instead of explicit ports.

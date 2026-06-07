@@ -154,5 +154,13 @@ The **dashboard-token caveat** surfaced during implementation and is load-bearin
 when `RUNTIMESCOPE_AUTH_TOKEN` is set the read API requires it but the dashboard
 sends none, so a token-protected dashboard is empty *everywhere* (not just
 remotely). The runbook works around it with proxy-layer bearer injection behind
-Cloudflare Access; **first-party dashboard auth** is now the priority hardening
-follow-up.
+Cloudflare Access.
+
+**Update — first-party dashboard auth landed** (commits `a91c9fa`, `d625587`):
+`/api/health` now advertises `authRequired`, and the dashboard has a token login
+screen that sends `Authorization: Bearer` on every call + `?token=` on the WS.
+So the proxy bearer-injection in the runbook is now **optional** — you can log
+into the dashboard with the token directly. Cloudflare Access (SSO) is still
+recommended in front of the dashboard for defense-in-depth, but it's no longer
+required for the dashboard to *function*. The "NOT doing → first-party dashboard
+login" item above is therefore resolved.

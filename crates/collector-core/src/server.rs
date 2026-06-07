@@ -424,10 +424,15 @@ pub async fn serve(
         .route("/api/analytics/monitored-apps", post(analytics_add_app))
         .route("/api/analytics/monitored-apps/{id}", delete(analytics_delete_app))
         .route("/api/analytics/heartbeat", post(analytics_heartbeat))
+        // Surveys (slice 4) — admin (workspace-key) + end-user (projectId-scoped).
+        // `/active` is a static segment so it wins over `/{id}`.
+        .route("/api/analytics/surveys", get(analytics_list_surveys).post(analytics_create_survey))
+        .route("/api/analytics/surveys/active", get(analytics_active_surveys))
+        .route("/api/analytics/surveys/{id}", put(analytics_update_survey).delete(analytics_delete_survey))
+        .route("/api/analytics/surveys/{id}/responses", get(analytics_list_responses).post(analytics_submit_response))
+        .route("/api/analytics/surveys/{id}/dismiss", post(analytics_dismiss_survey))
         // Not-yet-built analytics backend surfaces (greppable; the dashboard stubs
-        // reference the same tags). Specs: docs/specs/analytics-data-model.md +
-        // analytics-uptime-slice5.md.
-        //   TODO(analytics-survey): /api/analytics/surveys (GET/POST) + responses + the show_survey command channel — slice 4
+        // reference the same tags). Specs: docs/specs/analytics-data-model.md.
         //   TODO(analytics-admin):   de-anon route (X-Admin-Key → AnalyticsStore::get_pii, already in the store) + login audit — slice 6
         //   TODO(analytics-mcp):     MCP tools get_adoption_metrics / get_feature_usage / get_user_funnel / get_roi_report
         //   TODO(analytics-status-heartbeat): SDK auto-heartbeat client wiring + missed-heartbeat→down detection (endpoint exists)
@@ -1351,6 +1356,259 @@ async fn analytics_check_all(State(s): State<AppState>, headers: HeaderMap) -> R
     }
     let n = probe_all(&s.analytics, uptime_allow_private(), uptime_slow_ms()).await;
     Json(json!({ "data": { "probed": n } })).into_response()
+}
+
+// ── Headless surveys (slice 4) ──────────────────────────────────────────────
+
+/// The caller's workspace from the bearer API key (None ⇒ global-admin /
+/// unauthenticated). Survey admin scopes by this.
+fn caller_workspace(s: &AppState, headers: &HeaderMap) -> Option<String> {
+    let token = AuthManager::extract_bearer(headers.get("authorization").and_then(|v| v.to_str().ok()))?;
+    s.pm.get_workspace_by_api_key(token).map(|w| w.id)
+}
+
+/// A workspace-scoped caller may only touch its own surveys; a global-admin caller
+/// (no workspace key) may touch any.
+fn owns_survey(s: &AppState, headers: &HeaderMap, survey: &crate::analytics_store::Survey) -> bool {
+    match caller_workspace(s, headers) {
+        Some(ws) => survey.workspace_id.as_deref() == Some(ws.as_str()),
+        None => true,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SurveyBody {
+    name: String,
+    status: Option<String>,
+    questions: Value,
+    #[serde(default)]
+    targeting: Value,
+    #[serde(rename = "workspaceId")]
+    workspace_id: Option<String>,
+}
+
+#[allow(clippy::result_large_err)] // Err is a one-shot Response returned immediately
+fn valid_survey_body(b: &SurveyBody) -> Result<(String, Value), Response> {
+    if !b.questions.is_array() {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "questions must be an array" }))).into_response());
+    }
+    let status = b.status.clone().unwrap_or_else(|| "draft".to_string());
+    if !["draft", "active", "inactive"].contains(&status.as_str()) {
+        return Err((StatusCode::BAD_REQUEST, Json(json!({ "error": "status must be draft|active|inactive" }))).into_response());
+    }
+    let targeting = if b.targeting.is_null() { json!({}) } else { b.targeting.clone() };
+    Ok((status, targeting))
+}
+
+/// POST /api/analytics/surveys — create (admin; workspace from the API key or body).
+async fn analytics_create_survey(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<SurveyBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {name, questions, status?, targeting?, workspaceId?}" }))).into_response();
+    };
+    let (status, targeting) = match valid_survey_body(&b) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    let ws = b.workspace_id.clone().or_else(|| caller_workspace(&s, &headers));
+    match s.analytics.create_survey(ws.as_deref(), &b.name, &status, &b.questions, &targeting) {
+        Ok(sv) => Json(json!({ "data": sv })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/surveys — the caller's workspace surveys + response counts.
+async fn analytics_list_surveys(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let ws = caller_workspace(&s, &headers);
+    let data: Vec<Value> = s
+        .analytics
+        .list_surveys(ws.as_deref())
+        .into_iter()
+        .map(|sv| {
+            let count = s.analytics.response_count(&sv.id);
+            let mut o = serde_json::to_value(&sv).unwrap_or_else(|_| json!({}));
+            if let Some(obj) = o.as_object_mut() {
+                obj.insert("responseCount".into(), json!(count));
+            }
+            o
+        })
+        .collect();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// PUT /api/analytics/surveys/{id} — update (admin, workspace-isolated).
+async fn analytics_update_survey(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(sv) = s.analytics.get_survey(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response();
+    };
+    if !owns_survey(&s, &headers, &sv) {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response();
+    }
+    let Ok(b) = serde_json::from_str::<SurveyBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {name, questions, status?, targeting?}" }))).into_response();
+    };
+    let (status, targeting) = match valid_survey_body(&b) {
+        Ok(v) => v,
+        Err(resp) => return resp,
+    };
+    match s.analytics.update_survey(&id, &b.name, &status, &b.questions, &targeting) {
+        Ok(_) => Json(json!({ "data": { "id": id, "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// DELETE /api/analytics/surveys/{id}
+async fn analytics_delete_survey(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.analytics.get_survey(&id) {
+        Some(sv) if owns_survey(&s, &headers, &sv) => {
+            s.analytics.delete_survey(&id);
+            Json(json!({ "data": { "deleted": true } })).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/surveys/{id}/responses — admin (workspace-isolated).
+async fn analytics_list_responses(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.analytics.get_survey(&id) {
+        Some(sv) if owns_survey(&s, &headers, &sv) => {
+            let data = s.analytics.list_responses(&id);
+            let count = data.len();
+            Json(json!({ "data": data, "count": count })).into_response()
+        }
+        _ => (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/surveys/active?anonId=&projectId= — end-user (projectId-
+/// scoped, ingest-rate-limited): eligible active surveys for this user (targeting
+/// evaluated server-side; answered/dismissed filtered out). No PII.
+async fn analytics_active_surveys(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !s.rate.allow(Some(peer), &headers) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "rate limited" }))).into_response();
+    }
+    let Some(anon) = q.get("anonId").filter(|a| !a.is_empty()) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "?anonId= required" }))).into_response();
+    };
+    let project = q.get("projectId").map(String::as_str);
+    let ws = project.and_then(|p| s.pm.get_project(p)).and_then(|pr| pr.workspace_id);
+    let surveys: Vec<crate::analytics_store::Survey> =
+        s.analytics.list_surveys(ws.as_deref()).into_iter().filter(|sv| sv.status == "active").collect();
+    let role = s.analytics.get_user(anon).map(|u| u.role);
+
+    // Fetch this user's custom events only if some active survey has a feature trigger.
+    let needs_features = surveys.iter().any(|sv| crate::analytics_surveys::target_feature(&sv.targeting).is_some());
+    let anon_custom: Vec<Value> = if needs_features {
+        s.store
+            .events_by_type_full("custom", project)
+            .await
+            .into_iter()
+            .filter(|e| e.get("anonId").and_then(Value::as_str) == Some(anon.as_str()))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    let mut out = Vec::new();
+    for sv in &surveys {
+        if s.analytics.has_interacted(&sv.id, anon) {
+            continue;
+        }
+        let feature_uses = match crate::analytics_surveys::target_feature(&sv.targeting) {
+            Some(feat) => anon_custom.iter().filter(|e| e.get("name").and_then(Value::as_str) == Some(feat.as_str())).count() as u64,
+            None => 0,
+        };
+        if crate::analytics_surveys::eligible(&sv.targeting, &sv.id, anon, role.as_deref(), feature_uses) {
+            out.push(json!({ "id": sv.id, "name": sv.name, "questions": sv.questions }));
+        }
+    }
+    let count = out.len();
+    Json(json!({ "data": out, "count": count })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct SurveyResponseBody {
+    #[serde(rename = "anonId")]
+    anon_id: String,
+    #[serde(rename = "externalId")]
+    external_id: Option<String>,
+    answers: Value,
+}
+
+/// POST /api/analytics/surveys/{id}/responses — end-user (rate-limited). Validates
+/// answers against the survey's questions; ties to the user via anonId + externalId.
+async fn analytics_submit_response(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !s.rate.allow(Some(peer), &headers) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "rate limited" }))).into_response();
+    }
+    let Ok(b) = serde_json::from_str::<SurveyResponseBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {anonId, answers, externalId?}" }))).into_response();
+    };
+    let Some(sv) = s.analytics.get_survey(&id) else {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response();
+    };
+    if let Err(e) = crate::analytics_surveys::validate_answers(&sv.questions, &b.answers) {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_ANSWERS", "error": e }))).into_response();
+    }
+    match s.analytics.record_response(&id, &b.anon_id, b.external_id.as_deref(), &b.answers) {
+        Ok(()) => Json(json!({ "data": { "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct SurveyDismissBody {
+    #[serde(rename = "anonId")]
+    anon_id: String,
+}
+
+/// POST /api/analytics/surveys/{id}/dismiss — end-user (rate-limited).
+async fn analytics_dismiss_survey(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: String,
+) -> Response {
+    if !s.rate.allow(Some(peer), &headers) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "rate limited" }))).into_response();
+    }
+    let Ok(b) = serde_json::from_str::<SurveyDismissBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {anonId}" }))).into_response();
+    };
+    if s.analytics.get_survey(&id).is_none() {
+        return (StatusCode::NOT_FOUND, Json(json!({ "error": "survey not found" }))).into_response();
+    }
+    match s.analytics.dismiss_survey(&id, &b.anon_id) {
+        Ok(()) => Json(json!({ "data": { "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
 }
 
 /// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
@@ -4926,6 +5184,85 @@ mod slice_g_dev_server_tests {
         assert_eq!(s, 200);
         let (_s, v) = req(&app, "GET", "/api/analytics/status", None).await;
         assert_eq!(v["count"], 0);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Slice 4: survey endpoints — admin create + end-user active/respond, role
+    // targeting, answer validation, once-per-user suppression, externalId resolve.
+    #[tokio::test]
+    async fn surveys_admin_and_enduser_flow() {
+        let dir = std::env::temp_dir().join(format!("sv-http-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let an = analytics.clone();
+        let anon = an.identify("u@co.com", Some("Specialist"), Some(true), Some("ext-7"), None).unwrap();
+        let dir_anon = an.identify("boss@co.com", Some("Director"), Some(true), None, None).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/surveys", get(analytics_list_surveys).post(analytics_create_survey))
+            .route("/api/analytics/surveys/active", get(analytics_active_surveys))
+            .route("/api/analytics/surveys/{id}/responses", get(analytics_list_responses).post(analytics_submit_response))
+            .with_state(state);
+
+        // ConnectInfo-bearing request helper (the end-user routes are rate-gated).
+        let conn = |method: &str, uri: &str, body: Option<&str>| {
+            let mut r = Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/json")
+                .body(body.map(|b| Body::from(b.to_string())).unwrap_or(Body::empty()))
+                .unwrap();
+            r.extensions_mut().insert(axum::extract::ConnectInfo("127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap()));
+            r
+        };
+
+        // admin create (no token ⇒ authorized in Mcp mode).
+        let body = r#"{"name":"CSAT","status":"active","questions":[{"id":"q1","type":"rating","required":true}],"targeting":{"roles":["Specialist"],"samplePct":100}}"#;
+        let (s, v) = req(&app, "POST", "/api/analytics/surveys", Some(body)).await;
+        assert_eq!(s, 200);
+        let sid = v["data"]["id"].as_str().unwrap().to_string();
+
+        // active: Specialist sees it, Director doesn't (role filter).
+        let (s, v) = read_json(app.clone().oneshot(conn("GET", &format!("/api/analytics/surveys/active?anonId={anon}"), None)).await.unwrap()).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["data"][0]["id"], sid);
+        let (_s, v) = read_json(app.clone().oneshot(conn("GET", &format!("/api/analytics/surveys/active?anonId={dir_anon}"), None)).await.unwrap()).await;
+        assert_eq!(v["count"], 0, "Director filtered out by role targeting");
+
+        // respond: missing required q1 → 400; valid → 200.
+        let bad = format!(r#"{{"anonId":"{anon}","answers":{{}}}}"#);
+        let (s, _v) = read_json(app.clone().oneshot(conn("POST", &format!("/api/analytics/surveys/{sid}/responses"), Some(&bad))).await.unwrap()).await;
+        assert_eq!(s, 400, "missing required answer rejected");
+        let ok = format!(r#"{{"anonId":"{anon}","answers":{{"q1":5}}}}"#);
+        let (s, _v) = read_json(app.clone().oneshot(conn("POST", &format!("/api/analytics/surveys/{sid}/responses"), Some(&ok))).await.unwrap()).await;
+        assert_eq!(s, 200);
+
+        // once-per-user: now suppressed for the Specialist.
+        let (_s, v) = read_json(app.clone().oneshot(conn("GET", &format!("/api/analytics/surveys/active?anonId={anon}"), None)).await.unwrap()).await;
+        assert_eq!(v["count"], 0, "answered ⇒ suppressed");
+
+        // admin responses: externalId resolved from identify.
+        let (_s, v) = req(&app, "GET", &format!("/api/analytics/surveys/{sid}/responses"), None).await;
+        assert_eq!(v["data"][0]["externalId"], "ext-7");
+        assert_eq!(v["data"][0]["answers"]["q1"], 5);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -467,7 +467,14 @@ export class RuntimeScope {
    *
    * @returns the anon id, or null if not initialized / the call failed.
    */
-  static async identify(opts: { email: string; role?: string; consent?: boolean }): Promise<string | null> {
+  static async identify(opts: {
+    email: string;
+    role?: string;
+    consent?: boolean;
+    /** The app's own user id (DB key/UUID) — lets you join survey responses back
+     *  to your user table. Stored alongside the anon record, never in anon reads. */
+    externalId?: string;
+  }): Promise<string | null> {
     if (this._state !== 'started' || !this._serverUrl) {
       _warn('[RuntimeScope] identify() called before init() — ignored');
       return null;
@@ -482,7 +489,7 @@ export class RuntimeScope {
       const res = await fetch(`${this.httpEndpoint()}/api/analytics/identify`, {
         method: 'POST',
         headers,
-        body: JSON.stringify({ email: opts.email.trim(), role: opts.role, consent: opts.consent }),
+        body: JSON.stringify({ email: opts.email.trim(), role: opts.role, consent: opts.consent, externalId: opts.externalId }),
       });
       if (!res.ok) {
         _warn(`[RuntimeScope] identify() failed: HTTP ${res.status}`);
@@ -504,6 +511,55 @@ export class RuntimeScope {
   /** The current anon id from identify(), if any. */
   static get anonId(): string | null {
     return this._anonId;
+  }
+
+  /**
+   * Headless surveys (ADR-0014). Fetch the survey definitions this user is
+   * eligible to see right now (targeting + once-per-user are evaluated by the
+   * collector). RuntimeScope is transport only — **you render the UI** with your
+   * own design, then call {@link submitSurveyResponse} / {@link dismissSurvey}.
+   *
+   * @returns an array of `{ id, name, questions }`, or `[]` (no surveys / not ready).
+   */
+  static async getActiveSurveys(): Promise<Array<{ id: string; name: string; questions: unknown[] }>> {
+    if (this._state !== 'started' || !this._serverUrl || !this._anonId) return [];
+    try {
+      const params = new URLSearchParams({ anonId: this._anonId });
+      if (this._projectId) params.set('projectId', this._projectId);
+      const res = await fetch(`${this.httpEndpoint()}/api/analytics/surveys/active?${params}`);
+      if (!res.ok) return [];
+      const json = await res.json().catch(() => null);
+      return (json && json.data) || [];
+    } catch (e) {
+      _warn('[RuntimeScope] getActiveSurveys() error:', (e as Error).message);
+      return [];
+    }
+  }
+
+  /** Submit a survey response: `answers` is `{ [questionId]: value }`. Ties to the
+   *  current user via the identify() anon id (+ any externalId). */
+  static async submitSurveyResponse(surveyId: string, answers: Record<string, unknown>): Promise<boolean> {
+    return this._surveyPost(`${encodeURIComponent(surveyId)}/responses`, { anonId: this._anonId, answers });
+  }
+
+  /** Dismiss a survey for this user (won't be returned by getActiveSurveys again). */
+  static async dismissSurvey(surveyId: string): Promise<boolean> {
+    return this._surveyPost(`${encodeURIComponent(surveyId)}/dismiss`, { anonId: this._anonId });
+  }
+
+  private static async _surveyPost(path: string, body: Record<string, unknown>): Promise<boolean> {
+    if (this._state !== 'started' || !this._serverUrl || !this._anonId) return false;
+    try {
+      const res = await fetch(`${this.httpEndpoint()}/api/analytics/surveys/${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      return res.ok;
+    } catch (e) {
+      _warn('[RuntimeScope] survey post error:', (e as Error).message);
+      return false;
+    }
   }
 
   /** Derive the HTTP API base from the (WS) serverUrl: ws→http / wss→https, and

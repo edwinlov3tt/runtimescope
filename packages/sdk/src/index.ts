@@ -90,6 +90,13 @@ export class RuntimeScope {
   private static _windowCount = 0;
   private static _windowStart = 0;
   private static _user: UserContext | undefined;
+  // Analytics identity (ADR-0012): the anon id from identify() + the bits needed
+  // to reach the collector's HTTP API for the identify call (the live transport
+  // is WS-only).
+  private static _anonId: string | null = null;
+  private static _serverUrl: string | null = null;
+  private static _projectId: string | undefined;
+  private static _authToken: string | undefined;
 
   static get sessionId(): string | null {
     return this._sessionId;
@@ -215,6 +222,10 @@ export class RuntimeScope {
 
     this._sessionId = generateSessionId();
     this._state = 'started';
+    // Capture what identify() needs to reach the HTTP API (transport is WS-only).
+    this._serverUrl = resolved.serverUrl;
+    this._projectId = config.projectId;
+    this._authToken = config.authToken;
 
     this.transport = new Transport({
       serverUrl: resolved.serverUrl,
@@ -440,9 +451,74 @@ export class RuntimeScope {
       eventType: 'custom',
       name,
       properties,
+      // Attribute usage to the identified end-user (analytics rollups key on this).
+      ...(this._anonId ? { anonId: this._anonId } : {}),
     };
 
     this.transport.send(event);
+  }
+
+  /**
+   * Identify the current end-user for product analytics (ADR-0012). Sends
+   * email/role/consent to the collector, which returns an **anonymized id**; that
+   * id is then stamped on subsequent `track()` events. The dashboard only ever
+   * sees the anon id — never the email (PII lives behind an admin path). Call once
+   * per user (e.g. after login or from a consent prompt). No-op before init().
+   *
+   * @returns the anon id, or null if not initialized / the call failed.
+   */
+  static async identify(opts: { email: string; role?: string; consent?: boolean }): Promise<string | null> {
+    if (this._state !== 'started' || !this._serverUrl) {
+      _warn('[RuntimeScope] identify() called before init() — ignored');
+      return null;
+    }
+    if (!opts || typeof opts.email !== 'string' || !opts.email.trim()) {
+      _warn('[RuntimeScope] identify() requires { email }');
+      return null;
+    }
+    try {
+      const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+      if (this._authToken) headers['Authorization'] = `Bearer ${this._authToken}`;
+      const res = await fetch(`${this.httpEndpoint()}/api/analytics/identify`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ email: opts.email.trim(), role: opts.role, consent: opts.consent }),
+      });
+      if (!res.ok) {
+        _warn(`[RuntimeScope] identify() failed: HTTP ${res.status}`);
+        return null;
+      }
+      const json = await res.json().catch(() => null);
+      const anon = (json && json.data && json.data.anonId) || null;
+      if (anon) {
+        this._anonId = anon;
+        _log(`[RuntimeScope] identified as ${anon}`);
+      }
+      return anon;
+    } catch (e) {
+      _warn('[RuntimeScope] identify() error:', (e as Error).message);
+      return null;
+    }
+  }
+
+  /** The current anon id from identify(), if any. */
+  static get anonId(): string | null {
+    return this._anonId;
+  }
+
+  /** Derive the HTTP API base from the (WS) serverUrl: ws→http / wss→https, and
+   *  the HTTP port = WS port + 1 (6767→6768). A portless wss stays on 443 — the
+   *  single-domain TLS deployment (see dsn.ts). */
+  private static httpEndpoint(): string {
+    const ws = this._serverUrl ?? 'ws://localhost:6767';
+    try {
+      const u = new URL(ws);
+      u.protocol = u.protocol === 'wss:' ? 'https:' : 'http:';
+      if (u.port) u.port = String(parseInt(u.port, 10) + 1);
+      return u.origin;
+    } catch {
+      return 'http://localhost:6768';
+    }
   }
 
   /**
@@ -520,6 +596,10 @@ export class RuntimeScope {
     this.transport = null;
     this._sessionId = null;
     this._state = 'stopped';
+    this._anonId = null;
+    this._serverUrl = null;
+    this._projectId = undefined;
+    this._authToken = undefined;
   }
 }
 

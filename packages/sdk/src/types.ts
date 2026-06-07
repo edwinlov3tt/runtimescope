@@ -157,6 +157,9 @@ export interface CustomEvent extends BaseEvent {
   eventType: 'custom';
   name: string;
   properties?: Record<string, unknown>;
+  /** Anonymized end-user id from RuntimeScope.identify() — the analytics
+   *  subsystem (ADR-0012) rolls usage up per anonId. Absent until identify(). */
+  anonId?: string;
 }
 
 export type UIInteractionAction = 'click' | 'breadcrumb';

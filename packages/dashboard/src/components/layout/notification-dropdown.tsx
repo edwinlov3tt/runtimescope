@@ -13,6 +13,7 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { useDataStore } from '@/stores/use-data-store';
 import { useAppStore } from '@/stores/use-app-store';
+import { usePmStore } from '@/stores/use-pm-store';
 import { useNotificationStore } from '@/stores/use-notification-store';
 import { detectIssues } from '@/lib/issue-detector';
 import { formatRelativeTime } from '@/lib/format';
@@ -70,6 +71,12 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   const perfEvents = useDataStore((s) => s.performance);
   const dbEvents = useDataStore((s) => s.database);
   const selectedProject = useAppStore((s) => s.selectedProject);
+  const selectedPmProject = useAppStore((s) => s.selectedPmProject);
+  const pmProjects = usePmStore((s) => s.projects);
+  // selectedProject is null whenever a PM project is selected (selectPmProject
+  // clears it), so fall back to the PM project name for the per-row badge.
+  const pmProjectName = pmProjects.find((p) => p.id === selectedPmProject)?.name;
+  const projectLabel = selectedProject ?? pmProjectName ?? null;
 
   const readIds = useNotificationStore((s) => s.readIds);
   const firstSeen = useNotificationStore((s) => s.firstSeen);
@@ -192,8 +199,8 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
                       <span className="text-[12px] font-semibold text-text-primary truncate">{issue.title}</span>
                       <span className="text-[11px] text-text-tertiary truncate">{issue.description}</span>
                       <div className="flex items-center gap-[5px] mt-px">
-                        {selectedProject && (
-                          <span className="text-[9px] font-semibold px-1.5 py-px rounded bg-bg-overlay text-text-secondary">{selectedProject}</span>
+                        {projectLabel && (
+                          <span className="text-[9px] font-semibold px-1.5 py-px rounded bg-bg-overlay text-text-secondary">{projectLabel}</span>
                         )}
                         <span className="text-[9px] font-semibold px-1.5 py-px rounded bg-bg-overlay text-text-muted">{source}</span>
                         {seenAt !== undefined && (

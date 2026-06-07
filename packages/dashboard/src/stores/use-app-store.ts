@@ -15,20 +15,17 @@ type ActiveView = 'home' | 'project' | 'runtime' | 'settings';
 /**
  * Preset time windows for scoping event/session queries.
  * - `'all'` means no time bound (no `since_seconds` sent).
- * - `'custom'` uses the `customSinceSeconds` value.
  * The numeric presets are durations in seconds, converted to the collector's
  * `since_seconds` param ("events newer than now - since_seconds*1000").
  */
-export type TimeRangePreset = '15m' | '1h' | '24h' | '7d' | 'all' | 'custom';
+export type TimeRangePreset = '15m' | '1h' | '24h' | '7d' | 'all';
 
 export interface TimeRange {
   preset: TimeRangePreset;
-  /** Used only when preset === 'custom'. Duration in seconds. */
-  customSinceSeconds?: number;
 }
 
 /** Seconds for each numeric preset. */
-export const TIME_RANGE_SECONDS: Record<Exclude<TimeRangePreset, 'all' | 'custom'>, number> = {
+export const TIME_RANGE_SECONDS: Record<Exclude<TimeRangePreset, 'all'>, number> = {
   '15m': 15 * 60,
   '1h': 60 * 60,
   '24h': 24 * 60 * 60,
@@ -41,7 +38,6 @@ export const TIME_RANGE_LABELS: Record<TimeRangePreset, string> = {
   '24h': 'Last 24 hours',
   '7d': 'Last 7 days',
   all: 'All time',
-  custom: 'Custom range',
 };
 
 /** Short label for the header pill. */
@@ -51,7 +47,6 @@ export const TIME_RANGE_PILL_LABELS: Record<TimeRangePreset, string> = {
   '24h': 'Last 24h',
   '7d': 'Last 7d',
   all: 'All time',
-  custom: 'Custom',
 };
 
 /**
@@ -60,22 +55,7 @@ export const TIME_RANGE_PILL_LABELS: Record<TimeRangePreset, string> = {
  */
 export function timeRangeToSinceSeconds(range: TimeRange): number | undefined {
   if (range.preset === 'all') return undefined;
-  if (range.preset === 'custom') return range.customSinceSeconds;
   return TIME_RANGE_SECONDS[range.preset];
-}
-
-/**
- * Resolve a TimeRange to PM `start_date`/`end_date` (ISO strings).
- * `end` is now; `start` is now - sinceSeconds. Returns empty for 'all'.
- */
-export function timeRangeToDates(range: TimeRange): { start_date?: string; end_date?: string } {
-  const since = timeRangeToSinceSeconds(range);
-  if (since === undefined) return {};
-  const now = Date.now();
-  return {
-    start_date: new Date(now - since * 1000).toISOString(),
-    end_date: new Date(now).toISOString(),
-  };
 }
 
 interface AppState {
@@ -168,7 +148,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   // the header picker.
   timeRange: { preset: 'all' },
   setTimeRange: (range) => {
-    if (get().timeRange.preset === range.preset && get().timeRange.customSinceSeconds === range.customSinceSeconds) return;
+    if (get().timeRange.preset === range.preset) return;
     // NB: we deliberately do NOT clearAll() here. Wiping all six event buffers
     // blanks always-mounted consumers (the notification bell, overview) until
     // each tab is revisited, since only the active tab refetches. Instead the

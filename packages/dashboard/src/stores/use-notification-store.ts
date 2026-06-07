@@ -40,7 +40,12 @@ function loadSeen(): Record<string, number> {
     const raw = localStorage.getItem(SEEN_KEY);
     if (!raw) return {};
     const obj = JSON.parse(raw);
-    return obj && typeof obj === 'object' ? obj : {};
+    if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return {};
+    const out: Record<string, number> = {};
+    for (const [k, v] of Object.entries(obj)) {
+      if (typeof v === 'number' && Number.isFinite(v)) out[k] = v;
+    }
+    return out;
   } catch {
     return {};
   }

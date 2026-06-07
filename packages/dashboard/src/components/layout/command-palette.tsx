@@ -62,8 +62,16 @@ function navigateToRailId(id: string) {
     app.setActiveView('home'); return;
   }
   if (RUNTIME_TAB_IDS.has(id)) {
-    app.setActiveView('runtime');
-    app.setActiveTab(id);
+    // When a PM project is open the runtime tabs live INSIDE the project view
+    // (as runtimeSubTab under the 'runtime' project tab) — navigating to the
+    // legacy runtime view would yank the user out of their project context.
+    if (app.selectedPmProject) {
+      app.setActiveProjectTab('runtime');
+      app.setRuntimeSubTab(id);
+    } else {
+      app.setActiveView('runtime');
+      app.setActiveTab(id);
+    }
     return;
   }
   const projectTab = HOME_PROJECT_TABS[id];
@@ -125,6 +133,26 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     }
   }, [open]);
 
+  // Modal a11y while open: lock body scroll and close on Escape even when focus
+  // has left the search input (the input's own onKeyDown handles the focused
+  // case; this document-level listener is the fallback).
+  useEffect(() => {
+    if (!open) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onClose();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, [open, onClose]);
+
   const results = useMemo<PaletteResult[]>(() => {
     const q = query.trim().toLowerCase();
     const out: PaletteResult[] = [];
@@ -164,7 +192,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           id: `net:${ev.eventId}`,
           kind: 'event',
           label: `${ev.method} ${ev.url}`,
-          hint: ev.status ? `${ev.status}` : 'network',
+          hint: ev.status ? `${ev.status}` : 'failed',
           icon: Globe,
           run: () => navigateToRailId('network'),
         });

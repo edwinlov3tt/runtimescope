@@ -245,6 +245,9 @@ struct AppState {
     pm: PmStore,
     /// Product-analytics store (analytics.db) — ADR-0012; end-user identity + ROI.
     analytics: AnalyticsStore,
+    /// Optional Mosaic sidecar client (ADR-0013 slice 3b) — Some when
+    /// RUNTIMESCOPE_MOSAIC_URL is set; gates forecast/trace/narrative.
+    mosaic: Option<crate::analytics_mosaic::MosaicClient>,
     auth: AuthManager,
     /// Per-client ingest rate limiter (POST /api/events + SDK WS handshake).
     rate: Arc<RateLimiter>,
@@ -297,11 +300,18 @@ pub async fn serve(
         })
         .map_err(std::io::Error::other)?;
 
+    // Mosaic sidecar (ADR-0013 3b): wired only when RUNTIMESCOPE_MOSAIC_URL is set.
+    let mosaic = crate::analytics_mosaic::MosaicConfig::from_env().map(|c| {
+        eprintln!("[RuntimeScope] Mosaic sidecar configured: {} (cube '{}')", c.url, c.cube);
+        crate::analytics_mosaic::MosaicClient::new(c)
+    });
+
     let state = AppState {
         store,
         hub,
         pm,
         analytics,
+        mosaic,
         auth: AuthManager::for_mode(auth_mode),
         rate: Arc::new(RateLimiter::from_env()),
         started: Instant::now(),
@@ -342,6 +352,11 @@ pub async fn serve(
         .route("/api/analytics/baselines/submissions/{id}", delete(analytics_dismiss_submission))
         .route("/api/analytics/baselines/submissions/{id}/accept", post(analytics_accept_submission))
         .route("/api/analytics/projections", get(analytics_projections).post(analytics_post_projection))
+        // Mosaic sidecar (ADR-0013 3b) — forecast/trace require RUNTIMESCOPE_MOSAIC_URL
+        .route("/api/analytics/mosaic/status", get(analytics_mosaic_status))
+        .route("/api/analytics/mosaic/sync", post(analytics_mosaic_sync))
+        .route("/api/analytics/forecast", get(analytics_forecast))
+        .route("/api/analytics/trace", get(analytics_trace))
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
@@ -858,6 +873,125 @@ async fn analytics_post_projection(State(s): State<AppState>, headers: HeaderMap
     match s.analytics.upsert_projection(&b.quarter, b.proj_hours, b.proj_value, b.notes.as_deref(), b.set_by.as_deref()) {
         Ok(()) => Json(json!({ "data": { "quarter": b.quarter, "ok": true } })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+// ── Mosaic sidecar (ADR-0013 slice 3b) ──────────────────────────────────────
+
+fn mosaic_not_configured() -> Response {
+    (
+        StatusCode::SERVICE_UNAVAILABLE,
+        Json(json!({
+            "error": "Mosaic sidecar not configured",
+            "code": "MOSAIC_NOT_CONFIGURED",
+            "hint": "set RUNTIMESCOPE_MOSAIC_URL (ADR-0013); ROI $ still works via the SQL path"
+        })),
+    )
+        .into_response()
+}
+
+fn mosaic_error(e: String) -> Response {
+    (StatusCode::BAD_GATEWAY, Json(json!({ "error": e, "code": "MOSAIC_ERROR" }))).into_response()
+}
+
+/// Build the ROI input cells from the event stream + analytics store and push
+/// them to the cube. Returns the number of cells written.
+async fn mosaic_sync_facts(
+    s: &AppState,
+    client: &crate::analytics_mosaic::MosaicClient,
+    project: Option<&str>,
+) -> Result<usize, String> {
+    let events = s.store.events_by_type("custom", project).await;
+    let sessions = s.store.events_by_type("session", project).await;
+    let mut session_app: HashMap<String, String> = HashMap::new();
+    for se in &sessions {
+        if let (Some(sid), Some(app)) =
+            (se.get("sessionId").and_then(Value::as_str), se.get("appName").and_then(Value::as_str))
+        {
+            session_app.insert(sid.to_string(), app.to_string());
+        }
+    }
+    let baselines: HashMap<String, (f64, f64, bool)> =
+        s.analytics.list_baselines().into_iter().map(|b| (b.fn_name, (b.manual_min, b.tool_min, b.per_item))).collect();
+    let anon_role: HashMap<String, String> = s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+    let role_rate: HashMap<String, f64> = s.analytics.roles().into_iter().map(|r| (r.role, r.hourly_rate)).collect();
+    let cells = crate::analytics_mosaic::build_facts(&events, &baselines, &anon_role, &role_rate, &session_app);
+    client.write_cells(&cells).await
+}
+
+/// GET /api/analytics/mosaic/status — is the sidecar wired + reachable? Always
+/// available (reports `configured:false` when the flag is unset).
+async fn analytics_mosaic_status(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match &s.mosaic {
+        None => Json(json!({ "data": { "configured": false, "healthy": false } })).into_response(),
+        Some(c) => {
+            let healthy = c.health().await;
+            Json(json!({ "data": { "configured": true, "healthy": healthy, "cube": c.cube() } })).into_response()
+        }
+    }
+}
+
+/// POST /api/analytics/mosaic/sync — push current ROI facts to the cube.
+async fn analytics_mosaic_sync(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
+    let project = q.get("project_id").map(String::as_str);
+    match mosaic_sync_facts(&s, &c, project).await {
+        Ok(n) => Json(json!({ "data": { "synced": n } })).into_response(),
+        Err(e) => mosaic_error(e),
+    }
+}
+
+/// GET /api/analytics/forecast — sync facts, then query the cube's computed cells
+/// (the forecast/value series is the deployed cube's responsibility). Requires
+/// the Mosaic sidecar (else 503 — the SQL path has no forecast).
+async fn analytics_forecast(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
+    let project = q.get("project_id").map(String::as_str);
+    if let Err(e) = mosaic_sync_facts(&s, &c, project).await {
+        return mosaic_error(e);
+    }
+    let where_ = q.get("where").and_then(|w| serde_json::from_str::<Value>(w).ok()).unwrap_or_else(|| json!({}));
+    match c.query(where_, &["value", "hours"]).await {
+        Ok(v) => Json(json!({ "data": v })).into_response(),
+        Err(e) => mosaic_error(e),
+    }
+}
+
+/// GET /api/analytics/trace?coord=a,b,c — proxy the cube's dependency trace (the
+/// "every dollar → a logged action" audit chain). Requires the Mosaic sidecar.
+async fn analytics_trace(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
+    let Some(coord_str) = q.get("coord") else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "error": "?coord=a,b,c required" }))).into_response();
+    };
+    let coord: Vec<&str> = coord_str.split(',').collect();
+    match c.trace(json!(coord)).await {
+        Ok(v) => Json(json!({ "data": v })).into_response(),
+        Err(e) => mosaic_error(e),
     }
 }
 
@@ -4014,6 +4148,7 @@ mod slice_g_dev_server_tests {
             hub: CommandHub::new(),
             pm,
             analytics,
+            mosaic: None,
             auth: AuthManager::for_mode(AuthMode::Standalone),
             rate: Arc::new(RateLimiter::from_env()),
             started: Instant::now(),
@@ -4118,6 +4253,7 @@ mod slice_g_dev_server_tests {
             hub: CommandHub::new(),
             pm,
             analytics,
+            mosaic: None,
             auth: AuthManager::for_mode(AuthMode::Mcp), // no token → auth inactive
             rate: Arc::new(RateLimiter::from_env()),
             started: Instant::now(),
@@ -4168,6 +4304,50 @@ mod slice_g_dev_server_tests {
         assert_eq!(s, 200);
         let (s, _v) = req(&app, "GET", "/api/analytics/users/ZZZZZZZZ", None).await;
         assert_eq!(s, 404);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Mosaic 3b: with no RUNTIMESCOPE_MOSAIC_URL, status reports unconfigured and
+    // forecast/trace 503 with MOSAIC_NOT_CONFIGURED (the SQL ROI path is the default).
+    #[tokio::test]
+    async fn mosaic_endpoints_503_when_unconfigured() {
+        let dir = std::env::temp_dir().join(format!("mosaic-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/mosaic/status", get(analytics_mosaic_status))
+            .route("/api/analytics/forecast", get(analytics_forecast))
+            .route("/api/analytics/trace", get(analytics_trace))
+            .with_state(state);
+
+        let (s, v) = req(&app, "GET", "/api/analytics/mosaic/status", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"]["configured"], false);
+
+        let (s, v) = req(&app, "GET", "/api/analytics/forecast", None).await;
+        assert_eq!(s, 503);
+        assert_eq!(v["code"], "MOSAIC_NOT_CONFIGURED");
+
+        let (s, _v) = req(&app, "GET", "/api/analytics/trace?coord=a,b", None).await;
+        assert_eq!(s, 503);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

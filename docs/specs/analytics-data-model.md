@@ -15,7 +15,7 @@
 | **user** (anon) | `anon_id` (e.g. `A3F7`), `role`, `consent` (bool), `first_seen`, `last_seen` | dashboard reads ONLY this (no PII) |
 | **user_pii** (restricted) | `anon_id` → `email`, `ip`, … | admin-token only; the de-anon join (admin page) |
 | **role** | `role`, `hourly_rate` ($/hr) | rates: Coordinator 40, Specialist 50, DCM 55, Account Exec 65, Director 85 |
-| **baseline** | `fn`, `manual_min`, `tool_min`, `per_item` (bool), `source` (`admin`\|`crowd`), `updated_at`, `updated_by` | + `baseline_history` + crowd `baseline_submissions` |
+| **baseline** | `fn`, `manual_min`, `tool_min`, `per_item` (bool), `rate` (display approx — see §Baselines), `uses`, `source` (`admin`\|`crowd`), `updated_at` | + `baseline_history` + crowd `baseline_submissions`. `updated_by` is backend-added — the prototype only shows a relative `updated` time. |
 | **projection** | `quarter`, `proj_hours`, `proj_value`, `actual_hours`, `actual_value` | variance/pct derived |
 | **survey** | def (title, prompt, options/scale) + `survey_responses` (option → count, NPS) | rendered via the `show_survey` command channel |
 | **monitored_app** | `id`, `name`, `url`, `state` (up\|degraded\|down), `uptime_pct`, `resp_ms`, `last_check` | + `uptime_checks` (strip history) + `incidents` — slice 5 |
@@ -25,10 +25,30 @@ after `identify()` with `anonId` + a `feature` (the event name/"function") + `ap
 + optional `count` metadata. All rollups below are SQL over that stream joined to
 the tables above — not new stored aggregates.
 
+## User populations + adoption denominators (read this before computing `adoption %`)
+
+Three **distinct** sets — do not conflate them. The prototypes are loose here: the
+Trends funnel labels 459 as **"Identified"** while the Adoption KPI labels the same
+459 as **"invited"**. Treat them as one outer set for now, but **name it
+consistently** (recommend `invited`):
+
+- **invited / identified** (e.g. **459**) — everyone the SDK has seen / `identify()`-ed.
+  The funnel's first step AND the overall-adoption denominator.
+- **active / activated** (e.g. **312** = MAU) — used ≥1 feature in the window.
+- **feature users** — distinct users of a single feature.
+
+Two different ratios fall out, with **different denominators**:
+
+- **Overall adoption = active / invited** → 312 / 459 = **68%** (Overview + Trends
+  "Adoption %" KPI).
+- **Feature adoption = feature_users / active** → e.g. 248 / 312 = **79%** (Features
+  page + Overview per-feature column). It is **NOT** `feature_users / invited`
+  (248/459 = 54% would be wrong).
+
 ## Per-view data requirements
 
 ### Overview (`analytics.html`) — the hub
-- **KPI cards:** Active Users, Adoption %, Time Saved (hrs), Value Saved ($).
+- **KPI cards:** Active Users, Adoption % (= active / invited), Hours Saved (hrs), Value Saved ($).
 - **Value by Role:** per role → `users`, `hours`, `value = hours × rate`, color.
 - **Recent identifies (live):** stream of `{anon_id, role, ts}` — feed off the
   `session_connected`/identify events over the dashboard WS.
@@ -85,6 +105,11 @@ value(event)      = (time_saved / 60) × role.hourly_rate
 ```
 Roll up by user / feature / role / app / time bucket for every view above.
 
+**Hours saved** is the canonical time metric: `hours = Σ time_saved(event) / 60`,
+rolled up the same way as value. ⚠ The prototypes' mock hours are **illustrative and
+do not reconcile across pages** (APP Σ≈1,241h, ROLE Σ≈1,887h, headline ≈1,840h) —
+the real rollup derives one consistent number from the event stream.
+
 ## Proposed surface (mirrors pm/)
 
 **HTTP (dashboard):** `/api/analytics/overview`, `/users` (+`/{anonId}`),
@@ -109,8 +134,10 @@ Things the first pass missed, by page. These are the data the real views need.
   every KPI needs a short trend series + a prior-period delta, not a scalar.
 - **Swappable KPI rows:** each page defines a *pool* of ~6-7 metrics; the `⋯`
   menu swaps which 4 show. → KPI endpoints return the whole pool, not 4 fixed.
-- **Window + scope filters everywhere:** date presets (`7d/30d/90d/12w/12mo/all`)
-  + app/category pills (`?app=`) + the existing `?role=/feature=/seg=` drill-downs.
+- **Window + scope filters everywhere:** date presets — a per-page subset of
+  `7d/30d/90d/12w/12mo/all` (Overview/Features: 7d/30d/90d/All; Trends: 7d/30d/12w/12mo;
+  Compare uses current/prior period chips, not presets) + app/category pills (`?app=`)
+  + the existing `?role=/feature=/seg=` drill-downs.
   Every aggregate endpoint takes a window + optional app/role/feature filter.
 - **Explicit UI states:** loading / **empty** ("once your app calls
   `RuntimeScope.identify()`…") / **thin** ("meaningful around ~50 users") / error.
@@ -128,8 +155,10 @@ Things the first pass missed, by page. These are the data the real views need.
 - **Events by Feature / week:** stacked weekly series — top-N features + `other`.
 - **Activation funnel:** `Identified → Activated (used a feature) → Repeat (≥2
   sessions) → Power user (weekly active)` with counts + drill links (`?seg=`).
-  **Adoption denominator = "invited"** (Identified 459 vs Activated 312) — needs an
-  invited/identified count distinct from activated users.
+  **Overall-adoption denominator = invited/identified (459)**, numerator = activated
+  (312). This is the *overall* adoption ratio — distinct from **feature adoption**
+  (denominator = active 312; see "User populations" above). The prototype labels 459
+  "Identified" here but "invited" on the KPI — same set; pick one name.
 - **Cohort retention heatmap:** per signup-week cohort → `size` + `W0..W6` % still
   active (triangular; null for future weeks).
 - KPIs: MAU, DAU, **WAU/MAU stickiness**, **Events/day (7-day avg)**, Adoption
@@ -138,9 +167,11 @@ Things the first pass missed, by page. These are the data the real views need.
 ### Compare — prior-period machinery
 - Three modes: **Period** (current vs prior), **Apps**, **Roles**.
 - Needs **two windows** (current + prior, e.g. "May 30d" → "Apr 30d") and returns
-  both: per-entity `users/events/value/hours` **plus** `prevUsers/prevEvents/
-  prevValue`. Derived client-side: top-by-value, most-improved (ratio, filtered to
-  meaningful volume ≥$5k), declining (`value < prev`), share-of-total, ranked.
+  both: per-entity `users/events/value/hours` **plus** prior-period counters —
+  **apps** carry `prevUsers/prevEvents/prevValue` (`usersP/eventsP/prevValueK`), but
+  **roles carry only `prevValue`** (`prevValueK`; the roles table deltas value only,
+  no prev users/events). Derived client-side: top-by-value, most-improved (ratio,
+  filtered to meaningful volume ≥$5k), declining (`value < prev`), share-of-total, ranked.
 - Per-mode CSV columns differ (period: `*_cur/_prev`; entity: `valueK/prevValueK`).
 
 ### Users — additions
@@ -153,7 +184,8 @@ Things the first pass missed, by page. These are the data the real views need.
 - Per feature: **`perUse`** (avg time/use, e.g. `2.4m`), **`dau[]`** (daily usage,
   ~10d), **`topUsers` `[[anon_id, uses]]`**, **`status`** (core/growing/niche by
   adoption threshold), `app`, `trend[]`, `color`.
-- **Adoption % = feature users / identified users.** App-filter pills.
+- **Feature adoption % = feature users / ACTIVE users** (≈312, NOT invited 459 —
+  e.g. 248/312 = 79%; 248/459 = 54% would be wrong). App-filter pills.
 - Detail links: top users → `users?feature=`, baseline → `baselines` (feature
   surfaces its own baseline: manual→tool, per-item).
 

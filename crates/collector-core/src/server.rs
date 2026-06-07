@@ -335,6 +335,9 @@ pub async fn serve(
         .route("/api/analytics/roles", get(analytics_roles))
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
+        .route("/api/analytics/trends", get(analytics_trends))
+        .route("/api/analytics/funnel", get(analytics_funnel))
+        .route("/api/analytics/compare", get(analytics_compare))
         .route("/api/analytics/users", get(analytics_users))
         .route("/api/analytics/users/{anon_id}", get(analytics_user_by_id))
         // pm/ project-manager surface (M5)
@@ -586,6 +589,66 @@ async fn analytics_features(
     let feats = crate::analytics_rollups::feature_rollups(&windowed, active);
     let count = feats.len();
     Json(json!({ "data": feats, "count": count })).into_response()
+}
+
+/// GET /api/analytics/trends?window=&buckets=&project_id= — bucketed user+event
+/// time series for the Trends charts (value series is ROI → slice 3).
+async fn analytics_trends(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("12w");
+    let buckets = q.get("buckets").and_then(|b| b.parse::<usize>().ok()).unwrap_or(12);
+    let events = s.store.events_by_type("custom", project).await;
+    let t = crate::analytics_rollups::trends(&events, now_ms(), window, buckets);
+    Json(json!({ "data": t })).into_response()
+}
+
+/// GET /api/analytics/funnel?project_id= — activation funnel
+/// (identified→activated→repeat→power). `identified` = total identified users.
+async fn analytics_funnel(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let events = s.store.events_by_type("custom", project).await;
+    let invited = s.analytics.list_users().len();
+    let f = crate::analytics_rollups::funnel(&events, now_ms(), invited);
+    Json(json!({ "data": f })).into_response()
+}
+
+/// GET /api/analytics/compare?by=role&window=&project_id= — current-vs-prior per
+/// entity. `by=role` is implemented; `by=app` awaits app attribution on custom
+/// events. value/$ is slice 3.
+async fn analytics_compare(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let by = q.get("by").map(String::as_str).unwrap_or("role");
+    if by != "role" {
+        return Json(json!({ "data": [], "note": format!("compare by={by} not implemented yet (only by=role)") })).into_response();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let events = s.store.events_by_type("custom", project).await;
+    let roles: HashMap<String, String> =
+        s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+    let rows = crate::analytics_rollups::compare_by_role(&events, &roles, now_ms(), window);
+    let count = rows.len();
+    Json(json!({ "data": rows, "count": count, "by": "role" })).into_response()
 }
 
 /// GET /api/analytics/users — anonymized end-users (NO PII), enriched with

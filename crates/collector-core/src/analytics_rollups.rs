@@ -179,6 +179,90 @@ pub fn feature_rollups(events: &[Value], active_users: usize) -> Vec<Value> {
     out
 }
 
+/// Bucketed time series over `window` (default 90d span if "all"): `buckets`
+/// equal slices, each with distinct active users + event count. Drives the Trends
+/// chart. Value series (cumulative $) is ROI → slice 3.
+pub fn trends(events: &[Value], now: i64, window: &str, buckets: usize) -> Value {
+    let buckets = buckets.clamp(1, 365);
+    let cutoff = window_cutoff(now, window).unwrap_or(now - 90 * DAY_MS);
+    let span = (((now - cutoff) as f64) / buckets as f64).max(1.0);
+    let mut user_sets: Vec<HashSet<&str>> = vec![HashSet::new(); buckets];
+    let mut ev_counts = vec![0u64; buckets];
+    let starts: Vec<i64> = (0..buckets).map(|b| cutoff + (span * b as f64) as i64).collect();
+    for e in events {
+        let ts = ts_of(e);
+        if ts < cutoff || ts > now {
+            continue;
+        }
+        let idx = (((ts - cutoff) as f64 / span) as usize).min(buckets - 1);
+        ev_counts[idx] += 1;
+        if let Some(a) = anon_of(e) {
+            user_sets[idx].insert(a);
+        }
+    }
+    let users: Vec<usize> = user_sets.iter().map(HashSet::len).collect();
+    json!({ "bucketStartMs": starts, "users": users, "events": ev_counts })
+}
+
+/// Activation funnel: identified (=invited) → activated (≥1 event) → repeat (≥2
+/// sessions) → power (active in last 7d). All-time (not windowed); `invited` is
+/// the total identified-user count.
+pub fn funnel(events: &[Value], now: i64, invited: usize) -> Value {
+    let mut sessions: HashMap<&str, HashSet<&str>> = HashMap::new();
+    let mut last: HashMap<&str, i64> = HashMap::new();
+    for e in events {
+        let Some(a) = anon_of(e) else { continue };
+        if let Some(s) = session_of(e) {
+            sessions.entry(a).or_default().insert(s);
+        }
+        let l = last.entry(a).or_insert(0);
+        *l = (*l).max(ts_of(e));
+    }
+    json!({
+        "identified": invited,
+        "activated": sessions.len(),
+        "repeat": sessions.values().filter(|s| s.len() >= 2).count(),
+        "power": last.values().filter(|&&t| now - t <= 7 * DAY_MS).count(),
+    })
+}
+
+/// Per-role current-vs-prior comparison: the prior window is the equal-length
+/// span immediately before the current one. `roles` maps anonId → role (from
+/// analytics_users). Drives Compare (by role). value/$ is slice 3; by-app awaits
+/// app attribution on custom events.
+pub fn compare_by_role(events: &[Value], roles: &HashMap<String, String>, now: i64, window: &str) -> Vec<Value> {
+    let cur_cut = window_cutoff(now, window).unwrap_or(now - 30 * DAY_MS);
+    let prev_cut = cur_cut - (now - cur_cut);
+    struct R {
+        cu: HashSet<String>,
+        ce: u64,
+        pu: HashSet<String>,
+        pe: u64,
+    }
+    let mut m: HashMap<String, R> = HashMap::new();
+    for e in events {
+        let Some(a) = anon_of(e) else { continue };
+        let role = roles.get(a).cloned().unwrap_or_else(|| "unknown".to_string());
+        let ts = ts_of(e);
+        let r = m.entry(role).or_insert(R { cu: HashSet::new(), ce: 0, pu: HashSet::new(), pe: 0 });
+        if ts >= cur_cut && ts <= now {
+            r.ce += 1;
+            r.cu.insert(a.to_string());
+        } else if ts >= prev_cut && ts < cur_cut {
+            r.pe += 1;
+            r.pu.insert(a.to_string());
+        }
+    }
+    let mut out: Vec<Value> = m
+        .into_iter()
+        .map(|(role, r)| {
+            json!({ "role": role, "users": r.cu.len(), "events": r.ce, "prevUsers": r.pu.len(), "prevEvents": r.pe })
+        })
+        .collect();
+    out.sort_by(|a, b| b["events"].as_u64().unwrap_or(0).cmp(&a["events"].as_u64().unwrap_or(0)));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -228,5 +312,45 @@ mod tests {
         assert_eq!(fr[0]["adoptionPct"], 100.0); // 2/2
         assert_eq!(fr[1]["feature"], "export");
         assert_eq!(fr[1]["adoptionPct"], 50.0); // 1/2
+    }
+
+    #[test]
+    fn trends_buckets_and_funnel_and_compare() {
+        let now = 1_000 * DAY_MS;
+        let events = vec![
+            ev("A", "geocode", "s1", now - 1 * DAY_MS),
+            ev("A", "export", "s2", now - 2 * DAY_MS),  // A: 2 sessions → repeat; active last 7d → power
+            ev("B", "geocode", "s3", now - 20 * DAY_MS), // B: 1 session, not last-7d
+            ev("C", "geocode", "s4", now - 45 * DAY_MS), // C: in the PRIOR 30d window [now-60d, now-30d)
+        ];
+
+        // trends: 30d window, 3 buckets of 10d each. A's 2 events land in the last
+        // bucket; B in the first; C is outside 30d.
+        let t = trends(&events, now, "30d", 3);
+        assert_eq!(t["events"].as_array().unwrap().len(), 3);
+        assert_eq!(t["events"][2], 2); // A's two events, most-recent bucket
+        assert_eq!(t["users"][2], 1); // distinct A
+
+        // funnel: invited 5, activated 3 (A,B,C), repeat 1 (A has 2 sessions),
+        // power 1 (only A active in last 7d).
+        let f = funnel(&events, now, 5);
+        assert_eq!(f["identified"], 5);
+        assert_eq!(f["activated"], 3);
+        assert_eq!(f["repeat"], 1);
+        assert_eq!(f["power"], 1);
+
+        // compare by role, 30d: A,B = Specialist (current); C = Director (prior).
+        let mut roles = HashMap::new();
+        roles.insert("A".to_string(), "Specialist".to_string());
+        roles.insert("B".to_string(), "Specialist".to_string());
+        roles.insert("C".to_string(), "Director".to_string());
+        let cmp = compare_by_role(&events, &roles, now, "30d");
+        let spec = cmp.iter().find(|r| r["role"] == "Specialist").unwrap();
+        assert_eq!(spec["users"], 2); // A,B current
+        assert_eq!(spec["events"], 3);
+        let dir = cmp.iter().find(|r| r["role"] == "Director").unwrap();
+        assert_eq!(dir["users"], 0); // none current
+        assert_eq!(dir["prevUsers"], 1); // C in prior window
+        assert_eq!(dir["prevEvents"], 1);
     }
 }

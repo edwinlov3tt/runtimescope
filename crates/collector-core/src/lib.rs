@@ -9,6 +9,7 @@
 //! crash recovery. The full 19 event types, auth, and the command channel
 //! widen this in later milestones.
 
+pub mod analytics_roi;
 pub mod analytics_rollups;
 pub mod analytics_store;
 pub mod auth;

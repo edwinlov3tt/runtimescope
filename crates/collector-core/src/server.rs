@@ -333,6 +333,7 @@ pub async fn serve(
         // analytics subsystem (ADR-0012, slice 1-2): end-user identity + reads
         .route("/api/analytics/identify", post(analytics_identify))
         .route("/api/analytics/roles", get(analytics_roles))
+        .route("/api/analytics/baselines", get(analytics_baselines).put(analytics_put_baseline))
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
@@ -552,6 +553,103 @@ async fn analytics_roles(State(s): State<AppState>, headers: HeaderMap) -> Respo
     Json(json!({ "data": roles, "count": count })).into_response()
 }
 
+/// Build the ROI join context (feature→baseline, anonId→role, role→rate) from
+/// the analytics store. Slice 3a.
+fn roi_ctx(s: &AppState) -> crate::analytics_roi::RoiCtx {
+    use crate::analytics_roi::{BaselineCalc, RoiCtx};
+    let baselines = s
+        .analytics
+        .list_baselines()
+        .into_iter()
+        .map(|b| (b.fn_name, BaselineCalc { manual: b.manual_min, tool: b.tool_min, per_item: b.per_item }))
+        .collect();
+    let anon_role = s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+    let role_rate = s.analytics.roles().into_iter().map(|r| (r.role, r.hourly_rate)).collect();
+    RoiCtx { baselines, anon_role, role_rate }
+}
+
+/// Filter events to a window (the $-enriched reads compute ROI over the window).
+fn window_filter(events: Vec<Value>, now: i64, window: &str) -> Vec<Value> {
+    let cutoff = crate::analytics_rollups::window_cutoff(now, window);
+    events
+        .into_iter()
+        .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
+        .collect()
+}
+
+fn round2(v: f64) -> f64 {
+    (v * 100.0).round() / 100.0
+}
+
+#[derive(serde::Deserialize)]
+struct BaselineBody {
+    #[serde(rename = "fn")]
+    fn_name: String,
+    #[serde(rename = "manualMin")]
+    manual_min: f64,
+    #[serde(rename = "toolMin")]
+    tool_min: f64,
+    #[serde(default, rename = "perItem")]
+    per_item: bool,
+    source: Option<String>,
+}
+
+/// GET /api/analytics/baselines — ROI baselines enriched with live `uses` (event
+/// count) + `value` (ROI $) per feature.
+async fn analytics_baselines(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let events = s.store.events_by_type("custom", project).await;
+    let feat_roi = roi_ctx(&s).by_feature(&events);
+    let mut uses: HashMap<String, u64> = HashMap::new();
+    for e in &events {
+        if let Some(n) = e.get("name").and_then(Value::as_str) {
+            *uses.entry(n.to_string()).or_insert(0) += 1;
+        }
+    }
+    let data: Vec<Value> = s
+        .analytics
+        .list_baselines()
+        .into_iter()
+        .map(|b| {
+            let mut base = serde_json::to_value(&b).unwrap_or_else(|_| json!({}));
+            let (value, _h) = feat_roi.get(&b.fn_name).copied().unwrap_or((0.0, 0.0));
+            if let Some(o) = base.as_object_mut() {
+                o.insert("uses".into(), json!(uses.get(&b.fn_name).copied().unwrap_or(0)));
+                o.insert("value".into(), json!(round2(value)));
+            }
+            base
+        })
+        .collect();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
+}
+
+/// PUT /api/analytics/baselines — upsert a baseline (admin edit; appends history).
+async fn analytics_put_baseline(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<BaselineBody>(&body) else {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {fn, manualMin, toolMin, perItem?, source?}" })),
+        )
+            .into_response();
+    };
+    let source = b.source.as_deref().unwrap_or("admin");
+    match s.analytics.upsert_baseline(&b.fn_name, b.manual_min, b.tool_min, b.per_item, source, None, Some("api edit")) {
+        Ok(()) => Json(json!({ "data": { "fn": b.fn_name, "ok": true } })).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
 /// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
 /// adoption, events, DAU/WAU/MAU, stickiness). ROI/$ deferred to slice 3.
 async fn analytics_overview(
@@ -566,7 +664,16 @@ async fn analytics_overview(
     let window = q.get("window").map(String::as_str).unwrap_or("30d");
     let events = s.store.events_by_type("custom", project).await;
     let invited = s.analytics.list_users().len();
-    let ov = crate::analytics_rollups::overview(&events, now_ms(), window, invited);
+    let mut ov = crate::analytics_rollups::overview(&events, now_ms(), window, invited);
+    // ROI $ (slice 3a), over the same window.
+    let ctx = roi_ctx(&s);
+    let win = window_filter(events, now_ms(), window);
+    let totals = ctx.totals(&win);
+    if let Some(o) = ov.as_object_mut() {
+        o.insert("valueSaved".into(), totals["value"].clone());
+        o.insert("hoursSaved".into(), totals["hours"].clone());
+        o.insert("valueByRole".into(), json!(ctx.by_role(&win)));
+    }
     Json(json!({ "data": ov })).into_response()
 }
 
@@ -589,7 +696,17 @@ async fn analytics_features(
         .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
         .collect();
     let active = crate::analytics_rollups::active_users(&windowed, now_ms(), "all");
-    let feats = crate::analytics_rollups::feature_rollups(&windowed, active);
+    let feat_roi = roi_ctx(&s).by_feature(&windowed);
+    let mut feats = crate::analytics_rollups::feature_rollups(&windowed, active);
+    for f in feats.iter_mut() {
+        if let Some(name) = f.get("feature").and_then(Value::as_str).map(str::to_string) {
+            let (v, h) = feat_roi.get(&name).copied().unwrap_or((0.0, 0.0));
+            if let Some(o) = f.as_object_mut() {
+                o.insert("value".into(), json!(round2(v)));
+                o.insert("hours".into(), json!(round2(h)));
+            }
+        }
+    }
     let count = feats.len();
     Json(json!({ "data": feats, "count": count })).into_response()
 }
@@ -748,6 +865,7 @@ async fn analytics_users(
     let project = q.get("project_id").map(String::as_str);
     let events = s.store.events_by_type("custom", project).await;
     let rollups = crate::analytics_rollups::user_rollups(&events);
+    let roi = roi_ctx(&s).by_user(&events); // lifetime value attributed per user
     let data: Vec<Value> = s
         .analytics
         .list_users()
@@ -758,10 +876,15 @@ async fn analytics_users(
                 .get(&u.anon_id)
                 .cloned()
                 .unwrap_or_else(|| json!({ "events": 0, "features": 0, "sessions": 0 }));
-            if let (Some(b), Some(r)) = (base.as_object_mut(), roll.as_object()) {
-                for (k, v) in r {
-                    b.insert(k.clone(), v.clone());
+            let (value, hours) = roi.get(&u.anon_id).copied().unwrap_or((0.0, 0.0));
+            if let Some(b) = base.as_object_mut() {
+                if let Some(r) = roll.as_object() {
+                    for (k, v) in r {
+                        b.insert(k.clone(), v.clone());
+                    }
                 }
+                b.insert("value".into(), json!(round2(value)));
+                b.insert("hours".into(), json!(round2(hours)));
             }
             base
         })

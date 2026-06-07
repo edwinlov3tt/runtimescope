@@ -332,7 +332,13 @@ async fn health(State(s): State<AppState>) -> impl IntoResponse {
         "timestamp": now_ms(),
         "uptime": s.started.elapsed().as_secs(),
         "sessions": connected,
+        // `authEnabled` = a global token is configured (back-compat).
+        // `authRequired` = the gate is ACTIVE — a global token OR any workspace
+        // API key exists — i.e. the read API + dashboard WS will 401 without a
+        // valid token. The dashboard polls this (public, unauthenticated) to know
+        // whether to show its login screen. Mirrors resolve_caller's auth_active.
         "authEnabled": s.auth.enabled(),
+        "authRequired": s.auth.enabled() || s.pm.has_active_api_keys(),
     }))
 }
 
@@ -2691,8 +2697,16 @@ async fn dashboard_ws(
     State(s): State<AppState>,
     Query(q): Query<HashMap<String, String>>,
 ) -> Response {
-    if s.auth.enabled() && !s.auth.authorized(q.get("token").map(String::as_str)) {
-        return unauthorized();
+    // Auth-active mirrors the HTTP gate (resolve_caller): a global token OR any
+    // workspace API key. Accept a global OR workspace `tk_` token via `?token=`
+    // (browsers can't set headers on a WebSocket).
+    let auth_active = s.auth.enabled() || s.pm.has_active_api_keys();
+    if auth_active {
+        let tok = q.get("token").map(String::as_str);
+        let ok = tok.is_some_and(|t| s.auth.validate(t) || s.pm.get_workspace_by_api_key(t).is_some());
+        if !ok {
+            return unauthorized();
+        }
     }
     let mut rx = s.store.subscribe();
     ws.on_upgrade(move |socket| async move {

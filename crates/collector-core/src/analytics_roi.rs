@@ -34,7 +34,9 @@ fn str_of<'a>(e: &'a Value, k: &str) -> Option<&'a str> {
     e.get(k).and_then(Value::as_str).filter(|s| !s.is_empty())
 }
 
-/// `count` for a per-item event: `properties.count` → `properties.items` → 1.
+/// `count` for a per-item event: `properties.count` → `properties.items` → `count`.
+/// A *present* count is honored even when 0 (no items processed ⇒ no savings) and
+/// clamped at ≥0; only an *absent* count defaults to 1 occurrence.
 fn qty_of(e: &Value) -> f64 {
     let props = e.get("properties");
     let n = props
@@ -42,7 +44,10 @@ fn qty_of(e: &Value) -> f64 {
         .or_else(|| props.and_then(|p| p.get("items")))
         .or_else(|| e.get("count"))
         .and_then(Value::as_f64);
-    n.filter(|v| *v > 0.0).unwrap_or(1.0)
+    match n {
+        Some(v) => v.max(0.0),
+        None => 1.0,
+    }
 }
 
 fn round2(v: f64) -> f64 {
@@ -50,8 +55,8 @@ fn round2(v: f64) -> f64 {
 }
 
 impl RoiCtx {
-    /// (role, value$, hours, time_saved_min) for one event, or None if it has no
-    /// feature baseline (⇒ contributes no ROI).
+    /// (role, value$, hours) for one event, or None if it has no feature baseline
+    /// (⇒ contributes no ROI).
     fn event(&self, e: &Value) -> Option<(String, f64, f64)> {
         let feature = str_of(e, "name")?;
         let b = self.baselines.get(feature)?;
@@ -182,6 +187,20 @@ mod tests {
         // unknown feature (no baseline) → no ROI; unknown role → rate 0.
         assert_eq!(c.totals(&[ev("A", "mystery", 5.0)])["value"], 0.0);
         assert_eq!(c.totals(&[ev("Z", "geocode", 10.0)])["value"], 0.0); // Z has no role
+    }
+
+    #[test]
+    fn per_item_count_present_zero_is_zero_absent_is_one_negative_clamps() {
+        let c = ctx();
+        // count present = 0 (no items processed) ⇒ 0 value, not 1.
+        let zero = json!({ "name": "geocode", "anonId": "A", "timestamp": 1, "properties": { "count": 0 } });
+        assert_eq!(c.totals(&[zero])["value"], 0.0);
+        // count absent ⇒ defaults to 1 item: (8−2.4)/60×50 = $4.67.
+        let absent = json!({ "name": "geocode", "anonId": "A", "timestamp": 1, "properties": {} });
+        assert_eq!(c.totals(&[absent])["value"], 4.67);
+        // negative count clamps to 0.
+        let neg = json!({ "name": "geocode", "anonId": "A", "timestamp": 1, "properties": { "count": -5 } });
+        assert_eq!(c.totals(&[neg])["value"], 0.0);
     }
 
     #[test]

@@ -112,6 +112,11 @@ impl MosaicClient {
     /// Sync input cells to the cube. The daemon's `/write` is per-cell (no batch
     /// endpoint yet — research 0006 follow-up), so this loops; on loopback each
     /// call is ~0.3ms. Stops + returns the error on the first failed write.
+    ///
+    /// Fails fast (a partial write leaves a torn cube), but that's bounded + self-
+    /// correcting: the periodic sync re-pushes the FULL fact set every tick, and
+    /// the forecast path surfaces the sync error (MOSAIC_ERROR) instead of reading
+    /// torn data — so a torn state never silently reaches a query.
     pub async fn write_cells(&self, cells: &[Cell]) -> Result<usize, String> {
         for c in cells {
             self.post("/api/v1/write", json!({ "cube": self.cube, "coord": c.coord, "measure": c.measure, "value": c.value }))
@@ -152,12 +157,16 @@ pub fn build_facts(
         let role = anon_role.get(&user).cloned().unwrap_or_else(|| "unknown".to_string());
         let app = s(e, "sessionId").and_then(|sid| session_app.get(sid)).cloned().unwrap_or_else(|| "unknown".to_string());
         let day = day_bucket(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0));
-        let count = e
+        // Present count honored even when 0 (clamped ≥0); absent ⇒ 1 — matches
+        // analytics_roi::qty_of so the cube inputs agree with the SQL oracle.
+        let count = match e
             .get("properties")
             .and_then(|p| p.get("count").or_else(|| p.get("items")))
             .and_then(Value::as_f64)
-            .filter(|v| *v > 0.0)
-            .unwrap_or(1.0);
+        {
+            Some(v) => v.max(0.0),
+            None => 1.0,
+        };
         let coord = vec![user, feature.to_string(), role, app, day];
         let leaf = leaves.entry(coord).or_insert(Leaf { events: 0.0, items: 0.0 });
         leaf.events += 1.0;
@@ -170,6 +179,10 @@ pub fn build_facts(
         cells.push(Cell { coord: coord.clone(), measure: "events".into(), value: leaf.events });
         cells.push(Cell { coord: coord.clone(), measure: "items".into(), value: leaf.items });
         // Denormalize baseline + rate onto the leaf (the cube reads them there).
+        // NOTE: the SQL oracle clamps time_saved = (manual-tool).max(0); the cube's
+        // time_saved rule MUST clamp at 0 too, else the two paths diverge on an
+        // inverted baseline (tool > manual). TODO(analytics-3b-cube): assert this
+        // in roi.yaml on deploy.
         if let Some(&(manual, tool, per_item)) = baselines.get(feature) {
             cells.push(Cell { coord: coord.clone(), measure: "manual_min".into(), value: manual });
             cells.push(Cell { coord: coord.clone(), measure: "tool_min".into(), value: tool });

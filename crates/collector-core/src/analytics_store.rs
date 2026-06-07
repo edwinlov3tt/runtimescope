@@ -247,7 +247,7 @@ impl AnalyticsStore {
             "SELECT anon_id, role, consent, first_seen, last_seen FROM analytics_users ORDER BY last_seen DESC",
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map([], |r| {
             Ok(AnalyticsUser {
@@ -260,7 +260,7 @@ impl AnalyticsStore {
         });
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 
@@ -282,12 +282,12 @@ impl AnalyticsStore {
         let conn = self.conn.lock().unwrap();
         let mut stmt = match conn.prepare("SELECT role, hourly_rate FROM analytics_roles ORDER BY hourly_rate") {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map([], |r| Ok(AnalyticsRole { role: r.get(0)?, hourly_rate: r.get(1)? }));
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 
@@ -304,6 +304,7 @@ impl AnalyticsStore {
 
     /// Insert/update a baseline, appending a history row (audit trail, ADR-0012).
     #[allow(clippy::too_many_arguments)] // baseline fields are clearer flat than in a struct here
+    #[allow(clippy::too_many_arguments)]
     pub fn upsert_baseline(
         &self,
         fn_name: &str,
@@ -314,8 +315,26 @@ impl AnalyticsStore {
         changed_by: Option<&str>,
         reason: Option<&str>,
     ) -> Result<(), String> {
-        let now = now_ms();
         let conn = self.conn.lock().unwrap();
+        Self::upsert_baseline_conn(&conn, fn_name, manual_min, tool_min, per_item, source, changed_by, reason)
+            .map_err(|e| e.to_string())
+    }
+
+    /// Upsert a baseline + append history on a given connection (no locking) —
+    /// shared by the public `upsert_baseline` and the transactional
+    /// `accept_submission` so both write the baseline + history atomically.
+    #[allow(clippy::too_many_arguments)]
+    fn upsert_baseline_conn(
+        conn: &rusqlite::Connection,
+        fn_name: &str,
+        manual_min: f64,
+        tool_min: f64,
+        per_item: bool,
+        source: &str,
+        changed_by: Option<&str>,
+        reason: Option<&str>,
+    ) -> rusqlite::Result<()> {
+        let now = now_ms();
         conn.execute(
             "INSERT INTO analytics_baselines (fn_name, manual_min, tool_min, per_item, source, updated_at, updated_by)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
@@ -324,14 +343,12 @@ impl AnalyticsStore {
                per_item = excluded.per_item, source = excluded.source,
                updated_at = excluded.updated_at, updated_by = excluded.updated_by",
             params![fn_name, manual_min, tool_min, per_item as i64, source, now, changed_by],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         conn.execute(
             "INSERT INTO analytics_baseline_history (fn_name, manual_min, tool_min, per_item, changed_at, changed_by, reason)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![fn_name, manual_min, tool_min, per_item as i64, now, changed_by, reason],
-        )
-        .map_err(|e| e.to_string())?;
+        )?;
         Ok(())
     }
 
@@ -341,7 +358,7 @@ impl AnalyticsStore {
             "SELECT fn_name, manual_min, tool_min, per_item, source, updated_at FROM analytics_baselines ORDER BY fn_name",
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map([], |r| {
             Ok(Baseline {
@@ -355,7 +372,7 @@ impl AnalyticsStore {
         });
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 }
@@ -405,18 +422,6 @@ pub struct Projection {
 
 impl AnalyticsStore {
     /// (manual, tool, per_item) for a feature's current baseline, if any.
-    fn current_baseline(&self, fn_name: &str) -> Option<(f64, f64, bool)> {
-        let conn = self.conn.lock().unwrap();
-        conn.query_row(
-            "SELECT manual_min, tool_min, per_item FROM analytics_baselines WHERE fn_name = ?1",
-            params![fn_name],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get::<_, i64>(2)? != 0)),
-        )
-        .optional()
-        .ok()
-        .flatten()
-    }
-
     pub fn add_submission(&self, fn_name: &str, est_manual_min: f64, anon_id: Option<&str>) -> Result<i64, String> {
         let conn = self.conn.lock().unwrap();
         conn.execute(
@@ -433,7 +438,7 @@ impl AnalyticsStore {
             "SELECT id, fn_name, manual_min, anon_id, submitted_at FROM analytics_baseline_submissions ORDER BY submitted_at DESC",
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map([], |r| {
             Ok(BaselineSubmission {
@@ -446,7 +451,7 @@ impl AnalyticsStore {
         });
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 
@@ -459,22 +464,36 @@ impl AnalyticsStore {
     }
 
     /// Accept a submission: set the feature's baseline `manual_min` to the
-    /// estimate (preserving tool/per_item), source=`crowd`, then dismiss it.
+    /// estimate (preserving tool/per_item), source=`crowd`, then dismiss it — all
+    /// in ONE transaction so a concurrent edit/second-accept can't interleave or
+    /// double-apply (read→upsert→history→delete are atomic).
     pub fn accept_submission(&self, id: i64) -> Result<bool, String> {
-        let row: Option<(String, f64)> = {
-            let conn = self.conn.lock().unwrap();
-            conn.query_row(
+        let mut guard = self.conn.lock().unwrap();
+        let tx = guard.transaction().map_err(|e| e.to_string())?;
+        let row: Option<(String, f64)> = tx
+            .query_row(
                 "SELECT fn_name, manual_min FROM analytics_baseline_submissions WHERE id = ?1",
                 params![id],
                 |r| Ok((r.get(0)?, r.get(1)?)),
             )
             .optional()
+            .map_err(|e| e.to_string())?;
+        let Some((fn_name, est)) = row else { return Ok(false) }; // tx drops → rollback (no-op)
+        // Preserve the current tool/per_item within the same transaction.
+        let (tool, per_item) = tx
+            .query_row(
+                "SELECT tool_min, per_item FROM analytics_baselines WHERE fn_name = ?1",
+                params![fn_name],
+                |r| Ok((r.get::<_, f64>(0)?, r.get::<_, i64>(1)? != 0)),
+            )
+            .optional()
             .map_err(|e| e.to_string())?
-        };
-        let Some((fn_name, est)) = row else { return Ok(false) };
-        let (_, tool, per_item) = self.current_baseline(&fn_name).unwrap_or((est, 0.0, false));
-        self.upsert_baseline(&fn_name, est, tool, per_item, "crowd", None, Some("accepted crowd submission"))?;
-        self.delete_submission(id);
+            .unwrap_or((0.0, false));
+        Self::upsert_baseline_conn(&tx, &fn_name, est, tool, per_item, "crowd", None, Some("accepted crowd submission"))
+            .map_err(|e| e.to_string())?;
+        tx.execute("DELETE FROM analytics_baseline_submissions WHERE id = ?1", params![id])
+            .map_err(|e| e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
         Ok(true)
     }
 
@@ -484,7 +503,7 @@ impl AnalyticsStore {
             "SELECT manual_min, tool_min, per_item, changed_at, changed_by, reason FROM analytics_baseline_history WHERE fn_name = ?1 ORDER BY changed_at DESC",
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map(params![fn_name], |r| {
             Ok(BaselineHistoryEntry {
@@ -498,7 +517,7 @@ impl AnalyticsStore {
         });
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 
@@ -508,7 +527,7 @@ impl AnalyticsStore {
             "SELECT quarter, proj_hours, proj_value, notes, set_by FROM analytics_projections ORDER BY quarter DESC",
         ) {
             Ok(s) => s,
-            Err(_) => return Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (prepare): {e}"); return Vec::new() }
         };
         let rows = stmt.query_map([], |r| {
             Ok(Projection {
@@ -521,7 +540,7 @@ impl AnalyticsStore {
         });
         match rows {
             Ok(it) => it.filter_map(Result::ok).collect(),
-            Err(_) => Vec::new(),
+            Err(e) => { tracing::warn!("analytics query failed (rows): {e}"); Vec::new() }
         }
     }
 
@@ -639,6 +658,7 @@ mod tests {
         assert!((geo.tool_min - 2.4).abs() < 0.01 && geo.per_item);
         assert_eq!(geo.source, "crowd");
         assert_eq!(s.list_submissions().len(), 1, "accepted submission removed");
+        assert!(!s.accept_submission(id).unwrap(), "second accept of the same id is a no-op (atomic delete)");
         assert!(s.baseline_history("geocode").len() >= 2, "seed + accept recorded");
 
         // Dismiss the other.

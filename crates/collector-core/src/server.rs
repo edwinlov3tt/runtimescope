@@ -295,7 +295,16 @@ pub async fn serve(
     // (analytics is additive — event ingest/reads must still work).
     let analytics = AnalyticsStore::open(&crate::data_dir().join("analytics.db"))
         .or_else(|e| {
-            eprintln!("[RuntimeScope] analytics store open failed ({e}); using in-memory");
+            // Prominent + repeated: an in-memory analytics store still returns 200
+            // for identify/baselines/projections, so a single quiet line would let
+            // a silent total-persistence failure of the PII/identity boundary slip
+            // by. Make it unmissable.
+            eprintln!("[RuntimeScope] ╔══════════════════════════════════════════════════════════════╗");
+            eprintln!("[RuntimeScope] ║ ⚠  ANALYTICS STORE FELL BACK TO IN-MEMORY ({e})", );
+            eprintln!("[RuntimeScope] ║    identify / baselines / roles / projections will NOT persist");
+            eprintln!("[RuntimeScope] ║    and are LOST on restart. Fix analytics.db (perms/lock/disk).");
+            eprintln!("[RuntimeScope] ╚══════════════════════════════════════════════════════════════╝");
+            tracing::error!("analytics store open failed ({e}); using non-persistent in-memory DB");
             AnalyticsStore::open(std::path::Path::new(":memory:"))
         })
         .map_err(std::io::Error::other)?;
@@ -307,7 +316,9 @@ pub async fn serve(
     });
 
     // Periodic fact sync — keep the cube fresh so forecast/trace don't each pay a
-    // full re-push. RUNTIMESCOPE_MOSAIC_SYNC_SECS (default 60, min 5).
+    // full re-push. RUNTIMESCOPE_MOSAIC_SYNC_SECS (default 60, min 5). A baseline
+    // edit racing a sync (per-call locks, not a snapshot) only makes that one tick
+    // momentarily stale — the next full re-push reconciles it.
     if let Some(mc) = mosaic.clone() {
         let bstore = store.clone();
         let banalytics = analytics.clone();
@@ -379,6 +390,13 @@ pub async fn serve(
         .route("/api/analytics/mosaic/sync", post(analytics_mosaic_sync))
         .route("/api/analytics/forecast", get(analytics_forecast))
         .route("/api/analytics/trace", get(analytics_trace))
+        // Not-yet-built analytics backend surfaces (greppable; the dashboard stubs
+        // reference the same tags). Specs: docs/specs/analytics-data-model.md +
+        // analytics-uptime-slice5.md.
+        //   TODO(analytics-survey): /api/analytics/surveys (GET/POST) + responses + the show_survey command channel — slice 4
+        //   TODO(analytics-status):  /api/analytics/status + /incidents + /heartbeat + /monitored-apps + probe task — slice 5
+        //   TODO(analytics-admin):   de-anon route (X-Admin-Key → AnalyticsStore::get_pii, already in the store) + login audit — slice 6
+        //   TODO(analytics-mcp):     MCP tools get_adoption_metrics / get_feature_usage / get_user_funnel / get_roi_report
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))

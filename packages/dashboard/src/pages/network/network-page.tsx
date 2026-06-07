@@ -1,4 +1,4 @@
-import { useState, useMemo, useCallback } from 'react';
+import { useState, useMemo, useCallback, useEffect } from 'react';
 import { cn } from '@/lib/cn';
 import { Topbar } from '@/components/layout/topbar';
 import {
@@ -14,6 +14,7 @@ import { ResponseViewer } from '@/components/ui/response-viewer';
 import { ExportButton } from '@/components/ui/export-button';
 import { TableSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
+import { useAppStore } from '@/stores/use-app-store';
 import { useConnected } from '@/hooks/use-connected';
 import { useKeyboardNav } from '@/hooks/use-keyboard-nav';
 import {
@@ -129,6 +130,8 @@ export function NetworkPage() {
   const connected = useConnected();
   const liveNetwork = useDataStore((s) => s.network);
   const initialLoadDone = useDataStore((s) => s.initialLoadDone);
+  const focusedEventId = useAppStore((s) => s.focusedEventId);
+  const setFocusedEventId = useAppStore((s) => s.setFocusedEventId);
   const allData = liveNetwork;
 
   const filtered = useMemo(() => {
@@ -159,6 +162,22 @@ export function NetworkPage() {
 
   const handleRowClick = useCallback((_: unknown, i: number) => setDetailIndex(i), []);
   const handleDetailClose = useCallback(() => setDetailIndex(null), []);
+
+  // Palette deep-link: scroll to + flash-highlight the matched row, then clear.
+  useEffect(() => {
+    if (!focusedEventId) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-event-id="${CSS.escape(focusedEventId)}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      el.classList.add('ring-2', 'ring-accent', 'ring-inset');
+      window.setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-accent', 'ring-inset');
+      }, 2000);
+    }
+    setFocusedEventId(null);
+  }, [focusedEventId, filtered, setFocusedEventId]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -191,6 +210,7 @@ export function NetworkPage() {
               data={filtered as any}
               selectedIndex={detailIndex ?? selectedIndex}
               onRowClick={handleRowClick}
+              rowAttributes={(row: any) => ({ 'data-event-id': row.eventId as string })}
             />
             )}
           </div>

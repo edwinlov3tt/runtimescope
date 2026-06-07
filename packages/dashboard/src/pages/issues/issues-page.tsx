@@ -2,9 +2,8 @@ import { useState, useMemo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { DetailPanel, Badge } from '@/components/ui';
 import { cn } from '@/lib/cn';
-import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
-import { detectIssues } from '@/lib/issue-detector';
+import { useDetectedIssues } from '@/hooks/use-detected-issues';
 import { AlertTriangle, AlertCircle, Info } from 'lucide-react';
 
 const SEVERITY_CONFIG: Record<string, { icon: typeof AlertCircle; color: string; badge: string }> = {
@@ -17,18 +16,10 @@ export function IssuesPage() {
   const [activeTab, setActiveTab] = useState('all');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const connected = useConnected();
-  const network = useDataStore((s) => s.network);
-  const consoleMsgs = useDataStore((s) => s.console);
-  const stateEvents = useDataStore((s) => s.state);
-  const renderEvents = useDataStore((s) => s.renders);
-  const perfEvents = useDataStore((s) => s.performance);
-  const dbEvents = useDataStore((s) => s.database);
 
-  const allIssues = useMemo(() => {
-    const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
-    if (allEvents.length === 0) return [];
-    return detectIssues(allEvents);
-  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  // Shared detection (collapsed with the bell + overview) instead of a
+  // duplicate inline detectIssues() compute.
+  const allIssues = useDetectedIssues();
 
   const filtered = useMemo(() => {
     if (activeTab === 'all') return allIssues;

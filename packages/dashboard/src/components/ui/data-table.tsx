@@ -28,6 +28,8 @@ interface DataTableProps<T> {
   emptyMessage?: string;
   defaultSort?: SortState;
   footer?: ReactNode;
+  /** Extra HTML attributes (e.g. `data-event-id`) to attach per rendered row. */
+  rowAttributes?: (row: T, index: number) => Record<string, string | undefined>;
 }
 
 export function DataTable<T extends Record<string, unknown>>({
@@ -39,6 +41,7 @@ export function DataTable<T extends Record<string, unknown>>({
   emptyMessage = 'No data',
   defaultSort,
   footer,
+  rowAttributes,
 }: DataTableProps<T>) {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [sort, setSort] = useState<SortState | null>(defaultSort ?? null);
@@ -107,6 +110,7 @@ export function DataTable<T extends Record<string, unknown>>({
               sortedData.map((row, i) => (
                 <tr
                   key={i}
+                  {...(rowAttributes?.(row, i) ?? {})}
                   onClick={() => onRowClick?.(row, i)}
                   onMouseEnter={() => setHoveredIndex(i)}
                   onMouseLeave={() => setHoveredIndex(null)}

@@ -194,7 +194,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           label: `${ev.method} ${ev.url}`,
           hint: ev.status ? `${ev.status}` : 'failed',
           icon: Globe,
-          run: () => navigateToRailId('network'),
+          run: () => {
+            useAppStore.getState().setFocusedEventId(ev.eventId);
+            navigateToRailId('network');
+          },
         });
       }
       for (const ev of consoleEvents.slice(-200).reverse()) {
@@ -205,7 +208,10 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
           label: ev.message,
           hint: ev.level,
           icon: isErr ? AlertTriangle : Terminal,
-          run: () => navigateToRailId('console'),
+          run: () => {
+            useAppStore.getState().setFocusedEventId(ev.eventId);
+            navigateToRailId('console');
+          },
         });
       }
     }

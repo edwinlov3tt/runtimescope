@@ -22,8 +22,11 @@ Two checks per component: **Mounted** (rendered somewhere in the tree) and
 | Slice / store | Written by | Read by | Verdict |
 |---|---|---|---|
 | `useNotificationStore` (`readIds: Set`, `firstSeen: Record`; persisted to `localStorage` keys `rs.notif.readIds` / `rs.notif.firstSeen`) | `NotificationDropdown` (`observe`/`markRead`/`markAllRead`) | `NotificationDropdown` (badge count, per-row read state + timestamp) | ✅ both sides present |
-| `useAppStore.timeRange` (`{ preset }`) | `DateRangePicker` (`setTimeRange`) | `use-live-data` (`getEventFilter` → `since_seconds`; refetch-all effect), `events-page`, `date-range-picker` | ✅ both sides present |
+| `useAppStore.timeRange` (`{ preset }`) | `DateRangePicker` (`setTimeRange`) | `use-live-data` (`getEventFilter` → `since_seconds`; refetch-all effect + prune effect), `events-page`, `date-range-picker` | ✅ both sides present |
 | `timeRangeToSinceSeconds(range)` helper | — | `use-live-data`, `events-page` | ✅ consumed |
+| `useAppStore.focusedEventId` (`string \| null`) | `CommandPalette` (sets on event-result select); `network-page`/`console-page` (clear after flash) | `network-page`/`console-page` (scroll-to + transient highlight) | ✅ both sides present |
+| `useDataStore.pruneOlderThan(cutoffMs)` action | — | `use-live-data` prune effect (evicts events aged past the window) | ✅ consumed |
+| `useDetectedIssues()` shared hook (module-memoized `detectIssues`) | — | `NotificationDropdown`, `overview-page`, `issues-page` (replaces 3 inline copies) | ✅ consumed |
 
 **Removed because orphaned** (review finding #15): `timeRangeToDates()` (zero call
 sites) and the `'custom'` preset + `customSinceSeconds` field (unreachable — the
@@ -35,7 +38,14 @@ picker never sets it).
   fetch (`getEventFilter`); a dedicated effect refetches **all six** event types
   on a range change so always-mounted consumers (notification bell, overview)
   reflect the new window without being blanked. `setTimeRange` deliberately does
-  **not** `clearAll()` the buffers (that previously blanked the bell).
+  **not** `clearAll()` the buffers (that previously blanked the bell). A second
+  effect prunes the store buffers (`pruneOlderThan`) every 5s while a bounded
+  window is active, so live WS appends don't let the buffer drift wider than the
+  selected window (no-op for `'all'`).
+- `hooks/use-detected-issues.ts`: the single source of truth for derived issues —
+  the bell, overview, and issues page all call `useDetectedIssues()`, which
+  computes `detectIssues()` once per event change (module-memoized on the six
+  array references) instead of three independent recomputes.
 
 ## The live contract (what not to break)
 

@@ -236,4 +236,22 @@ export function useLiveData(): void {
     lastRangeRef.current = timeRange;
     fetchAllFiltered();
   }, [timeRange, source]);
+
+  // Evict events that age PAST the selected window. With WS connected, live
+  // appends are unfiltered and backfilled events drift older than the window
+  // over time — so without store-level eviction "Last 15m" silently widens.
+  // For the 'all' preset (since === undefined) there is no bound: do nothing.
+  // Widening the window triggers a full refetch (range-change effect above),
+  // so pruned events return — we only ever need to trim here.
+  useEffect(() => {
+    if (source !== 'live') return;
+    const since = timeRangeToSinceSeconds(timeRange);
+    if (since === undefined) return; // 'all' — no time bound, no interval
+    const prune = () => {
+      useDataStore.getState().pruneOlderThan(Date.now() - since * 1000);
+    };
+    prune(); // once immediately
+    const id = setInterval(prune, 5000);
+    return () => clearInterval(id);
+  }, [timeRange, source]);
 }

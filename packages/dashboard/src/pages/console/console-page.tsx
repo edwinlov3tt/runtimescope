@@ -1,10 +1,11 @@
-import { useState, useMemo, useCallback, memo } from 'react';
+import { useState, useMemo, useCallback, useEffect, memo } from 'react';
 import { Topbar } from '@/components/layout/topbar';
 import { StackTrace, JsonViewer } from '@/components/ui';
 import { SearchInput } from '@/components/ui/input';
 import { ExportButton } from '@/components/ui/export-button';
 import { ListSkeleton } from '@/components/ui/skeleton';
 import { useDataStore } from '@/stores/use-data-store';
+import { useAppStore } from '@/stores/use-app-store';
 import { useConnected } from '@/hooks/use-connected';
 import { formatTimestamp } from '@/lib/format';
 import { cn } from '@/lib/cn';
@@ -41,7 +42,7 @@ const ConsoleRow = memo(function ConsoleRow({
   const hasDetails = (entry.args && entry.args.length > 0) || entry.stackTrace;
 
   return (
-    <div className={cn('border-b border-border-muted', config.rowTint)}>
+    <div data-event-id={entry.eventId} className={cn('border-b border-border-muted', config.rowTint)}>
       <div
         onClick={() => hasDetails && onToggle(entry.eventId)}
         className={cn(
@@ -133,6 +134,8 @@ export function ConsolePage() {
   const connected = useConnected();
   const liveConsole = useDataStore((s) => s.console);
   const initialLoadDone = useDataStore((s) => s.initialLoadDone);
+  const focusedEventId = useAppStore((s) => s.focusedEventId);
+  const setFocusedEventId = useAppStore((s) => s.setFocusedEventId);
   const allData = liveConsole;
 
   const levelCounts = useMemo(() => {
@@ -162,6 +165,23 @@ export function ConsolePage() {
   const handleToggle = useCallback((id: string) => {
     setExpandedId((prev) => (prev === id ? null : id));
   }, []);
+
+  // Palette deep-link: scroll to + flash-highlight the matched row, then clear.
+  // If the row isn't currently rendered (capped/filtered out), no-op gracefully.
+  useEffect(() => {
+    if (!focusedEventId) return;
+    const el = document.querySelector<HTMLElement>(
+      `[data-event-id="${CSS.escape(focusedEventId)}"]`,
+    );
+    if (el) {
+      el.scrollIntoView({ block: 'center' });
+      el.classList.add('ring-2', 'ring-accent', 'ring-inset');
+      window.setTimeout(() => {
+        el.classList.remove('ring-2', 'ring-accent', 'ring-inset');
+      }, 2000);
+    }
+    setFocusedEventId(null);
+  }, [focusedEventId, rendered, setFocusedEventId]);
 
   return (
     <div className="flex-1 flex flex-col min-h-0 overflow-hidden">

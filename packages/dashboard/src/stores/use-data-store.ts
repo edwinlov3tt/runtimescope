@@ -60,6 +60,8 @@ interface DataState {
   setPorts: (p: PortUsage[]) => void;
 
   appendEvent: (event: RuntimeEvent) => void;
+  /** Evict events whose `timestamp` is older than `cutoffMs` from every array. */
+  pruneOlderThan: (cutoffMs: number) => void;
   clearAll: () => void;
 }
 
@@ -119,6 +121,27 @@ export const useDataStore = create<DataState>((set, get) => ({
         default:
           return {};
       }
+    }),
+
+  pruneOlderThan: (cutoffMs) =>
+    set((s) => {
+      const next: Partial<DataState> = {};
+      const network = s.network.filter((e) => e.timestamp >= cutoffMs);
+      if (network.length !== s.network.length) next.network = network;
+      const console = s.console.filter((e) => e.timestamp >= cutoffMs);
+      if (console.length !== s.console.length) next.console = console;
+      const state = s.state.filter((e) => e.timestamp >= cutoffMs);
+      if (state.length !== s.state.length) next.state = state;
+      const renders = s.renders.filter((e) => e.timestamp >= cutoffMs);
+      if (renders.length !== s.renders.length) next.renders = renders;
+      const performance = s.performance.filter((e) => e.timestamp >= cutoffMs);
+      if (performance.length !== s.performance.length) next.performance = performance;
+      const database = s.database.filter((e) => e.timestamp >= cutoffMs);
+      if (database.length !== s.database.length) next.database = database;
+      const ui = s.ui.filter((e) => e.timestamp >= cutoffMs);
+      if (ui.length !== s.ui.length) next.ui = ui;
+      // Avoid needless re-renders: only set if at least one array changed.
+      return next;
     }),
 
   clearAll: () =>

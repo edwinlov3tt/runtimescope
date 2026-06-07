@@ -93,6 +93,10 @@ interface AppState {
   // --- Time range (global header date-range filter) ---
   timeRange: TimeRange;
   setTimeRange: (range: TimeRange) => void;
+
+  // --- Focused event (palette → deep-link to a specific row) ---
+  focusedEventId: string | null;
+  setFocusedEventId: (id: string | null) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -156,4 +160,7 @@ export const useAppStore = create<AppState>((set, get) => ({
     // useLiveData refetches all event types on a range change (see use-live-data).
     set({ timeRange: range });
   },
+
+  focusedEventId: null,
+  setFocusedEventId: (id) => set({ focusedEventId: id }),
 }));

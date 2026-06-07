@@ -1,4 +1,4 @@
-import { memo, useState, useRef, useEffect, useMemo } from 'react';
+import { memo, useState, useRef, useEffect } from 'react';
 import { cn } from '@/lib/cn';
 import {
   Bell,
@@ -11,13 +11,12 @@ import {
   ArrowRight,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
-import { useDataStore } from '@/stores/use-data-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
 import { useNotificationStore } from '@/stores/use-notification-store';
-import { detectIssues } from '@/lib/issue-detector';
+import { useDetectedIssues } from '@/hooks/use-detected-issues';
 import { formatRelativeTime } from '@/lib/format';
-import type { DetectedIssue, IssueSeverity } from '@/lib/runtime-types';
+import type { IssueSeverity } from '@/lib/runtime-types';
 
 // ---------------------------------------------------------------------------
 // Real notifications are derived from the live event store via detectIssues()
@@ -64,12 +63,6 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
-  const network = useDataStore((s) => s.network);
-  const consoleMsgs = useDataStore((s) => s.console);
-  const stateEvents = useDataStore((s) => s.state);
-  const renderEvents = useDataStore((s) => s.renders);
-  const perfEvents = useDataStore((s) => s.performance);
-  const dbEvents = useDataStore((s) => s.database);
   const selectedProject = useAppStore((s) => s.selectedProject);
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
   const pmProjects = usePmStore((s) => s.projects);
@@ -84,13 +77,9 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   const markRead = useNotificationStore((s) => s.markRead);
   const markAllReadAction = useNotificationStore((s) => s.markAllRead);
 
-  // Same computation the Issues page uses: aggregate the live event arrays and
-  // run the shared detector. Reactive via zustand selectors + useMemo.
-  const issues: DetectedIssue[] = useMemo(() => {
-    const all = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
-    if (all.length === 0) return [];
-    return detectIssues(all);
-  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  // Shared, cross-component-memoized detection (same result the Issues page and
+  // overview use) — one computation per commit instead of three.
+  const issues = useDetectedIssues();
 
   // Stamp first-seen times for new alerts AND reconcile read-state against the
   // live detection set. Must run on the empty set too: detector ids are stable

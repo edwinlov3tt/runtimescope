@@ -306,6 +306,27 @@ pub async fn serve(
         crate::analytics_mosaic::MosaicClient::new(c)
     });
 
+    // Periodic fact sync — keep the cube fresh so forecast/trace don't each pay a
+    // full re-push. RUNTIMESCOPE_MOSAIC_SYNC_SECS (default 60, min 5).
+    if let Some(mc) = mosaic.clone() {
+        let bstore = store.clone();
+        let banalytics = analytics.clone();
+        let secs = std::env::var("RUNTIMESCOPE_MOSAIC_SYNC_SECS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(60)
+            .max(5);
+        tokio::spawn(async move {
+            let mut tick = tokio::time::interval(Duration::from_secs(secs));
+            loop {
+                tick.tick().await;
+                if let Err(e) = sync_facts(&bstore, &banalytics, &mc, None).await {
+                    eprintln!("[RuntimeScope] Mosaic periodic sync failed: {e}");
+                }
+            }
+        });
+    }
+
     let state = AppState {
         store,
         hub,
@@ -345,6 +366,7 @@ pub async fn serve(
         .route("/api/analytics/roles", get(analytics_roles).put(analytics_put_role))
         .route("/api/analytics/baselines", get(analytics_baselines).put(analytics_put_baseline))
         .route("/api/analytics/baselines/history", get(analytics_baseline_history))
+        .route("/api/analytics/baselines/whatif", post(analytics_baseline_whatif))
         .route(
             "/api/analytics/baselines/submissions",
             get(analytics_submissions).post(analytics_post_submission),
@@ -365,6 +387,7 @@ pub async fn serve(
         .route("/api/analytics/cohorts", get(analytics_cohorts))
         .route("/api/analytics/funnel", get(analytics_funnel))
         .route("/api/analytics/compare", get(analytics_compare))
+        .route("/api/analytics/narrative", get(analytics_narrative))
         .route("/api/analytics/users", get(analytics_users))
         .route("/api/analytics/users/{anon_id}", get(analytics_user_by_id))
         // pm/ project-manager surface (M5)
@@ -894,15 +917,16 @@ fn mosaic_error(e: String) -> Response {
     (StatusCode::BAD_GATEWAY, Json(json!({ "error": e, "code": "MOSAIC_ERROR" }))).into_response()
 }
 
-/// Build the ROI input cells from the event stream + analytics store and push
-/// them to the cube. Returns the number of cells written.
-async fn mosaic_sync_facts(
-    s: &AppState,
-    client: &crate::analytics_mosaic::MosaicClient,
+/// Build the ROI input cells (leaves) from the event stream + analytics store —
+/// the inputs the cube's rules read. Free fn (handles, not AppState) so the
+/// periodic sync + the baseline-whatif both reuse it.
+async fn build_facts_for(
+    store: &StoreHandle,
+    analytics: &AnalyticsStore,
     project: Option<&str>,
-) -> Result<usize, String> {
-    let events = s.store.events_by_type("custom", project).await;
-    let sessions = s.store.events_by_type("session", project).await;
+) -> Vec<crate::analytics_mosaic::Cell> {
+    let events = store.events_by_type("custom", project).await;
+    let sessions = store.events_by_type("session", project).await;
     let mut session_app: HashMap<String, String> = HashMap::new();
     for se in &sessions {
         if let (Some(sid), Some(app)) =
@@ -912,10 +936,20 @@ async fn mosaic_sync_facts(
         }
     }
     let baselines: HashMap<String, (f64, f64, bool)> =
-        s.analytics.list_baselines().into_iter().map(|b| (b.fn_name, (b.manual_min, b.tool_min, b.per_item))).collect();
-    let anon_role: HashMap<String, String> = s.analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
-    let role_rate: HashMap<String, f64> = s.analytics.roles().into_iter().map(|r| (r.role, r.hourly_rate)).collect();
-    let cells = crate::analytics_mosaic::build_facts(&events, &baselines, &anon_role, &role_rate, &session_app);
+        analytics.list_baselines().into_iter().map(|b| (b.fn_name, (b.manual_min, b.tool_min, b.per_item))).collect();
+    let anon_role: HashMap<String, String> = analytics.list_users().into_iter().map(|u| (u.anon_id, u.role)).collect();
+    let role_rate: HashMap<String, f64> = analytics.roles().into_iter().map(|r| (r.role, r.hourly_rate)).collect();
+    crate::analytics_mosaic::build_facts(&events, &baselines, &anon_role, &role_rate, &session_app)
+}
+
+/// Build + push the ROI facts to the cube. Returns the number of cells written.
+async fn sync_facts(
+    store: &StoreHandle,
+    analytics: &AnalyticsStore,
+    client: &crate::analytics_mosaic::MosaicClient,
+    project: Option<&str>,
+) -> Result<usize, String> {
+    let cells = build_facts_for(store, analytics, project).await;
     client.write_cells(&cells).await
 }
 
@@ -945,7 +979,7 @@ async fn analytics_mosaic_sync(
     }
     let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
     let project = q.get("project_id").map(String::as_str);
-    match mosaic_sync_facts(&s, &c, project).await {
+    match sync_facts(&s.store, &s.analytics, &c, project).await {
         Ok(n) => Json(json!({ "data": { "synced": n } })).into_response(),
         Err(e) => mosaic_error(e),
     }
@@ -964,7 +998,7 @@ async fn analytics_forecast(
     }
     let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
     let project = q.get("project_id").map(String::as_str);
-    if let Err(e) = mosaic_sync_facts(&s, &c, project).await {
+    if let Err(e) = sync_facts(&s.store, &s.analytics, &c, project).await {
         return mosaic_error(e);
     }
     let where_ = q.get("where").and_then(|w| serde_json::from_str::<Value>(w).ok()).unwrap_or_else(|| json!({}));
@@ -990,6 +1024,52 @@ async fn analytics_trace(
     };
     let coord: Vec<&str> = coord_str.split(',').collect();
     match c.trace(json!(coord)).await {
+        Ok(v) => Json(json!({ "data": v })).into_response(),
+        Err(e) => mosaic_error(e),
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct BaselineWhatifBody {
+    #[serde(rename = "fn")]
+    fn_name: String,
+    #[serde(rename = "manualMin")]
+    manual_min: f64,
+    #[serde(rename = "toolMin")]
+    tool_min: f64,
+}
+
+/// POST /api/analytics/baselines/whatif {fn, manualMin, toolMin} — preview a
+/// baseline edit's ROI impact WITHOUT persisting. Because baseline/rate are
+/// denormalized onto every leaf (research 0006 §3), this overrides `manual_min`/
+/// `tool_min` on **every leaf of the feature** then reads recomputed value/hours.
+/// Requires the Mosaic sidecar (else 503).
+async fn analytics_baseline_whatif(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Some(c) = s.mosaic.clone() else { return mosaic_not_configured() };
+    let Ok(b) = serde_json::from_str::<BaselineWhatifBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {fn, manualMin, toolMin}" }))).into_response();
+    };
+    // Cube must hold current facts for the override to land on real leaves.
+    if let Err(e) = sync_facts(&s.store, &s.analytics, &c, None).await {
+        return mosaic_error(e);
+    }
+    // One override pair per distinct leaf of the feature (events-cell marks a leaf).
+    let cells = build_facts_for(&s.store, &s.analytics, None).await;
+    let mut seen = std::collections::HashSet::new();
+    let mut overrides = Vec::new();
+    for cell in &cells {
+        if cell.measure == "events" && cell.coord.get(1).is_some_and(|f| f == &b.fn_name) && seen.insert(cell.coord.clone()) {
+            overrides.push(crate::analytics_mosaic::Cell { coord: cell.coord.clone(), measure: "manual_min".into(), value: b.manual_min });
+            overrides.push(crate::analytics_mosaic::Cell { coord: cell.coord.clone(), measure: "tool_min".into(), value: b.tool_min });
+        }
+    }
+    if overrides.is_empty() {
+        return Json(json!({ "data": { "fn": b.fn_name, "value": 0.0, "hours": 0.0, "note": "no usage for this feature" } })).into_response();
+    }
+    match c.whatif(&overrides, &["value", "hours"]).await {
         Ok(v) => Json(json!({ "data": v })).into_response(),
         Err(e) => mosaic_error(e),
     }
@@ -1157,23 +1237,13 @@ async fn analytics_cohorts(
     Json(json!({ "data": rows, "count": count })).into_response()
 }
 
-/// GET /api/analytics/compare?by=role|app&window=&project_id= — current-vs-prior
-/// per entity. value/$ is slice 3.
-async fn analytics_compare(
-    State(s): State<AppState>,
-    headers: HeaderMap,
-    Query(q): Query<HashMap<String, String>>,
-) -> Response {
-    if !http_authorized(&s, &headers) {
-        return unauthorized();
-    }
-    let by = q.get("by").map(String::as_str).unwrap_or("role");
-    let project = q.get("project_id").map(String::as_str);
-    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+/// Shared compare computation (used by /compare and /narrative): per-entity
+/// users/events/prev + value$/prevValue$ over the current vs prior window.
+/// Returns (rows, key_name `role`|`app`).
+async fn compute_compare(s: &AppState, by: &str, project: Option<&str>, window: &str) -> (Vec<Value>, &'static str) {
     let events = s.store.events_by_type("custom", project).await;
     let now = now_ms();
-    let ctx = roi_ctx(&s);
-    // Current + prior windows (for value$/prevValue$), same split the rollup uses.
+    let ctx = roi_ctx(s);
     let cur_cut = crate::analytics_rollups::window_cutoff(now, window).unwrap_or(now - 30 * 86_400_000);
     let prev_cut = cur_cut - (now - cur_cut);
     let ts = |e: &Value| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0);
@@ -1214,8 +1284,43 @@ async fn analytics_compare(
             }
         }
     }
+    (rows, key_name)
+}
+
+/// GET /api/analytics/compare?by=role|app&window=&project_id= — current-vs-prior
+/// per entity (users/events/value + prev).
+async fn analytics_compare(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let by = q.get("by").map(String::as_str).unwrap_or("role");
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let (rows, key_name) = compute_compare(&s, by, project, window).await;
     let count = rows.len();
     Json(json!({ "data": rows, "count": count, "by": key_name })).into_response()
+}
+
+/// GET /api/analytics/narrative?by=role|app&window= — the compare-page insight
+/// line generated from the compare data (collector-side; works without Mosaic).
+async fn analytics_narrative(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let by = q.get("by").map(String::as_str).unwrap_or("role");
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let (rows, key_name) = compute_compare(&s, by, project, window).await;
+    let n = crate::analytics_rollups::compare_narrative(&rows, key_name);
+    Json(json!({ "data": n })).into_response()
 }
 
 /// GET /api/analytics/users — anonymized end-users (NO PII), enriched with

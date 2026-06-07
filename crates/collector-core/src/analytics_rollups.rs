@@ -386,6 +386,31 @@ pub fn cohort_retention(events: &[Value], now: i64, weeks: usize) -> Vec<Value> 
     rows
 }
 
+/// Compare-page insight narrative, generated from the (value-enriched) compare
+/// rows. Collector-side so it works in the batteries-included default (the
+/// richer mc-narrative path is a Mosaic deploy option). `key_name` is `role`/`app`.
+pub fn compare_narrative(rows: &[Value], key_name: &str) -> Value {
+    let val = |r: &Value| r.get("value").and_then(Value::as_f64).unwrap_or(0.0);
+    let prev = |r: &Value| r.get("prevValue").and_then(Value::as_f64).unwrap_or(0.0);
+    let name = |r: &Value| r.get(key_name).and_then(Value::as_str).unwrap_or("?").to_string();
+    if rows.is_empty() {
+        return json!({ "text": "No data for this period yet.", "evidence": {} });
+    }
+    let noun = if key_name == "app" { "apps" } else { "roles" };
+    let top = rows.iter().max_by(|a, b| val(a).total_cmp(&val(b))).unwrap();
+    let down: Vec<String> = rows.iter().filter(|r| prev(r) > 0.0 && val(r) < prev(r)).map(name).collect();
+    let mut text = format!("{} leads ROI value at ${:.0} this period.", name(top), val(top));
+    if down.is_empty() {
+        text.push_str(&format!(" All {} {} grew vs the prior period.", rows.len(), noun));
+    } else {
+        text.push_str(&format!(" {} of {} {} down vs prior: {}.", down.len(), rows.len(), noun, down.join(", ")));
+    }
+    json!({
+        "text": text,
+        "evidence": { "top": name(top), "topValue": val(top), "nDown": down.len(), "down": down },
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -475,6 +500,23 @@ mod tests {
         assert_eq!(dir["users"], 0); // none current
         assert_eq!(dir["prevUsers"], 1); // C in prior window
         assert_eq!(dir["prevEvents"], 1);
+    }
+
+    #[test]
+    fn compare_narrative_calls_the_leader_and_decliners() {
+        let rows = vec![
+            json!({ "app": "cli", "value": 93.0, "prevValue": 80.0 }),
+            json!({ "app": "web", "value": 40.0, "prevValue": 55.0 }), // down
+        ];
+        let n = compare_narrative(&rows, "app");
+        let text = n["text"].as_str().unwrap();
+        assert!(text.contains("cli leads ROI value at $93"), "got: {text}");
+        assert!(text.contains("1 of 2 apps down vs prior: web"), "got: {text}");
+        assert_eq!(n["evidence"]["nDown"], 1);
+        assert_eq!(n["evidence"]["top"], "cli");
+        // all-grew path
+        let up = vec![json!({ "role": "A", "value": 10.0, "prevValue": 5.0 })];
+        assert!(compare_narrative(&up, "role")["text"].as_str().unwrap().contains("All 1 roles grew"));
     }
 
     #[test]

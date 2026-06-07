@@ -159,5 +159,6 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 | `RUNTIMESCOPE_MOSAIC_URL` | _unset_ | Mosaic `mc-daemon` sidecar URL (ADR-0013, slice 3b — analytics forecast/trace/narrative). Unset ⇒ the SQL ROI path is authoritative and those endpoints 503 `MOSAIC_NOT_CONFIGURED`. Loopback http. |
 | `RUNTIMESCOPE_MOSAIC_KEY` | _unset_ | Bearer token for the Mosaic daemon's `/api/v1` |
 | `RUNTIMESCOPE_MOSAIC_CUBE` | `roi` | Cube name the collector syncs ROI facts to / queries |
+| `RUNTIMESCOPE_MOSAIC_SYNC_SECS` | `60` | Period (s, min 5) of the background fact sync to the cube (only when Mosaic is configured) |
 
 Both the MCP server and standalone collector use the same default ports (6767/6768). Only one should run at a time. The SDK defaults to `ws://localhost:6767`. The dashboard Vite proxy defaults to `http://127.0.0.1:6768`.

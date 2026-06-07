@@ -98,6 +98,17 @@ impl MosaicClient {
         self.post("/api/v1/trace", json!({ "cube": self.cube, "coord": coord })).await
     }
 
+    /// In-memory what-if: override cells (no persist) and read recomputed `show`
+    /// measures. A baseline edit must override **every leaf** of the feature,
+    /// since baseline/rate are denormalized onto leaves (research 0006 §3).
+    pub async fn whatif(&self, overrides: &[Cell], show: &[&str]) -> Result<Value, String> {
+        let ov: Vec<Value> = overrides
+            .iter()
+            .map(|c| json!({ "coord": c.coord, "measure": c.measure, "value": c.value }))
+            .collect();
+        self.post("/api/v1/whatif", json!({ "cube": self.cube, "overrides": ov, "show": show })).await
+    }
+
     /// Sync input cells to the cube. The daemon's `/write` is per-cell (no batch
     /// endpoint yet — research 0006 follow-up), so this loops; on loopback each
     /// call is ~0.3ms. Stops + returns the error on the first failed write.

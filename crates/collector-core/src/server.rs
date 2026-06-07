@@ -351,13 +351,12 @@ pub async fn serve(
         let slow_ms = uptime_slow_ms();
         let secs = probe_secs.max(5);
         tokio::spawn(async move {
-            let client = probe_client();
             let mut tick = tokio::time::interval(Duration::from_secs(secs));
             let prune_every = (3600 / secs).max(1); // ~hourly
             let mut ticks: u64 = 0;
             loop {
                 tick.tick().await;
-                probe_all(&panalytics, &client, allow_private, slow_ms).await;
+                probe_all(&panalytics, allow_private, slow_ms).await;
                 ticks += 1;
                 if ticks.is_multiple_of(prune_every) {
                     panalytics.prune_uptime_checks(now_ms() - 90 * 86_400_000);
@@ -1145,16 +1144,6 @@ fn uptime_allow_private() -> bool {
     std::env::var("RUNTIMESCOPE_UPTIME_ALLOW_PRIVATE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
 }
 
-/// Probe HTTP client: short timeout, NO redirects (a redirect could point at an
-/// internal host — SSRF), rustls TLS for external https.
-fn probe_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(10))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .unwrap_or_default()
-}
-
 fn probe_target(app: &crate::analytics_store::MonitoredApp) -> String {
     match &app.probe_path {
         Some(p) if !p.is_empty() => format!("{}/{}", app.url.trim_end_matches('/'), p.trim_start_matches('/')),
@@ -1162,17 +1151,30 @@ fn probe_target(app: &crate::analytics_store::MonitoredApp) -> String {
     }
 }
 
-/// Probe one app: SSRF-guard (DNS re-check at probe time), time the GET, classify.
-/// A blocked/invalid target or transport error ⇒ down.
+/// Probe one app: SSRF-guard, then GET via a client **pinned to the validated IP**
+/// (so reqwest can't re-resolve the host to an attacker-flipped address — DNS
+/// rebinding), with a short timeout and NO redirects. Blocked/invalid target or
+/// transport error ⇒ down.
 async fn probe_app(
-    client: &reqwest::Client,
     app: &crate::analytics_store::MonitoredApp,
     allow_private: bool,
     slow_ms: u64,
 ) -> (u8, Option<i64>) {
     use crate::analytics_uptime::{classify, guard_probe_url, DOWN};
-    let url = match guard_probe_url(&probe_target(app), allow_private).await {
-        Ok(u) => u,
+    let (url, pin) = match guard_probe_url(&probe_target(app), allow_private).await {
+        Ok(v) => v,
+        Err(_) => return (DOWN, None),
+    };
+    let mut builder = reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none());
+    // Pin host → the IP we validated; reqwest then connects to it without a second
+    // DNS lookup. (When allow_private, pin is None and normal resolution is used.)
+    if let (Some(addr), Some(host)) = (pin, url.host_str()) {
+        builder = builder.resolve(host, addr);
+    }
+    let client = match builder.build() {
+        Ok(c) => c,
         Err(_) => return (DOWN, None),
     };
     let t0 = Instant::now();
@@ -1187,12 +1189,12 @@ async fn probe_app(
 
 /// Probe all enabled apps, record checks, and open/resolve incidents on state
 /// transitions. Returns the count probed. Shared by the background task + check-all.
-async fn probe_all(analytics: &AnalyticsStore, client: &reqwest::Client, allow_private: bool, slow_ms: u64) -> usize {
+async fn probe_all(analytics: &AnalyticsStore, allow_private: bool, slow_ms: u64) -> usize {
     use crate::analytics_uptime::{DOWN, UP};
     let apps = analytics.list_apps();
     let mut n = 0;
     for app in apps.iter().filter(|a| a.enabled) {
-        let (state, ms) = probe_app(client, app, allow_private, slow_ms).await;
+        let (state, ms) = probe_app(app, allow_private, slow_ms).await;
         let _ = analytics.record_check(&app.id, "probe", state, ms);
         let ongoing = analytics.ongoing_incident(&app.id).is_some();
         if state == UP {
@@ -1345,7 +1347,7 @@ async fn analytics_check_all(State(s): State<AppState>, headers: HeaderMap) -> R
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
-    let n = probe_all(&s.analytics, &probe_client(), uptime_allow_private(), uptime_slow_ms()).await;
+    let n = probe_all(&s.analytics, uptime_allow_private(), uptime_slow_ms()).await;
     Json(json!({ "data": { "probed": n } })).into_response()
 }
 

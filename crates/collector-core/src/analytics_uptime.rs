@@ -5,7 +5,7 @@
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
-use std::net::IpAddr;
+use std::net::{IpAddr, SocketAddr};
 
 const DAY_MS: i64 = 86_400_000;
 
@@ -102,30 +102,34 @@ pub fn is_blocked_ip(ip: &IpAddr) -> bool {
 
 /// Validate a probe target: http(s) only, and (unless `allow_private`) its host
 /// must not resolve to a blocked IP — the active-probe SSRF guard. Returns the
-/// parsed URL on success. Async (DNS at probe time defeats add-time TOCTOU).
-pub async fn guard_probe_url(raw: &str, allow_private: bool) -> Result<reqwest::Url, String> {
+/// parsed URL and, when not `allow_private`, the **validated socket address** the
+/// caller MUST pin the connection to (via `reqwest`'s `.resolve()`), so the HTTP
+/// client cannot perform a second, attacker-controlled DNS lookup (DNS rebinding).
+/// `None` addr ⇒ `allow_private` (operator opted in; no pin needed).
+pub async fn guard_probe_url(raw: &str, allow_private: bool) -> Result<(reqwest::Url, Option<SocketAddr>), String> {
     let url = reqwest::Url::parse(raw).map_err(|e| format!("invalid URL: {e}"))?;
     match url.scheme() {
         "http" | "https" => {}
         s => return Err(format!("scheme '{s}' not allowed (http/https only)")),
     }
     if allow_private {
-        return Ok(url);
+        return Ok((url, None));
     }
     let host = url.host_str().ok_or_else(|| "URL has no host".to_string())?;
     let port = url.port_or_known_default().unwrap_or(80);
-    let addrs = tokio::net::lookup_host((host, port)).await.map_err(|e| format!("DNS resolve failed: {e}"))?;
-    let mut resolved = false;
-    for addr in addrs {
-        resolved = true;
+    let addrs: Vec<SocketAddr> =
+        tokio::net::lookup_host((host, port)).await.map_err(|e| format!("DNS resolve failed: {e}"))?.collect();
+    if addrs.is_empty() {
+        return Err("host did not resolve".to_string());
+    }
+    for addr in &addrs {
         if is_blocked_ip(&addr.ip()) {
             return Err(format!("blocked target (private/loopback/link-local IP {})", addr.ip()));
         }
     }
-    if !resolved {
-        return Err("host did not resolve".to_string());
-    }
-    Ok(url)
+    // Every resolved address passed — pin to the first so the HTTP client connects
+    // to a validated IP rather than re-resolving to an attacker-flipped one.
+    Ok((url, Some(addrs[0])))
 }
 
 #[cfg(test)]

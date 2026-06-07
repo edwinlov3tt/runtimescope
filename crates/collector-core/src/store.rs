@@ -167,6 +167,13 @@ impl StoreHandle {
     /// Open the store at `data_dir` (creating it), run WAL recovery, and return
     /// once recovery is complete (so `/readyz` is honest about being warm).
     pub async fn open(data_dir: PathBuf) -> Result<StoreHandle, String> {
+        Self::open_with_cap(data_dir, None).await
+    }
+
+    /// Like `open`, but with an explicit hot-tier cap override. Tests use a tiny
+    /// cap to exercise the capped (`events_by_type`) vs full-history
+    /// (`events_by_type_full`) read paths without inserting 10k+ rows.
+    pub(crate) async fn open_with_cap(data_dir: PathBuf, cap_override: Option<usize>) -> Result<StoreHandle, String> {
         let (tx, mut rx) = mpsc::channel::<Cmd>(1024);
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
         // Live feed for dashboard WS clients. Lagging/slow clients drop frames
@@ -212,11 +219,13 @@ impl StoreHandle {
             // in SQLite (the beyond-Node win), but the read API + buffer_size gauge
             // present only the newest `cap` rows so the observable hot-tier contract
             // matches Node. `RUNTIMESCOPE_BUFFER_SIZE` (default 10k) per the env spec.
-            let cap: usize = std::env::var("RUNTIMESCOPE_BUFFER_SIZE")
-                .ok()
-                .and_then(|v| v.parse::<usize>().ok())
-                .filter(|n| *n > 0)
-                .unwrap_or(10_000);
+            let cap: usize = cap_override.unwrap_or_else(|| {
+                std::env::var("RUNTIMESCOPE_BUFFER_SIZE")
+                    .ok()
+                    .and_then(|v| v.parse::<usize>().ok())
+                    .filter(|n| *n > 0)
+                    .unwrap_or(10_000)
+            });
             // Cumulative per-type accept counter (Node's runtimescope_events_total).
             let mut counters: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
 
@@ -944,19 +953,27 @@ fn query_session_history(conn: &Connection, project: &str, limit: usize) -> Vec<
 /// within the **hot tier**: the newest `cap` events across the whole store
 /// (Node's ring-buffer window), then filtered by type/project. This bounds the
 /// read API to the configured buffer size while SQLite keeps full history.
-/// Filter by type FIRST over full durable history (no all-types hot-tier cap) —
-/// for analytics aggregations that need the whole `custom`/`session` stream.
-/// Newest-first. (`query_events` caps the newest N across ALL types then filters,
-/// which is correct for the recent-activity dashboard pages but starves a
-/// low-frequency type like `custom` in a busy app.)
+/// Upper bound on a single analytics type-filtered read — far above the 10k
+/// hot-tier (so it doesn't starve `custom` like the all-types cap did) but bounded
+/// so a `RETENTION_DAYS=0` store can't make one read load unbounded rows into
+/// memory. ~the newest 200k events of the type; raise if you need deeper history.
+const ANALYTICS_READ_CAP: usize = 200_000;
+
+/// Filter by type FIRST over (near-)full durable history — for analytics
+/// aggregations that need the whole `custom`/`session` stream, not the newest N
+/// across ALL types. Newest-first, bounded by [`ANALYTICS_READ_CAP`].
+/// (`query_events` caps the newest N across ALL types then filters, which is
+/// correct for the recent-activity dashboard pages but starves a low-frequency
+/// type like `custom` in a busy app.)
 fn query_events_typed(conn: &Connection, event_type: &str, project: Option<&str>) -> Vec<Value> {
     let mut stmt = match conn.prepare(
-        "SELECT data FROM events WHERE event_type = ?1 AND (?2 IS NULL OR project = ?2) ORDER BY id DESC",
+        "SELECT data FROM events WHERE event_type = ?1 AND (?2 IS NULL OR project = ?2) ORDER BY id DESC LIMIT ?3",
     ) {
         Ok(s) => s,
         Err(_) => return Vec::new(),
     };
-    let rows = stmt.query_map(rusqlite::params![event_type, project], |r| r.get::<_, String>(0));
+    let rows =
+        stmt.query_map(rusqlite::params![event_type, project, ANALYTICS_READ_CAP as i64], |r| r.get::<_, String>(0));
     let mut out = Vec::new();
     if let Ok(rows) = rows {
         for row in rows.flatten() {
@@ -1114,6 +1131,34 @@ mod tests {
         let r0 = store.prune(0, 10).await;
         assert_eq!(r0.events_deleted, 0, "retention 0 keeps events forever");
         assert_eq!(store.event_count(Some("proj")).await, 2);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Fix #1 (analytics read truncation): events_by_type_full must return custom
+    // events that fall OUTSIDE the all-types hot-tier cap window — the capped
+    // events_by_type (the OLD analytics read path) starves a low-frequency type.
+    // Tiny cap (5) so we exceed it with a handful of rows, not 10k.
+    #[tokio::test]
+    async fn events_by_type_full_bypasses_the_all_types_hot_tier_cap() {
+        let dir = std::env::temp_dir().join(format!("store-fullcap-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open_with_cap(dir.clone(), Some(5)).await.unwrap();
+
+        let custom = |i: u32, ts: i64| {
+            serde_json::json!({ "eventId": format!("c{i}"), "sessionId": "s1", "timestamp": ts, "eventType": "custom", "name": "geocode" })
+        };
+        let net = |i: u32, ts: i64| {
+            serde_json::json!({ "eventId": format!("n{i}"), "sessionId": "s1", "timestamp": ts, "eventType": "network", "url": "https://x", "method": "GET", "status": 200 })
+        };
+        // 3 custom (oldest ids), then 8 network (newest) → total ≫ cap of 5.
+        store.add_batch("p".into(), (0..3).map(|i| custom(i, 100 + i as i64)).collect()).await.unwrap();
+        store.add_batch("p".into(), (0..8).map(|i| net(i, 200 + i as i64)).collect()).await.unwrap();
+
+        // Capped (OLD path): newest 5 of ALL types are network → custom starved → 0.
+        assert_eq!(store.events_by_type("custom", None).await.len(), 0, "hot-tier cap starves custom");
+        // Full (the FIX): the whole custom stream regardless of the all-types cap.
+        assert_eq!(store.events_by_type_full("custom", None).await.len(), 3, "full read returns custom past the cap");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

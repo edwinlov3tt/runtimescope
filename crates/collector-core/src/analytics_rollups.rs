@@ -75,13 +75,16 @@ pub fn overview(events: &[Value], now: i64, window: &str, invited: usize) -> Val
         (HashSet::new(), HashSet::new(), HashSet::new());
     let mut total = 0usize;
     for e in events {
-        if cutoff.is_some_and(|c| ts_of(e) < c) {
+        let t = ts_of(e);
+        // Drop future-dated (clock-skewed) events, matching active_users/trends/
+        // cohort so the same bad input is treated consistently across endpoints.
+        if t > now || cutoff.is_some_and(|c| t < c) {
             continue;
         }
         total += 1;
         if let Some(a) = anon_of(e) {
             active.insert(a);
-            let age = now - ts_of(e);
+            let age = now - t;
             if age <= DAY_MS {
                 dau.insert(a);
             }
@@ -98,7 +101,9 @@ pub fn overview(events: &[Value], now: i64, window: &str, invited: usize) -> Val
     json!({
         "activeUsers": active.len(),
         "invited": invited,
-        "adoptionPct": pct(active.len(), invited),
+        // Bound active by invited so adoption never exceeds 100% (an anonId on an
+        // event but absent from analytics_users — pre-identify / wiped store).
+        "adoptionPct": pct(active.len().min(invited), invited),
         "totalEvents": total,
         "eventsPerDay": (total as f64 / days).round(),
         "dau": dau.len(),
@@ -233,11 +238,17 @@ pub fn funnel(events: &[Value], now: i64, invited: usize) -> Value {
         let l = last.entry(a).or_insert(0);
         *l = (*l).max(ts_of(e));
     }
+    // Clamp each stage at `invited` (the funnel top) so an anonId present on an
+    // event but absent from analytics_users can't make a stage exceed identified
+    // and invert the funnel. Stages stay monotonic (repeat/power ⊆ activated).
+    let activated = sessions.len().min(invited);
+    let repeat = sessions.values().filter(|s| s.len() >= 2).count().min(invited);
+    let power = last.values().filter(|&&t| now - t <= 7 * DAY_MS).count().min(invited);
     json!({
         "identified": invited,
-        "activated": sessions.len(),
-        "repeat": sessions.values().filter(|s| s.len() >= 2).count(),
-        "power": last.values().filter(|&&t| now - t <= 7 * DAY_MS).count(),
+        "activated": activated,
+        "repeat": repeat,
+        "power": power,
     })
 }
 

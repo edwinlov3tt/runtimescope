@@ -603,7 +603,14 @@ async fn analytics_identify(
     let role = b.role.filter(|r| !r.trim().is_empty());
     let ip = if b.consent == Some(true) { s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string()) } else { None };
     match s.analytics.identify(b.email.trim(), role.as_deref(), b.consent, ip.as_deref()) {
-        Ok(anon) => (StatusCode::OK, Json(json!({ "data": { "anonId": anon, "role": role, "consent": b.consent } }))).into_response(),
+        Ok(anon) => {
+            // Echo the PERSISTED role/consent (post-COALESCE), not the request — a
+            // re-identify that omits them must report the durable value, not null.
+            let u = s.analytics.get_user(&anon);
+            let role_out = u.as_ref().map(|u| u.role.clone());
+            let consent_out = u.as_ref().map(|u| u.consent);
+            (StatusCode::OK, Json(json!({ "data": { "anonId": anon, "role": role_out, "consent": consent_out } }))).into_response()
+        }
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     }
 }
@@ -4372,6 +4379,7 @@ mod slice_g_dev_server_tests {
         let store = StoreHandle::open(dir.join("data")).await.unwrap();
         let pm = PmStore::open(&dir.join("pm.db")).unwrap();
         let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let analytics_probe = analytics.clone(); // to assert the PII/consent boundary post-request
         let state = AppState {
             store,
             hub: CommandHub::new(),
@@ -4428,6 +4436,25 @@ mod slice_g_dev_server_tests {
         assert_eq!(s, 200);
         let (s, _v) = req(&app, "GET", "/api/analytics/users/ZZZZZZZZ", None).await;
         assert_eq!(s, 404);
+
+        // Fix #4 handler half: an identify WITHOUT consent must NOT capture the IP
+        // (done last so it doesn't perturb the user-count assertion above).
+        let mut noconsent = Request::builder()
+            .method("POST")
+            .uri("/api/analytics/identify")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"email":"no.consent@company.com","consent":false}"#.to_string()))
+            .unwrap();
+        noconsent.extensions_mut().insert(axum::extract::ConnectInfo(
+            "203.0.113.9:5000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let (s, v) = read_json(app.clone().oneshot(noconsent).await.unwrap()).await;
+        assert_eq!(s, 200);
+        let nc_anon = v["data"]["anonId"].as_str().unwrap().to_string();
+        assert!(
+            analytics_probe.get_pii(&nc_anon).map(|p| p.ip).unwrap_or(None).is_none(),
+            "IP must not be stored without consent"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

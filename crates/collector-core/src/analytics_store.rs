@@ -210,11 +210,16 @@ impl AnalyticsStore {
             params![anon, role, consent_i, now],
         )
         .map_err(|e| e.to_string())?;
+        // On an explicit consent revocation, CLEAR any previously-stored IP (don't
+        // COALESCE-preserve it) — honoring the consent boundary on revoke, not just
+        // on capture. Otherwise preserve the prior IP when this call omits one.
+        let revoke = consent == Some(false);
         conn.execute(
             "INSERT INTO analytics_user_pii (anon_id, email, ip) VALUES (?1, ?2, ?3)
              ON CONFLICT(anon_id) DO UPDATE SET
-               email = excluded.email, ip = COALESCE(excluded.ip, analytics_user_pii.ip)",
-            params![anon, email.trim().to_lowercase(), ip],
+               email = excluded.email,
+               ip = CASE WHEN ?4 THEN NULL ELSE COALESCE(excluded.ip, analytics_user_pii.ip) END",
+            params![anon, email.trim().to_lowercase(), ip, revoke],
         )
         .map_err(|e| e.to_string())?;
         Ok(anon)
@@ -237,8 +242,11 @@ impl AnalyticsStore {
             },
         )
         .optional()
-        .ok()
-        .flatten()
+        .unwrap_or_else(|e| {
+            // A real DB error must not masquerade as a 404 "not found".
+            tracing::warn!("analytics get_user failed: {e}");
+            None
+        })
     }
 
     pub fn list_users(&self) -> Vec<AnalyticsUser> {
@@ -274,8 +282,10 @@ impl AnalyticsStore {
             |r| Ok(AnalyticsUserPii { anon_id: r.get(0)?, email: r.get(1)?, ip: r.get(2)? }),
         )
         .optional()
-        .ok()
-        .flatten()
+        .unwrap_or_else(|e| {
+            tracing::warn!("analytics get_pii failed: {e}");
+            None
+        })
     }
 
     pub fn roles(&self) -> Vec<AnalyticsRole> {
@@ -304,7 +314,6 @@ impl AnalyticsStore {
 
     /// Insert/update a baseline, appending a history row (audit trail, ADR-0012).
     #[allow(clippy::too_many_arguments)] // baseline fields are clearer flat than in a struct here
-    #[allow(clippy::too_many_arguments)]
     pub fn upsert_baseline(
         &self,
         fn_name: &str,
@@ -610,6 +619,11 @@ mod tests {
 
         // first_seen stays fixed across re-identify; last_seen advances.
         assert!(u.first_seen <= u.last_seen);
+
+        // Consent revocation CLEARS the stored IP (not just stops capturing new).
+        s.identify("sara.chen@company.com", None, Some(false), None).unwrap();
+        assert!(!s.get_user(&a1).unwrap().consent, "consent revoked");
+        assert!(s.get_pii(&a1).unwrap().ip.is_none(), "IP cleared on consent revocation");
 
         let _ = std::fs::remove_file(&path);
     }

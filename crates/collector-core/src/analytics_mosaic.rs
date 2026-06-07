@@ -158,10 +158,13 @@ pub fn build_facts(
         let app = s(e, "sessionId").and_then(|sid| session_app.get(sid)).cloned().unwrap_or_else(|| "unknown".to_string());
         let day = day_bucket(e.get("timestamp").and_then(Value::as_i64).unwrap_or(0));
         // Present count honored even when 0 (clamped ≥0); absent ⇒ 1 — matches
-        // analytics_roi::qty_of so the cube inputs agree with the SQL oracle.
-        let count = match e
-            .get("properties")
-            .and_then(|p| p.get("count").or_else(|| p.get("items")))
+        // analytics_roi::qty_of (incl. the top-level `count` fallback) so the cube
+        // inputs agree with the SQL oracle.
+        let props = e.get("properties");
+        let count = match props
+            .and_then(|p| p.get("count"))
+            .or_else(|| props.and_then(|p| p.get("items")))
+            .or_else(|| e.get("count"))
             .and_then(Value::as_f64)
         {
             Some(v) => v.max(0.0),

@@ -150,5 +150,11 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 | `RUNTIMESCOPE_BUFFER_SIZE` | `10000` | Hot-tier read window — caps how many newest events the read API + `buffer_size` gauge return (the durable store keeps more) |
 | `RUNTIMESCOPE_RETENTION_DAYS` | `90` | Retention window — a daily sweep deletes stored events + session snapshots older than this and `VACUUM`s. `0` keeps events forever. (The Rust collector stores durably with no ring eviction, so this bounds `collector.db` growth.) |
 | `RUNTIMESCOPE_MAX_SNAPSHOTS` | `10` | Max `VACUUM INTO` snapshot backups kept under `~/.runtimescope/snapshots/`; older ones are pruned by the same sweep |
+| `RUNTIMESCOPE_HOST` | `127.0.0.1` | Standalone collector bind address (ADR-0010). Set `0.0.0.0` to expose on all interfaces — only behind a reverse proxy/tunnel with TLS + auth. The embedded MCP collector always binds loopback. |
+| `RUNTIMESCOPE_INGEST_RATE` | `120` | Per-client ingest rate limit, sustained req/s for `POST /api/events` + the SDK WS handshake (ADR-0010). `0` disables. Loopback clients are exempt. |
+| `RUNTIMESCOPE_INGEST_BURST` | `2×rate` | Token-bucket burst size for the ingest limiter |
+| `RUNTIMESCOPE_TRUST_PROXY` | _unset_ | Set `1` when behind a reverse proxy/tunnel so the rate limiter keys on the real client IP (`CF-Connecting-IP` / `X-Forwarded-For`) instead of the proxy's address |
+| `RUNTIMESCOPE_MCP_TRANSPORT` | `stdio` | MCP transport: `stdio` (local default) or `http` (Streamable HTTP for remote access, ADR-0011; equivalent to `mcp --http`) |
+| `RUNTIMESCOPE_MCP_HTTP_PORT` | `6770` | Port for the remote MCP HTTP transport (distinct from the collector ports); bearer-gated, requires `RUNTIMESCOPE_AUTH_TOKEN` |
 
 Both the MCP server and standalone collector use the same default ports (6767/6768). Only one should run at a time. The SDK defaults to `ws://localhost:6767`. The dashboard Vite proxy defaults to `http://127.0.0.1:6768`.

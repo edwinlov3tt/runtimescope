@@ -22,7 +22,7 @@ use crate::store::StoreHandle;
 use axum::{
     extract::{
         ws::{CloseFrame, Message, Utf8Bytes, WebSocket, WebSocketUpgrade},
-        Path, Query, State,
+        ConnectInfo, Path, Query, State,
     },
     http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
@@ -32,6 +32,7 @@ use axum::{
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use tokio::sync::mpsc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -88,12 +89,162 @@ impl Drop for StartGuard {
     }
 }
 
+/// Token-bucket ingest rate limiter, keyed per **remote** client (ADR-0010
+/// hardening). Guards `POST /api/events` + the SDK WS handshake from a flooding
+/// client. Loopback is never limited (local dev / a same-host proxy's own
+/// address). Behind a reverse proxy/tunnel set `RUNTIMESCOPE_TRUST_PROXY=1` so
+/// the real client IP (`CF-Connecting-IP` / `X-Forwarded-For`) keys the bucket
+/// instead of the proxy's loopback address.
+struct RateLimiter {
+    enabled: bool,
+    trust_proxy: bool,
+    capacity: f64,      // burst size (tokens)
+    refill_per_sec: f64, // sustained requests/sec per client
+    buckets: Mutex<HashMap<IpAddr, (f64, Instant)>>,
+}
+
+impl RateLimiter {
+    fn from_env() -> Self {
+        // RUNTIMESCOPE_INGEST_RATE = sustained req/s per client (0 disables).
+        // Default 120/s (an SDK batches ~10/s) with a 2× burst — generous for
+        // legit use, a hard ceiling on a runaway/malicious client.
+        let rate = std::env::var("RUNTIMESCOPE_INGEST_RATE")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|r| *r >= 0.0)
+            .unwrap_or(120.0);
+        let burst = std::env::var("RUNTIMESCOPE_INGEST_BURST")
+            .ok()
+            .and_then(|v| v.trim().parse::<f64>().ok())
+            .filter(|b| *b > 0.0)
+            .unwrap_or(rate * 2.0);
+        RateLimiter {
+            enabled: rate > 0.0,
+            trust_proxy: std::env::var("RUNTIMESCOPE_TRUST_PROXY").as_deref() == Ok("1"),
+            capacity: burst.max(1.0),
+            refill_per_sec: rate,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Consume one token for this client. Returns true if allowed. Loopback and
+    /// unresolvable clients are always allowed; disabled ⇒ always allowed.
+    fn allow(&self, peer: Option<SocketAddr>, headers: &HeaderMap) -> bool {
+        if !self.enabled {
+            return true;
+        }
+        let Some(ip) = self.client_ip(peer, headers) else {
+            return true;
+        };
+        if ip.is_loopback() {
+            return true;
+        }
+        let now = Instant::now();
+        let mut buckets = self.buckets.lock().unwrap();
+        // Opportunistic eviction so distinct attacker IPs can't leak memory:
+        // when the map grows, drop buckets that have fully refilled (idle).
+        if buckets.len() > 10_000 {
+            buckets.retain(|_, (tokens, last)| {
+                *tokens + now.duration_since(*last).as_secs_f64() * self.refill_per_sec
+                    < self.capacity
+            });
+        }
+        let (tokens, last) = buckets.entry(ip).or_insert((self.capacity, now));
+        let elapsed = now.duration_since(*last).as_secs_f64();
+        *tokens = (*tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        *last = now;
+        if *tokens >= 1.0 {
+            *tokens -= 1.0;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn client_ip(&self, peer: Option<SocketAddr>, headers: &HeaderMap) -> Option<IpAddr> {
+        if self.trust_proxy {
+            // CF-Connecting-IP first (Cloudflare), then the first X-Forwarded-For hop.
+            for h in ["cf-connecting-ip", "x-forwarded-for"] {
+                if let Some(first) = headers
+                    .get(h)
+                    .and_then(|v| v.to_str().ok())
+                    .and_then(|v| v.split(',').next())
+                {
+                    if let Ok(ip) = first.trim().parse::<IpAddr>() {
+                        return Some(ip);
+                    }
+                }
+            }
+        }
+        peer.map(|p| p.ip())
+    }
+}
+
+#[cfg(test)]
+mod rate_limit_tests {
+    use super::*;
+
+    fn limiter(enabled: bool, trust_proxy: bool, capacity: f64, refill: f64) -> RateLimiter {
+        RateLimiter {
+            enabled,
+            trust_proxy,
+            capacity,
+            refill_per_sec: refill,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+    fn sock(s: &str) -> Option<SocketAddr> {
+        Some(s.parse().unwrap())
+    }
+
+    #[test]
+    fn throttles_remote_after_burst_exempts_loopback_and_disabled() {
+        let h = HeaderMap::new();
+        let rl = limiter(true, false, 3.0, 0.0); // burst 3, no refill
+        let remote = sock("203.0.113.5:4000");
+        assert!(rl.allow(remote, &h));
+        assert!(rl.allow(remote, &h));
+        assert!(rl.allow(remote, &h));
+        assert!(!rl.allow(remote, &h), "4th over the burst must be denied");
+
+        // loopback is never limited, even past the burst
+        let lo = sock("127.0.0.1:9");
+        for _ in 0..10 {
+            assert!(rl.allow(lo, &h), "loopback must be exempt");
+        }
+
+        // disabled ⇒ always allow
+        let off = limiter(false, false, 1.0, 0.0);
+        for _ in 0..10 {
+            assert!(off.allow(remote, &h));
+        }
+    }
+
+    #[test]
+    fn trust_proxy_keys_on_forwarded_client_ip() {
+        let rl = limiter(true, true, 1.0, 0.0); // burst 1
+        let proxy = sock("127.0.0.1:1"); // the proxy's own (loopback) socket
+        let mut h = HeaderMap::new();
+        h.insert("x-forwarded-for", "198.51.100.7, 10.0.0.1".parse().unwrap());
+        // Keyed on the forwarded client IP — NOT exempted as loopback, and the
+        // 2nd request from the same client is throttled.
+        assert!(rl.allow(proxy, &h));
+        assert!(!rl.allow(proxy, &h), "same forwarded client must be throttled");
+        // A different forwarded client gets its own bucket.
+        let mut h2 = HeaderMap::new();
+        h2.insert("cf-connecting-ip", "198.51.100.99".parse().unwrap());
+        assert!(rl.allow(proxy, &h2));
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
     store: StoreHandle,
     hub: CommandHub,
     pm: PmStore,
     auth: AuthManager,
+    /// Per-client ingest rate limiter (POST /api/events + SDK WS handshake).
+    rate: Arc<RateLimiter>,
     started: Instant,
     version: String,
     dev_servers: ProcMap,
@@ -138,6 +289,7 @@ pub async fn serve(
         hub,
         pm,
         auth: AuthManager::for_mode(auth_mode),
+        rate: Arc::new(RateLimiter::from_env()),
         started: Instant::now(),
         version,
         dev_servers,
@@ -265,9 +417,11 @@ pub async fn serve(
     let http_listener = tokio::net::TcpListener::bind((host, http_port)).await?;
     let ws_listener = tokio::net::TcpListener::bind((host, ws_port)).await?;
 
+    // into_make_service_with_connect_info so handlers can read the peer SocketAddr
+    // (the rate limiter's client key when not behind a trusted proxy).
     tokio::try_join!(
-        async { axum::serve(http_listener, http).await },
-        async { axum::serve(ws_listener, ws).await },
+        async { axum::serve(http_listener, http.into_make_service_with_connect_info::<SocketAddr>()).await },
+        async { axum::serve(ws_listener, ws.into_make_service_with_connect_info::<SocketAddr>()).await },
     )?;
     Ok(())
 }
@@ -312,6 +466,10 @@ fn http_authorized(s: &AppState, headers: &HeaderMap) -> bool {
 
 fn unauthorized() -> Response {
     (StatusCode::UNAUTHORIZED, Json(json!({ "error": "Unauthorized", "code": "AUTH_FAILED" }))).into_response()
+}
+
+fn too_many_requests() -> Response {
+    (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too Many Requests", "code": "RATE_LIMITED" }))).into_response()
 }
 
 fn forbidden(msg: &str) -> Response {
@@ -518,7 +676,17 @@ fn apply_filters(data: &mut Vec<Value>, q: &HashMap<String, String>) {
 /// Body: `{ sessionId, appName, projectId, events: [...] }`. Returns the ingest
 /// receipt `{ accepted, dropped, rejected, sessionId }`; 200 if anything was
 /// accepted, 429 if all were rejected, 400 on an empty/invalid payload.
-async fn post_events(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+async fn post_events(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    // Rate-limit before auth so a flood is shed cheaply (and can't hammer the
+    // constant-time token compare). Per remote client; loopback is exempt.
+    if !s.rate.allow(Some(peer), &headers) {
+        return too_many_requests();
+    }
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
@@ -2683,8 +2851,17 @@ async fn pm_git_commit(State(s): State<AppState>, headers: HeaderMap, Path(id): 
 
 // ---- WebSocket ----
 
-async fn ws_upgrade(ws: WebSocketUpgrade, State(s): State<AppState>) -> impl IntoResponse {
-    ws.on_upgrade(move |socket| handle_socket(socket, s))
+async fn ws_upgrade(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    ws: WebSocketUpgrade,
+) -> Response {
+    // Shed SDK connection floods before the upgrade (per remote client; loopback exempt).
+    if !s.rate.allow(Some(peer), &headers) {
+        return too_many_requests();
+    }
+    ws.on_upgrade(move |socket| handle_socket(socket, s)).into_response()
 }
 
 /// `GET /api/ws/events` (HTTP port) — the dashboard's live feed. The SPA's
@@ -3168,6 +3345,7 @@ mod slice_g_dev_server_tests {
             hub: CommandHub::new(),
             pm,
             auth: AuthManager::for_mode(AuthMode::Standalone),
+            rate: Arc::new(RateLimiter::from_env()),
             started: Instant::now(),
             version: crate::VERSION.to_string(),
             dev_servers: Arc::new(Mutex::new(HashMap::new())),

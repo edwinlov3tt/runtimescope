@@ -199,4 +199,7 @@ Claude Code + the MCP-connector API today.
   bearer-injection is now optional.
 - ✅ **DSN single-443 mode** — landed; the bare
   `runtimescopes://proj_xxx:token@ingest.example.com` resolves to the 443 domain.
-- **Ingest rate-limiting / quota** on `POST /api/events` + the WS handshake.
+- ✅ **Ingest rate-limiting** — landed: per-client token bucket on `POST /api/events`
+  + the SDK WS handshake (`RUNTIMESCOPE_INGEST_RATE` / `_BURST`, default 120/s).
+  **Behind this tunnel, set `RUNTIMESCOPE_TRUST_PROXY=1`** so it keys on the real
+  client IP (`CF-Connecting-IP`) rather than the proxy's loopback address.

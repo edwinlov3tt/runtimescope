@@ -20,7 +20,12 @@
 | 7 | **LOW** | Infra page is a hardcoded static placeholder (`PLATFORMS` constant); no endpoint exists | Collector (feature gap) |
 | 8 | **LOW** | Database "Performance" tab renders a search box wired to a no-op | Dashboard |
 | 9 | **LOW** | `SessionBar` fallback renders fake `a06af01e` / `v0.9.3` / `0m 0s` if `items` ever omitted (latent) | Dashboard |
+| 10 | **MEDIUM** | Notification bell renders 7 fabricated alerts (`SAMPLE_NOTIFICATIONS`) + fake unread badge — see [Category 4](#category-4--dead--cosmetic-controls-clickable-but-inert--hardcoded-chrome) | Dashboard |
+| 11 | **MEDIUM** | Tasks "Files" tab + composer + Open/Add-to-Board buttons are dead (hardcoded empty, no handlers) | Dashboard |
+| 12 | **LOW-MED** | Header chrome mostly inert: "Full view", "Show hidden", `⌘K` search, "Today, Apr 6" date, avatar — all no-op/hardcoded | Dashboard |
 | — | info | KitchenSink showcase is full of mock data but unreachable from real nav | (none) |
+
+> **Categories 1–3** (below) are wire-protocol / data drift. **[Category 4](#category-4--dead--cosmetic-controls-clickable-but-inert--hardcoded-chrome)** is the full catalog of dead buttons, no-op handlers, and hardcoded chrome (findings 10–12 + more).
 
 **Live-data verdict summary:** 10 data pages are correctly live (console, network, renders, performance, state, database, breadcrumbs, issues, overview, api-map — all read the WS-fed `useDataStore`). 2 self-poll (sessions 3s, events 5s) — correct, since their data isn't an `appendEvent` event type. The real gaps are **finding #1** (live filter drops events) and **#5** (processes) and **#2** (dev-server).
 
@@ -138,6 +143,49 @@ export async function clearEvents(): Promise<boolean> {
 
 ---
 
+## Category 4 — Dead & cosmetic controls (clickable-but-inert / hardcoded chrome)
+
+A second pass found a cluster of interactive-looking controls that do nothing, and hardcoded values rendered as if live. None are wire-protocol drift, but all are user-facing "this lies / this is dead." Checks [5]–[7] of the detector catch the machine-detectable subset; the decorative `<div>` chrome (items marked † below) is documented here but not auto-detected (it's `cursor-pointer` divs without `onClick`, too false-positive-prone to gate on).
+
+### Dead buttons — click does nothing (no handler)
+
+| Severity | Control | Location | Evidence |
+|----------|---------|----------|----------|
+| MEDIUM | Tasks **"Files" tab** is a permanent dead-end | `pages/pm/tasks-page.tsx:207` | `const [files] = useState<ClaudeFile[]>([])` — never populated; tab (reachable via `:467`) always renders the empty state; preview pane shows literal `"File preview will render markdown content from …"` (`:355`) |
+| MEDIUM | Tasks **"Quick draft composer"** input + Sparkles submit (×2) | `tasks-page.tsx:231-238`, `:321-328` | `<input placeholder="Quick idea or task..."/>` + `<Button><Sparkles/></Button>` — no `onChange`/`onClick`/state. "Claude will create a structured .md file" — does nothing |
+| MEDIUM | Tasks file **"Open"** / **"Add to Board"** | `tasks-page.tsx:347, :350` | both `<button>` have no `onClick` |
+| LOW | Notification **"View All Notifications"** | `components/layout/notification-dropdown.tsx:147` | `<button>` no `onClick` |
+| LOW | Header **"Full view"** (project dropdown footer) | `components/layout/header.tsx:101-103` | no `onClick` — *user-reported* |
+| LOW | Header **"Show hidden"** (project dropdown footer) | `header.tsx:98-100` | no `onClick` |
+| LOW † | Header **global search box + `⌘K`** | `header.tsx:180-186` | styled `<div>`, no input/handler; **no `⌘K` listener exists** — `hooks/use-keyboard-nav.ts:35`'s `'k'` is vim list-up nav, unrelated. Decorative |
+| LOW † | Header **avatar / "Edwin L." / "Admin"** | `header.tsx:199-205` | `cursor-pointer`, no menu/`onClick` |
+
+### No-op handlers
+
+| Severity | Control | Location | Evidence |
+|----------|---------|----------|----------|
+| LOW | Database **"Performance" tab search box** | `pages/database/database-page.tsx:409` | `<FilterBar onSearchChange={() => {}}>` — `FilterBar` always renders a `SearchInput` (`filter-bar.tsx:35-41`), so typing does nothing |
+
+### Hardcoded data shown as if live
+
+| Severity | What | Location | Reality |
+|----------|------|----------|---------|
+| MEDIUM | **Notification bell = 7 fabricated alerts** + fake "4 unread" badge | `notification-dropdown.tsx:38-46, :54` | `SAMPLE_NOTIFICATIONS` references projects that don't exist (`flowAI`, `gtm-helper`, `personal-site`, `runtime-profiler`); comment admits *"in production these come from the event store."* "Mark all read"/per-item read work but only mutate the fake array |
+| MEDIUM | **"Today, Apr 6"** date pill | `header.tsx:190-193` | hardcoded literal, no picker, no state — *user-reported* (also stale: the audit date is Jun 2 2026) |
+| MEDIUM | **Infra "Platform Connections"** always "0/3 connected" | `pages/infra/infra-page.tsx:21-36, :49-53` | every platform `configured: false` hardcoded; `useEffect` re-sets the same constant (`// platforms are all unconfigured in standalone mode`). Self-labeled "MCP Server Only", so partially honest |
+| MEDIUM | Overview **SDK `v0.9.3`** | `pages/overview/overview-page.tsx:47` | actual SDK 0.11.4; real `sdkVersion` exists in session data but is ignored |
+| LOW | Hardcoded user name **"Edwin"/"Edwin L."/"Admin"** | `header.tsx:202`, `pages/pm/home-page.tsx:395` | greeting is computed live but the name is a literal |
+| LOW | `SessionBar` fake fallback (`a06af01e`/`v0.9.3`/`0m 0s`) | `components/ui/session-bar.tsx:19-24` | latent — only renders if a caller omits `items` (current sole caller always passes it) |
+| LOW | Memory page placeholder path `~/.claude/projects/.../memory/` | `pages/pm/memory-page.tsx:156` | cosmetic — real file ops use the real key |
+
+### UX dead-end (not strictly broken)
+
+- **Workspace picker "New workspace"** (`components/layout/workspace-picker.tsx:95`) calls `setActiveView('settings')` — it does *not* open a create form, and the picker only renders when `workspaces.length > 1` (`:35`). So clicking it (a) is invisible to single-workspace installs and (b) just lands on Settings with no create form open → reads as "nothing happens." The working create flow is Settings → **"New"** (`settings-page.tsx:119`, wired to `createWorkspace`). Fix: have the picker open the create form directly, or relabel.
+
+**Highest impact:** the Tasks "Files" tab (whole reachable sub-view, dead) and the notification bell (fabricated alerts that look like real incidents).
+
+---
+
 ## How to run the detector
 
 `scripts/detect-ui-drift.mjs` — zero-dependency Node ESM (uses the repo's `ws` for the optional live probe).
@@ -158,6 +206,11 @@ node scripts/detect-ui-drift.mjs --json
 1. **HTTP path drift** — every `/api/...` the dashboard calls (parsed from all of `packages/dashboard/src`, method-aware) vs every `.route(...)` the collector registers (`server.rs`). Reports *called-but-unserved* and (informational) *served-but-uncalled*. → catches a path the collector doesn't serve.
 2. **HTTP method drift** — path served but not the method. → catches **finding #3** (`DELETE /api/events` served only as POST).
 3. **WS type drift** — `msg.type` values handled in `ws-client.ts` vs `"type":"…"` frames broadcast in `store.rs`/`server.rs`. → catches **finding #2** (`dev_server_status`/`dev_server_log` handled-but-never-broadcast).
-4. **`--live` shape probe** — samples `/api/ws/events`, asserts the fields `ws-client.ts` reads off `msg.data` (`projectId`, `sessionId`) are actually present. → catches **finding #1** (0/N frames carry `projectId`). Degrades to a non-blocking "skip" if the collector is down or the app is idle (no frames in 12s).
+4. **No-op handlers** `[5]` — inline `on*={() => {}}` / `={() => undefined}` in shipped components. → catches the Database performance-tab search.
+5. **Mock-data constants** `[6]` — `const SAMPLE_/MOCK_/FAKE_/DUMMY_/PLACEHOLDER_…` declared outside the dev-only `components/showcase/`. → catches `SAMPLE_NOTIFICATIONS`.
+6. **Dead controls** `[7]`, *non-blocking warning* — `<button>`/`<Button>` whose (brace-aware, multi-line) opening tag carries no `on*` handler, `type=submit`, `{...spread}`, `asChild`, or `href`. → catches Full view / Show hidden / View All / the Tasks composer + Open / Add to Board buttons. Reported as warnings (not gated) because it's a heuristic; the current run has 0 false positives across 114 buttons. Decorative `<div>` chrome (`⌘K` box, date pill, avatar) is **not** covered — too false-positive-prone to gate.
+7. **`--live` shape probe** `[8]` — samples `/api/ws/events`, asserts the fields `ws-client.ts` reads off `msg.data` (`projectId`, `sessionId`) are actually present. → catches **finding #1** (0/N frames carry `projectId`). Degrades to a non-blocking "skip" if the collector is down or the app is idle (no frames in 12s).
 
-Current run output (static): 3 blocking findings — `DELETE /api/events`, `dev_server_status`, `dev_server_log`. With `--live` against an active app it adds the `projectId` drift. Wire `node scripts/detect-ui-drift.mjs` into CI to fail the build when the dashboard and collector diverge again.
+**Blocking** = HTTP path/method drift + WS handled-but-unbroadcast + no-op handlers + mock constants + (`--live`) projectId drift. Dead-control warnings do not affect the exit code.
+
+Current run output (static): **5 blocking findings** — `DELETE /api/events`, `dev_server_status`, `dev_server_log`, the Database no-op search, and `SAMPLE_NOTIFICATIONS` — plus 7 dead-control warnings. With `--live` against an active app it adds the `projectId` drift. Wire `node scripts/detect-ui-drift.mjs` into CI to fail the build when the dashboard and collector diverge again.

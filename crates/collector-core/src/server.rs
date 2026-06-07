@@ -1412,7 +1412,16 @@ async fn analytics_create_survey(State(s): State<AppState>, headers: HeaderMap, 
         Ok(v) => v,
         Err(resp) => return resp,
     };
-    let ws = b.workspace_id.clone().or_else(|| caller_workspace(&s, &headers));
+    // A workspace-scoped caller may only create in ITS OWN workspace — never trust a
+    // body `workspaceId` to target another tenant (IDOR). Only a global-admin caller
+    // (no workspace key) may set an arbitrary workspaceId.
+    let ws = match (caller_workspace(&s, &headers), b.workspace_id.clone()) {
+        (Some(own), Some(req)) if own != req => {
+            return (StatusCode::FORBIDDEN, Json(json!({ "error": "cannot create a survey for another workspace" }))).into_response();
+        }
+        (Some(own), _) => Some(own),
+        (None, body_ws) => body_ws,
+    };
     match s.analytics.create_survey(ws.as_deref(), &b.name, &status, &b.questions, &targeting) {
         Ok(sv) => Json(json!({ "data": sv })).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
@@ -5263,6 +5272,66 @@ mod slice_g_dev_server_tests {
         let (_s, v) = req(&app, "GET", &format!("/api/analytics/surveys/{sid}/responses"), None).await;
         assert_eq!(v["data"][0]["externalId"], "ext-7");
         assert_eq!(v["data"][0]["answers"]["q1"], 5);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Slice 4 security: a workspace-scoped API key may not create a survey in
+    // ANOTHER workspace via a body workspaceId (cross-tenant IDOR).
+    #[tokio::test]
+    async fn survey_create_blocks_cross_tenant_workspace() {
+        let dir = std::env::temp_dir().join(format!("sv-tenant-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let ws_a = pm.create_workspace("Team A", None, None).unwrap();
+        let key_a = pm.create_api_key(&ws_a.id, "k", None).unwrap().key;
+        let ws_b = pm.create_workspace("Team B", None, None).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/surveys", axum::routing::post(analytics_create_survey))
+            .with_state(state);
+
+        let mk = |key: &str, ws: Option<&str>| {
+            let body = match ws {
+                Some(w) => format!(r#"{{"name":"S","questions":[],"workspaceId":"{w}"}}"#),
+                None => r#"{"name":"S","questions":[]}"#.to_string(),
+            };
+            Request::builder()
+                .method("POST")
+                .uri("/api/analytics/surveys")
+                .header("content-type", "application/json")
+                .header("authorization", format!("Bearer {key}"))
+                .body(Body::from(body))
+                .unwrap()
+        };
+
+        // workspace-A key creating for workspace B → 403.
+        let (s, _v) = read_json(app.clone().oneshot(mk(&key_a, Some(&ws_b.id))).await.unwrap()).await;
+        assert_eq!(s, 403, "cross-tenant survey create blocked");
+        // own workspace → 200, scoped to A.
+        let (s, v) = read_json(app.clone().oneshot(mk(&key_a, Some(&ws_a.id))).await.unwrap()).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"]["workspaceId"], ws_a.id);
+        // body omitted → caller's own workspace (never another).
+        let (s, v) = read_json(app.clone().oneshot(mk(&key_a, None)).await.unwrap()).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"]["workspaceId"], ws_a.id);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

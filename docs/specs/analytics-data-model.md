@@ -8,6 +8,11 @@
 > backend (collector tables + HTTP routes + MCP tools) must satisfy to render the
 > real UI with live data — no mock arrays.
 
+> **Tenancy:** single-org by design — workspace keys are organizational, not
+> per-project read isolation; ROI baselines/role-rates are global (one methodology
+> per deployment); only *surveys* are workspace-scoped. See ADR-0012 §"Tenancy model
+> (and its limits)" for the accepted limitation + the future isolation slice.
+
 ## Core entities (analytics.db — sibling of pm.db, ADR-0012)
 
 | Entity | Fields (from the prototypes) | Notes |

@@ -1,6 +1,7 @@
 # ADR-0012: Analytics & adoption subsystem (port of the `kpis` platform)
 
-**Status:** `Proposed`
+**Status:** `Accepted` — slices 1-6 implemented (identity, adoption rollups, ROI
+[SQL + Mosaic], surveys, uptime, admin de-anon). See the **Tenancy model** section.
 **Date:** 2026-06-02
 **Deciders:** Edwin (owner) + implementing instance
 **Phase:** `Analytics`
@@ -148,3 +149,32 @@ Phasing (slices, matching the repo's milestone style): **1** identity →
 third-party bridges. Slice 1 is the smallest and unblocks the rest. This is a
 **named phase**, not a point patch — decide its roadmap placement (open question
 below) before starting slice 2.
+
+## Tenancy model (and its limits)
+
+RuntimeScope is a **single-organization** tool: a deployment is one company's
+collector. Workspaces (pm) + `tk_` API keys are an **organizational** grouping, and
+the auth gate is **authorization** (a valid token), **not per-project read
+isolation** — any valid token (global or any workspace key) can read any project's
+events, and the runtime read endpoints have always worked this way. The analytics
+reads inherit that model, and ROI **baselines / role-rates are deliberately global**
+(one methodology per deployment — a company has one definition of "geocode saves N
+minutes," not one per workspace).
+
+**Exception:** *surveys* are workspace-scoped (they carry `workspace_id`), because a
+survey is content authored by a team and shown to end-users; create/list/update/
+delete/responses are isolated via `owns_survey`, and `/surveys/active` returns only
+the project's-workspace + global surveys (never every tenant's).
+
+**Accepted limitation (phase-review #2):** in a deployment that hands out
+workspace keys to mutually-distrusting tenants, a workspace key can read another
+workspace's *usage/ROI analytics* (by passing its `project_id`) and can mutate the
+shared baselines/role-rates. That is **out of scope for the single-org design** and
+is documented, not a release blocker. **Future slice — "analytics tenant
+isolation"** (only if hard multi-tenant boundaries are needed): add `workspace_id`
+to baselines/roles/projections, scope every analytics read by the caller's
+workspace (project-ownership check), and make baselines/rates per-workspace. Until
+then, treat workspace keys as trusted within one org.
+
+The **PII de-anon** path is the one place with a stronger, separate gate
+(`X-Admin-Key` / `RUNTIMESCOPE_ADMIN_KEY`, audited) — see the Decision above.

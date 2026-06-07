@@ -124,29 +124,26 @@ Visit `https://rs.example.com/dashboard` → SSO → live analytics.
 
 ## 5. Point deployed apps at the collector
 
-Ingest goes to `ingest.example.com`. Because the DSN currently derives the dev
-ports even over TLS (tracked follow-up — ADR-0010 Notes), use an **explicit**
-endpoint for now rather than the bare DSN:
+Ingest goes to `ingest.example.com`, which proxies both the WS and the HTTP
+ingest (the §2 Caddy `@websocket` split). A TLS DSN with no port now resolves to
+that single 443 domain (`wss://ingest.example.com` + `https://ingest.example.com`),
+so the bare DSN works — no explicit ports needed:
 
-```ts
-// Browser (WebSocket ingest)
-RuntimeScope.init({
-  appName: 'my-web',
-  projectId: 'proj_xxx',
-  serverUrl: 'wss://ingest.example.com',   // 443 via the tunnel
-  authToken: process.env.RUNTIMESCOPE_TOKEN, // = $AUTH_TOKEN
-});
+```bash
+# .env.production (expose with the right prefix for your framework)
+RUNTIMESCOPE_DSN=runtimescopes://proj_xxx:<AUTH_TOKEN>@ingest.example.com
+VITE_RUNTIMESCOPE_DSN=runtimescopes://proj_xxx:<AUTH_TOKEN>@ingest.example.com
 ```
 
 ```ts
-// Server / Workers (HTTP POST ingest)
-RuntimeScope.connect({
-  appName: 'my-api',
-  projectId: 'proj_xxx',
-  endpoint: 'https://ingest.example.com/api/events',
-  authToken: process.env.RUNTIMESCOPE_TOKEN,
-});
+// Browser / Server / Workers — DSN carries projectId, token, host, and TLS.
+RuntimeScope.init({ appName: 'my-web', dsn: process.env.VITE_RUNTIMESCOPE_DSN });
+RuntimeScope.connect({ appName: 'my-api', dsn: process.env.RUNTIMESCOPE_DSN });
 ```
+
+(Prefer not to embed the token in the browser bundle for a public app — use a
+workspace `tk_` key scoped to ingest, or an explicit `serverUrl` + short-lived
+token, per your threat model.)
 
 ## 5b. Remote MCP (optional) — let a coding agent inspect the deployed app
 
@@ -200,6 +197,6 @@ Claude Code + the MCP-connector API today.
 
 - ✅ **First-party dashboard auth** — landed (token login screen); the §2
   bearer-injection is now optional.
+- ✅ **DSN single-443 mode** — landed; the bare
+  `runtimescopes://proj_xxx:token@ingest.example.com` resolves to the 443 domain.
 - **Ingest rate-limiting / quota** on `POST /api/events` + the WS handshake.
-- **DSN single-443 mode** — so deployed apps can use a bare
-  `runtimescopes://proj_xxx:token@ingest.example.com` instead of explicit ports.

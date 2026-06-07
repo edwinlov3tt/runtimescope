@@ -1,0 +1,220 @@
+model_format_version: 1
+
+metadata:
+  name: "RuntimeScope_ROI"
+  description: >
+    RuntimeScope analytics ROI cube (ADR-0013 / research 0006 spike). Reproduces
+    the slice-3 ROI formula as YAML rules over the usage-event spine:
+      time_saved = (manual_min - tool_min) * qty
+      qty        = per_item ? items(=Σcount) : events
+      hours      = time_saved / 60
+      value      = hours * hourly_rate   (acting user's role rate)
+    Dims [User(anonId), Feature(fn), Role, App, Time]; baselines + role rates are
+    input cells (broadcast onto each event's leaf at fact-load). Consolidation =
+    the per-dimension rollups. Oracle: oracle.py (the SQL formula reference).
+  author: "research-0006 spike"
+  created: "2026-06-07"
+
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    actuals_element: "Actual"
+    elements:
+      - { name: "Actual",   scenario_meta: "Default" }
+      - { name: "Forecast", scenario_meta: "NonDefault" }   # for whatif / projection branch
+
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+
+  - name: "User"
+    description: "Anonymous end-user identity (anonId), from identify()."
+    kind: "Standard"
+    elements:
+      - { name: "All_Users" }
+      - { name: "A" }
+      - { name: "B" }
+      - { name: "C" }
+
+  - name: "Feature"
+    description: "The tracked function (custom-event name)."
+    kind: "Standard"
+    elements:
+      - { name: "All_Features" }
+      - { name: "geocode" }
+      - { name: "export" }
+
+  - name: "Role"
+    description: "Acting user's role — drives the hourly rate."
+    kind: "Standard"
+    elements:
+      - { name: "All_Roles" }
+      - { name: "Specialist" }
+      - { name: "Director" }
+      - { name: "Coordinator" }
+
+  - name: "App"
+    description: "Monitored app the event came from."
+    kind: "Standard"
+    elements:
+      - { name: "All_Apps" }
+      - { name: "web" }
+      - { name: "cli" }
+
+  - name: "Time"
+    description: "Day/month rolled into quarter (Q1 has facts; Q2 is forecast horizon)."
+    kind: "Standard"
+    elements:
+      - { name: "2026_01" }
+      - { name: "2026_02" }
+      - { name: "2026_03" }
+      - { name: "2026_04" }
+      - { name: "2026_05" }
+      - { name: "2026_06" }
+      - { name: "Q1_2026" }
+      - { name: "Q2_2026" }
+
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+
+hierarchies:
+  - dimension: "User"
+    name: "AllUsers"
+    default: true
+    edges:
+      - { parent: "All_Users", child: "A", weight: 1.0 }
+      - { parent: "All_Users", child: "B", weight: 1.0 }
+      - { parent: "All_Users", child: "C", weight: 1.0 }
+
+  - dimension: "Feature"
+    name: "AllFeatures"
+    default: true
+    edges:
+      - { parent: "All_Features", child: "geocode", weight: 1.0 }
+      - { parent: "All_Features", child: "export", weight: 1.0 }
+
+  - dimension: "Role"
+    name: "AllRoles"
+    default: true
+    edges:
+      - { parent: "All_Roles", child: "Specialist", weight: 1.0 }
+      - { parent: "All_Roles", child: "Director", weight: 1.0 }
+      - { parent: "All_Roles", child: "Coordinator", weight: 1.0 }
+
+  - dimension: "App"
+    name: "AllApps"
+    default: true
+    edges:
+      - { parent: "All_Apps", child: "web", weight: 1.0 }
+      - { parent: "All_Apps", child: "cli", weight: 1.0 }
+
+  - dimension: "Time"
+    name: "Calendar"
+    default: true
+    edges:
+      - { parent: "Q1_2026", child: "2026_01", weight: 1.0 }
+      - { parent: "Q1_2026", child: "2026_02", weight: 1.0 }
+      - { parent: "Q1_2026", child: "2026_03", weight: 1.0 }
+      - { parent: "Q2_2026", child: "2026_04", weight: 1.0 }
+      - { parent: "Q2_2026", child: "2026_05", weight: 1.0 }
+      - { parent: "Q2_2026", child: "2026_06", weight: 1.0 }
+
+measures:
+  # === Input cells (facts + baselines + role rates, broadcast per leaf) ===
+  - { name: "events",      description: "Event count at this leaf.",            role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "items",       description: "Σ count metadata (per-item quantity).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "manual_min",  description: "Baseline manual minutes (per feature).", role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "tool_min",    description: "Baseline tool minutes (per feature).",   role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "per_item",    description: "1 if baseline is per-item, else 0.",     role: "Input", data_type: "F64", aggregation: "Sum" }
+  - { name: "hourly_rate", description: "Acting role's $/hr (per role).",          role: "Input", data_type: "F64", aggregation: "Sum" }
+
+  # === Derived (the ROI formula; consolidate by Sum up every dimension) ===
+  - { name: "qty",        description: "Effective quantity: per_item?items:events.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "time_saved", description: "(manual_min - tool_min) * qty, minutes.",    role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "hours",      description: "time_saved / 60.",                           role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "value",      description: "hours * hourly_rate, USD.",                  role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_qty"
+    target_measure: "qty"
+    scope: "AllLeaves"
+    body: "per_item * items + (1 - per_item) * events"
+    declared_dependencies: ["per_item", "items", "events"]
+
+  - name: "rule_time_saved"
+    target_measure: "time_saved"
+    scope: "AllLeaves"
+    body: "(manual_min - tool_min) * qty"
+    declared_dependencies: ["manual_min", "tool_min", "qty"]
+
+  - name: "rule_hours"
+    target_measure: "hours"
+    scope: "AllLeaves"
+    body: "time_saved / 60"
+    declared_dependencies: ["time_saved"]
+
+  - name: "rule_value"
+    target_measure: "value"
+    scope: "AllLeaves"
+    body: "hours * hourly_rate"
+    declared_dependencies: ["hours", "hourly_rate"]
+
+canonical_inputs:
+  source: "roi.inputs.csv"
+  columns: ["Scenario", "Version", "User", "Feature", "Role", "App", "Time", "Measure", "value"]
+
+# === Oracle-match gate: every value/hours rollup asserted vs oracle.py ===
+golden_tests:
+  # ---- by ROLE (User/Feature/App=All, Time=Q1) ----
+  - name: "role_specialist_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: Specialist, App: All_Apps, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 171.666667, epsilon: 0.0001 }
+  - name: "role_specialist_hours"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: Specialist, App: All_Apps, Time: Q1_2026, Measure: hours }
+    expect_within_epsilon: { value: 3.433333, epsilon: 0.0001 }
+  - name: "role_director_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: Director, App: All_Apps, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 14.166667, epsilon: 0.0001 }
+  - name: "role_director_hours"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: Director, App: All_Apps, Time: Q1_2026, Measure: hours }
+    expect_within_epsilon: { value: 0.166667, epsilon: 0.0001 }
+
+  # ---- by FEATURE (User/Role/App=All, Time=Q1) ----
+  - name: "feature_geocode_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: geocode, Role: All_Roles, App: All_Apps, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 163.333333, epsilon: 0.0001 }
+  - name: "feature_geocode_hours"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: geocode, Role: All_Roles, App: All_Apps, Time: Q1_2026, Measure: hours }
+    expect_within_epsilon: { value: 3.266667, epsilon: 0.0001 }
+  - name: "feature_export_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: export, Role: All_Roles, App: All_Apps, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 22.500000, epsilon: 0.0001 }
+
+  # ---- by APP (User/Feature/Role=All, Time=Q1) ----
+  - name: "app_web_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: web, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 92.500000, epsilon: 0.0001 }
+  - name: "app_cli_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: cli, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 93.333333, epsilon: 0.0001 }
+
+  # ---- by TIME (month leaves; all other dims = All) ----
+  - name: "time_jan_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: All_Apps, Time: 2026_01, Measure: value }
+    expect_within_epsilon: { value: 46.666667, epsilon: 0.0001 }
+  - name: "time_feb_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: All_Apps, Time: 2026_02, Measure: value }
+    expect_within_epsilon: { value: 125.000000, epsilon: 0.0001 }
+  - name: "time_mar_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: All_Apps, Time: 2026_03, Measure: value }
+    expect_within_epsilon: { value: 14.166667, epsilon: 0.0001 }
+
+  # ---- GRAND TOTAL (everything = All, Time=Q1) ----
+  - name: "total_value"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: All_Apps, Time: Q1_2026, Measure: value }
+    expect_within_epsilon: { value: 185.833333, epsilon: 0.0001 }
+  - name: "total_hours"
+    coord: { Scenario: Actual, Version: Working, User: All_Users, Feature: All_Features, Role: All_Roles, App: All_Apps, Time: Q1_2026, Measure: hours }
+    expect_within_epsilon: { value: 3.600000, epsilon: 0.0001 }

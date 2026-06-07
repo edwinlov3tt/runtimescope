@@ -1,6 +1,6 @@
 # ADR-0013: ROI, forecasting & narratives on the Mosaic cube engine
 
-**Status:** `Proposed` — pending the spike in [research 0006](../research/0006-mosaic-roi-spike.md)
+**Status:** `Accepted` — the spike in [research 0006](../research/0006-mosaic-roi-spike.md) returned **GO** (2026-06-07): the cube matched the SQL oracle 14/14, trace/whatif/forecast/narrative all delivered, and the `mc-daemon` round-trip was sub-millisecond. Integration: **`mc-daemon` sidecar** (library crate kept as the Alternative-1 fallback). Pure-SQL ROI still ships as the batteries-included default.
 **Date:** 2026-06-07
 **Deciders:** Edwin (owner) + implementing instance
 **Phase:** `Analytics`

@@ -1,0 +1,44 @@
+model_format_version: 1
+
+metadata:
+  name: "RuntimeScope_ROI_Compare"
+  description: >
+    Compare-page slice for mc-narrative (research 0006 spike, task 5 "Narrative").
+    Per-app current ROI value (web 92.5, cli 93.33 — the verified ROI rollups) plus
+    each app's prior-period value (prev_value), exactly the Compare page's per-app
+    {value, prevValue} contract. The narrative template renders the compare insight.
+  author: "research-0006 spike"
+  created: "2026-06-07"
+
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    actuals_element: "Actual"
+    elements: [{ name: "Actual", scenario_meta: "Default" }]
+  - name: "Version"
+    kind: "Version"
+    elements: [{ name: "Working", version_state: "Draft" }]
+  - name: "App"
+    kind: "Standard"
+    elements:
+      - { name: "web" }
+      - { name: "cli" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+
+measures:
+  - { name: "value",      description: "Current-period ROI value, USD.", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "prev_value", description: "Prior-period ROI value, USD.",   role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "delta_pct",  description: "Period-over-period change %.",    role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_delta_pct"
+    target_measure: "delta_pct"
+    scope: "AllLeaves"
+    body: "(value - prev_value) / prev_value * 100"
+    declared_dependencies: ["value", "prev_value"]
+
+canonical_inputs:
+  source: "roi-compare.inputs.csv"
+  columns: ["Scenario", "Version", "App", "Measure", "value"]

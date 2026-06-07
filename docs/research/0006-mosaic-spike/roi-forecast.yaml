@@ -1,0 +1,102 @@
+model_format_version: 1
+
+metadata:
+  name: "RuntimeScope_ROI_Forecast"
+  description: >
+    Projections-page forecast layer for the ROI cube (research 0006 spike, task 5
+    "Forecast"). A fitted linear-trend model projects cumulative ROI value forward
+    a quarter and compares it to a goal (proj vs actual, % to goal). The actuals
+    (cum_value) are the ROI cube's monthly value rollups (Jan 46.67 → Feb 171.67 →
+    Mar 185.83 cumulative). roi_trend coefficients were least-squares fit offline
+    on those 3 months (numpy), exported here in the sklearn-export style of
+    examples/sports-betting. NOTE: 3 points is deliberately thin — the forecast
+    mechanism is what is being validated, not its statistical strength.
+  author: "research-0006 spike"
+  created: "2026-06-07"
+
+parameters:
+  - name: q2_value_goal
+    value: 400.0
+    description: "Quarterly value goal (USD) for the % to goal KPI (projections page)."
+
+dimensions:
+  - name: "Scenario"
+    kind: "Scenario"
+    actuals_element: "Actual"
+    elements:
+      - { name: "Actual", scenario_meta: "Default" }
+  - name: "Version"
+    kind: "Version"
+    elements:
+      - { name: "Working", version_state: "Draft" }
+  - name: "Time"
+    kind: "Standard"
+    elements:
+      - { name: "2026_01" }
+      - { name: "2026_02" }
+      - { name: "2026_03" }
+      - { name: "2026_04" }
+      - { name: "2026_05" }
+      - { name: "2026_06" }
+  - name: "Measure"
+    kind: "Measure"
+    elements: []
+
+measures:
+  - { name: "cum_value",    description: "Cumulative ROI value to date (actuals from the ROI cube).", role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "period_index", description: "Month index 1..6 (trend driver).",                          role: "Input",   data_type: "F64", aggregation: "Sum" }
+  - { name: "proj_value",   description: "Fitted-model projection of cumulative value at this month.", role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "variance",     description: "actual - projected (only meaningful where actuals exist).",  role: "Derived", data_type: "F64", aggregation: "Sum" }
+  - { name: "pct_to_goal",  description: "projected cumulative value / goal * 100.",                    role: "Derived", data_type: "F64", aggregation: "Sum" }
+
+rules:
+  - name: "rule_proj_value"
+    target_measure: "proj_value"
+    scope: "AllLeaves"
+    body: 'predict("roi_trend", period_index)'
+    declared_dependencies: ["period_index"]
+  - name: "rule_variance"
+    target_measure: "variance"
+    scope: "AllLeaves"
+    body: "cum_value - proj_value"
+    declared_dependencies: ["cum_value", "proj_value"]
+  - name: "rule_pct_to_goal"
+    target_measure: "pct_to_goal"
+    scope: "AllLeaves"
+    body: "proj_value / param(q2_value_goal) * 100"
+    declared_dependencies: ["proj_value"]
+
+fitted_models:
+  - name: roi_trend
+    method: linear
+    intercept: -4.444444
+    coefficients:
+      - { feature: period_index, weight: 69.583333 }
+    standardization: null
+    residual_std: 0.0
+    metadata:
+      fitted_at: "2026-06-07T00:00:00+00:00"
+      algorithm: ols_linear_trend
+      n_train: 3
+
+calibration_maps: []
+lookup_tables: []
+status_thresholds: []
+
+canonical_inputs:
+  source: "roi-forecast.inputs.csv"
+  columns: ["Scenario", "Version", "Time", "Measure", "value"]
+
+golden_tests:
+  - name: "proj_eoq2_cumulative_value"   # end of Q2 (month 6) projected cumulative value
+    coord: { Scenario: Actual, Version: Working, Time: 2026_06, Measure: proj_value }
+    expect_within_epsilon: { value: 413.055554, epsilon: 0.001 }
+  - name: "proj_apr_value"
+    coord: { Scenario: Actual, Version: Working, Time: 2026_04, Measure: proj_value }
+    expect_within_epsilon: { value: 273.888888, epsilon: 0.001 }
+  - name: "pct_to_goal_eoq2"             # 413.06 / 400 * 100
+    coord: { Scenario: Actual, Version: Working, Time: 2026_06, Measure: pct_to_goal }
+    expect_within_epsilon: { value: 103.263888, epsilon: 0.01 }
+  - name: "variance_mar"                 # actual 185.83 - projected (m3: 204.31)
+    coord: { Scenario: Actual, Version: Working, Time: 2026_03, Measure: variance }
+    expect_within_epsilon: { value: -18.472221, epsilon: 0.01 }

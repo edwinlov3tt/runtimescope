@@ -1,0 +1,5 @@
+Scenario,Version,App,Measure,value
+Actual,Working,web,value,92.5
+Actual,Working,cli,value,93.333333
+Actual,Working,web,prev_value,110.0
+Actual,Working,cli,prev_value,70.0

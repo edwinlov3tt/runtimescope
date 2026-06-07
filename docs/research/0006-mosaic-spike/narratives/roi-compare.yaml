@@ -1,0 +1,25 @@
+narrative_format_version: 1
+
+templates:
+  - id: roi_compare_leader_and_decliners
+    family: ["roi-compare"]
+    severity: info
+    table_types: ["App Performance"]
+    when: "period_count >= 1"
+    template: >
+      {max.value.period} leads ROI value at ${max.value:.0f} this period.
+      {n_down:.0f} of {period_count:.0f} apps are down vs the prior period: {down_apps}.
+    bindings:
+      n_down: "count_where(value < prev_value, App)"
+      down_apps: "names_where(value < prev_value, App)"
+
+  - id: roi_compare_app_decline_detail
+    family: ["roi-compare"]
+    severity: warning
+    table_types: ["App Performance"]
+    when: "value < prev_value"
+    template: >
+      An app's ROI value fell {decline_pct:.0f}% vs the prior period
+      (${prev_value:.0f} -> ${value:.0f}).
+    bindings:
+      decline_pct: "(prev_value - value) / prev_value * 100"

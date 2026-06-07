@@ -1,0 +1,10 @@
+Scenario,Version,Time,Measure,value
+Actual,Working,2026_01,cum_value,46.666667
+Actual,Working,2026_02,cum_value,171.666667
+Actual,Working,2026_03,cum_value,185.833333
+Actual,Working,2026_01,period_index,1
+Actual,Working,2026_02,period_index,2
+Actual,Working,2026_03,period_index,3
+Actual,Working,2026_04,period_index,4
+Actual,Working,2026_05,period_index,5
+Actual,Working,2026_06,period_index,6

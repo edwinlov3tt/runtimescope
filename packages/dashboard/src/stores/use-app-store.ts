@@ -162,13 +162,18 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
   setSelectedProject: (project) => set({ selectedProject: project }),
 
-  // Default to "last 24 hours" — a sensible window for an observability dashboard.
-  timeRange: { preset: '24h' },
+  // Default to "all time" — a bounded default (e.g. 24h) silently hides issues
+  // and events older than the window on load, and with WS connected the single
+  // bounded initial fetch is the only read. Users opt into a narrower window via
+  // the header picker.
+  timeRange: { preset: 'all' },
   setTimeRange: (range) => {
     if (get().timeRange.preset === range.preset && get().timeRange.customSinceSeconds === range.customSinceSeconds) return;
-    // Flush buffered runtime events so the next fetch reflects the new window
-    // instead of mixing in out-of-range events from the previous range.
-    useDataStore.getState().clearAll();
+    // NB: we deliberately do NOT clearAll() here. Wiping all six event buffers
+    // blanks always-mounted consumers (the notification bell, overview) until
+    // each tab is revisited, since only the active tab refetches. Instead the
+    // active tab's fetch fully replaces its data with the new window, and
+    // useLiveData refetches all event types on a range change (see use-live-data).
     set({ timeRange: range });
   },
 }));

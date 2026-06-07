@@ -224,4 +224,16 @@ export function useLiveData(): void {
       if (intervalRef.current) clearInterval(intervalRef.current);
     };
   }, [activeTab, activeView, activeProjectTab, runtimeSubTab, source, selectedProject, connected, timeRange]);
+
+  // When the global time range changes, refetch ALL event types — not just the
+  // active tab — so always-mounted consumers (the notification bell, overview)
+  // and the Issues page reflect the new window. (setTimeRange no longer wipes the
+  // buffers, which previously blanked the bell until each tab was revisited.)
+  const lastRangeRef = useRef(timeRange);
+  useEffect(() => {
+    if (source !== 'live') return;
+    if (lastRangeRef.current === timeRange) return; // initial mount / unchanged
+    lastRangeRef.current = timeRange;
+    fetchAllFiltered();
+  }, [timeRange, source]);
 }

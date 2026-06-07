@@ -85,9 +85,11 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
     return detectIssues(all);
   }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
 
-  // Record first-seen time for any newly-detected alerts (real timestamps).
+  // Stamp first-seen times for new alerts AND reconcile read-state against the
+  // live detection set. Must run on the empty set too: detector ids are stable
+  // (e.g. 'slow-requests'), so when an issue clears we have to forget its
+  // read-state, otherwise its later recurrence would stay silenced forever.
   useEffect(() => {
-    if (issues.length === 0) return;
     observe(issues.map((i) => i.id));
   }, [issues, observe]);
 
@@ -112,6 +114,10 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   const viewAll = () => {
     const app = useAppStore.getState();
     if (app.selectedPmProject) {
+      // The Issues sub-tab only mounts when the project view is on the Runtime
+      // tab, so switch to it as well — otherwise setting runtimeSubTab alone is
+      // a no-op from the default (Sessions) project tab.
+      app.setActiveProjectTab('runtime');
       app.setRuntimeSubTab('issues');
     } else {
       app.setActiveView('runtime');

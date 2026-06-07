@@ -78,8 +78,12 @@ interface NotificationState {
   readIds: Set<string>;
   firstSeen: Record<string, number>;
 
-  /** Record any not-yet-seen ids with the current time. Idempotent. */
-  observe: (ids: string[]) => void;
+  /**
+   * Reconcile durable state against the current set of active alert ids:
+   * stamp first-seen for new ids, and drop read-state for ids no longer active
+   * (their condition cleared) so a later recurrence alerts again. Idempotent.
+   */
+  observe: (activeIds: string[]) => void;
   /** Mark a single alert read. */
   markRead: (id: string) => void;
   /** Mark every currently-visible alert read. */
@@ -90,21 +94,37 @@ export const useNotificationStore = create<NotificationState>((set, get) => ({
   readIds: loadSet(READ_KEY),
   firstSeen: loadSeen(),
 
-  observe: (ids) => {
-    const { firstSeen } = get();
-    let changed = false;
-    const next = { ...firstSeen };
+  observe: (activeIds) => {
+    const { firstSeen, readIds } = get();
+    const active = new Set(activeIds);
     const now = Date.now();
-    for (const id of ids) {
-      if (next[id] === undefined) {
-        next[id] = now;
+
+    // Stamp first-seen for newly-detected ids.
+    const nextSeen = { ...firstSeen };
+    let changed = false;
+    for (const id of activeIds) {
+      if (nextSeen[id] === undefined) {
+        nextSeen[id] = now;
         changed = true;
       }
     }
+
+    // Forget read-state for alerts whose condition has CLEARED (id no longer in
+    // the active detection set). Detector ids are stable, so without this a
+    // recurrence after the user marked an alert read would stay silenced forever.
+    let nextRead = readIds;
+    if (readIds.size > 0) {
+      const filtered = new Set(Array.from(readIds).filter((id) => active.has(id)));
+      if (filtered.size !== readIds.size) {
+        nextRead = filtered;
+        changed = true;
+      }
+    }
+
     if (!changed) return;
-    const pruned = prune(get().readIds, next);
+    const pruned = prune(nextRead, nextSeen);
     saveSeen(pruned.firstSeen);
-    if (pruned.readIds !== get().readIds) saveSet(READ_KEY, pruned.readIds);
+    if (pruned.readIds !== readIds) saveSet(READ_KEY, pruned.readIds);
     set({ firstSeen: pruned.firstSeen, readIds: pruned.readIds });
   },
 

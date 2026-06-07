@@ -6,11 +6,11 @@ import { useWorkspaceStore } from '@/stores/use-workspace-store';
 import { findRuntimeProjects } from '@/lib/api';
 import { NotificationDropdown } from '@/components/layout/notification-dropdown';
 import { WorkspacePicker } from '@/components/layout/workspace-picker';
+import { DateRangePicker } from '@/components/layout/date-range-picker';
 import {
   PanelLeft,
   Search,
   ChevronDown,
-  Calendar,
   EyeOff,
   Maximize2,
 } from 'lucide-react';
@@ -187,10 +187,8 @@ export const Header = memo(function Header({
 
       {/* Right section */}
       <div className="flex items-center gap-2">
-        <div className="flex items-center gap-1.5 h-9 px-3 bg-bg-surface border border-border-default rounded-lg text-[12px] font-medium text-text-primary cursor-pointer">
-          <Calendar size={14} className="text-text-tertiary" />
-          Today, Apr 6
-        </div>
+        {/* Global date-range filter — scopes runtime event reads */}
+        <DateRangePicker />
 
         {/* Notification bell */}
         <NotificationDropdown />

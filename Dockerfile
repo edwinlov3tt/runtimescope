@@ -1,82 +1,56 @@
 # ============================================================
-# RuntimeScope Standalone Collector
-# Multi-stage build — optimized for small image size
+# RuntimeScope Standalone Collector — Rust (post-M7)
+# Multi-stage: build the dashboard SPA, build the Rust collector
+# (build.rs embeds the SPA), ship a single static-ish binary.
 # ============================================================
 
-# ---------- Stage 1: Build native modules + TypeScript ----------
-FROM node:20-alpine AS builder
-
-# better-sqlite3 needs these to compile its native addon
-RUN apk add --no-cache python3 make g++
-
+# ---------- Stage 1: build the dashboard SPA → packages/dashboard/dist ----------
+FROM node:20-alpine AS dashboard
 WORKDIR /app
-
-# Copy workspace root files
 COPY package.json package-lock.json ./
-
-# Copy only the workspace packages needed for the standalone collector
-COPY packages/collector/package.json packages/collector/
-COPY packages/sdk/package.json packages/sdk/
-
-# Install ALL dependencies (including dev) to build
-RUN npm ci --workspace=packages/collector --workspace=packages/sdk
-
-# Copy source
+COPY packages/dashboard/package.json packages/dashboard/
+RUN npm ci --workspace=packages/dashboard
 COPY tsconfig.base.json ./
-COPY packages/collector/ packages/collector/
-COPY packages/sdk/ packages/sdk/
+COPY packages/dashboard/ packages/dashboard/
+RUN npm run build -w packages/dashboard
 
-# Build both packages
-RUN npm run build -w packages/collector \
- && npm run build -w packages/sdk
+# ---------- Stage 2: build the Rust collector-server ----------
+# rusqlite is `bundled` (compiles sqlite3.c), so a C compiler is required.
+FROM rust:1.95-slim-bookworm AS rust
+WORKDIR /build
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends gcc libc6-dev pkg-config \
+ && rm -rf /var/lib/apt/lists/*
+COPY Cargo.toml Cargo.lock rust-toolchain.toml ./
+COPY crates/ crates/
+# The built SPA must be present BEFORE cargo build so collector-core/build.rs
+# mirrors it into the crate and rust-embed bakes the real UI into the binary.
+COPY --from=dashboard /app/packages/dashboard/dist/ packages/dashboard/dist/
+# Only the standalone daemon is needed in the image (no MCP/stdio here).
+RUN cargo build --release -p runtimescope --bin collector-server
 
-# ---------- Stage 2: Prune to production dependencies only ----------
-FROM node:20-alpine AS deps
+# ---------- Stage 3: minimal runtime ----------
+FROM debian:bookworm-slim
+# curl: HEALTHCHECK probe.  ca-certificates: outbound TLS (infra connectors).
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends curl ca-certificates \
+ && rm -rf /var/lib/apt/lists/* \
+ && useradd -r -u 10001 -m -d /home/runtimescope runtimescope \
+ && mkdir -p /home/runtimescope/.runtimescope \
+ && chown -R runtimescope:runtimescope /home/runtimescope
 
-RUN apk add --no-cache python3 make g++
-
-WORKDIR /app
-
-COPY package.json package-lock.json ./
-COPY packages/collector/package.json packages/collector/
-COPY packages/sdk/package.json packages/sdk/
-
-# Production deps only — drops typescript, tsup, esbuild, rollup, @types, vitest, etc.
-RUN npm ci --workspace=packages/collector --workspace=packages/sdk --omit=dev \
- && npm cache clean --force
-
-# ---------- Stage 3: Minimal runtime ----------
-FROM node:20-alpine
-
-# Non-root user
-RUN addgroup -S runtimescope && adduser -S runtimescope -G runtimescope
-
-WORKDIR /app
-
-# Built JS + production-only deps (no TypeScript, no build tools)
-COPY --from=builder  /app/packages/collector/dist/     packages/collector/dist/
-COPY --from=builder  /app/packages/collector/package.json packages/collector/
-COPY --from=builder  /app/packages/sdk/dist/           packages/sdk/dist/
-COPY --from=builder  /app/packages/sdk/package.json    packages/sdk/
-COPY --from=deps     /app/node_modules/                node_modules/
-COPY --from=deps     /app/package.json                 ./
-
-# Persistent data dir owned by non-root user
-RUN mkdir -p /home/runtimescope/.runtimescope \
- && chown -R runtimescope:runtimescope /home/runtimescope/.runtimescope /app
+COPY --from=rust /build/target/release/collector-server /usr/local/bin/collector-server
 
 USER runtimescope
-
-# Bind to all interfaces for Docker networking
-ENV RUNTIMESCOPE_HOST=0.0.0.0 \
+ENV HOME=/home/runtimescope \
+    RUNTIMESCOPE_HOST=0.0.0.0 \
     RUNTIMESCOPE_PORT=6767 \
-    RUNTIMESCOPE_HTTP_PORT=6768 \
-    HOME=/home/runtimescope \
-    NODE_ENV=production
+    RUNTIMESCOPE_HTTP_PORT=6768
 
 EXPOSE 6767 6768
 
-HEALTHCHECK --interval=15s --timeout=3s --start-period=5s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:6768/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"
+# /readyz returns 2xx only when the collector is serving (see lib.rs probe).
+HEALTHCHECK --interval=15s --timeout=3s --start-period=10s --retries=3 \
+  CMD curl -fsS http://127.0.0.1:6768/readyz >/dev/null || exit 1
 
-ENTRYPOINT ["node", "packages/collector/dist/standalone.js"]
+ENTRYPOINT ["/usr/local/bin/collector-server"]

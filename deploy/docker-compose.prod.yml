@@ -3,15 +3,17 @@
 #
 # Setup:
 #   1. Point your domain (e.g., runtimescope.yourcompany.com) to the server's IP
-#   2. Edit this file and replace `runtimescope.example.com` with your domain
+#   2. Edit deploy/Caddyfile and replace `runtimescope.example.com` with your domain
 #   3. Generate a secure auth token:  openssl rand -hex 32
-#   4. Set AUTH_TOKEN in .env or pass via -e
-#   5. Run: docker compose -f deploy/docker-compose.prod.yml up -d
+#   4. Set AUTH_TOKEN in .env (see deploy/.env.example) or pass via -e
+#   5. Run: docker compose -f deploy/docker-compose.prod.yml --env-file .env up -d
 #
-# Your DSN becomes:
-#   runtimescopes://proj_xxx@runtimescope.yourcompany.com
+# Your DSN becomes (TLS, port 443 via Caddy — note the explicit :443 so the SDK
+# does not fall back to the dev ports; see deploy/README.md):
+#   runtimescopes://proj_xxx:<AUTH_TOKEN>@runtimescope.yourcompany.com:443
 #
-# And the auth token is used server-side (configured in ~/.runtimescope/config.json on the volume).
+# Alternative (no open ports, free TLS, SSO on the dashboard): the droplet +
+# Cloudflare Tunnel runbook — deploy/droplet-cloudflared.md.
 
 services:
   collector:
@@ -21,11 +23,14 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     expose:
-      - "6767"   # WebSocket (internal, Caddy proxies)
-      - "6768"   # HTTP API (internal, Caddy proxies)
+      - "6767"   # WebSocket (internal — Caddy proxies)
+      - "6768"   # HTTP API + dashboard (internal — Caddy proxies)
     volumes:
       - runtimescope-data:/home/runtimescope/.runtimescope
     environment:
+      # 0.0.0.0 so Caddy (a separate container) can reach the collector over the
+      # docker network. Honored by the Rust collector via RUNTIMESCOPE_HOST
+      # (ADR-0010). Never expose these ports directly — only Caddy is published.
       - RUNTIMESCOPE_HOST=0.0.0.0
       - RUNTIMESCOPE_PORT=6767
       - RUNTIMESCOPE_HTTP_PORT=6768
@@ -33,10 +38,10 @@ services:
       - RUNTIMESCOPE_RETENTION_DAYS=30
       - RUNTIMESCOPE_AUTH_TOKEN=${AUTH_TOKEN:?AUTH_TOKEN is required — set it in .env or env var}
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:6768/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6768/readyz"]
       interval: 15s
       timeout: 3s
-      start_period: 5s
+      start_period: 10s
       retries: 3
     networks:
       - rs-internal

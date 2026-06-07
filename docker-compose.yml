@@ -3,7 +3,7 @@ services:
     build: .
     ports:
       - "6767:6767"  # WebSocket collector
-      - "6768:6768"  # HTTP API + POST event ingestion
+      - "6768:6768"  # HTTP API + dashboard + POST event ingestion
     volumes:
       - runtimescope-data:/home/runtimescope/.runtimescope
     environment:
@@ -12,14 +12,17 @@ services:
       - RUNTIMESCOPE_HTTP_PORT=6768
       - RUNTIMESCOPE_BUFFER_SIZE=10000
       - RUNTIMESCOPE_RETENTION_DAYS=30
-      # Auth is configured via ~/.runtimescope/config.json in the volume.
-      # See docs for how to generate API keys.
+      # Auth: set RUNTIMESCOPE_AUTH_TOKEN to require a token on SDK ingest + the
+      # read API. This compose binds ports directly to the host — for anything
+      # internet-facing use deploy/docker-compose.prod.yml (Caddy + TLS) or the
+      # droplet + Cloudflare Tunnel runbook (deploy/droplet-cloudflared.md).
+      # - RUNTIMESCOPE_AUTH_TOKEN=${AUTH_TOKEN}
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:6768/api/health').then(r=>r.ok?process.exit(0):process.exit(1)).catch(()=>process.exit(1))"]
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:6768/readyz"]
       interval: 15s
       timeout: 3s
-      start_period: 5s
+      start_period: 10s
       retries: 3
 
 volumes:

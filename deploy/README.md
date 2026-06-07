@@ -2,6 +2,21 @@
 
 Self-host a RuntimeScope collector so your production apps can send telemetry to a central endpoint. Once deployed, point your SDKs at the hosted URL via DSN.
 
+> **Architecture & decisions:** [ADR-0010](../docs/decisions/0010-self-hosted-deployment-topology.md).
+> The collector is now the **Rust** binary (the Node collector was removed in M7); the
+> images/compose here build it from source.
+>
+> **Recommended path:** droplet + **Cloudflare Tunnel** (no open ports, free TLS,
+> SSO on the dashboard) — full runbook in
+> [`droplet-cloudflared.md`](./droplet-cloudflared.md). The Docker + Caddy files
+> below are the alternative for direct-TLS VPS hosting.
+>
+> **⚠ Dashboard-token caveat:** setting `RUNTIMESCOPE_AUTH_TOKEN` makes the read
+> API require that token, and the embedded dashboard doesn't send one yet — so a
+> bare token-protected collector shows an empty dashboard. Gate the dashboard with
+> proxy auth (Cloudflare Access / Caddy `basic_auth`) and inject the bearer at the
+> proxy; see the runbook. First-party dashboard auth is a tracked follow-up.
+
 ## One-Click Deploys
 
 | Platform | Cost | Deploy |

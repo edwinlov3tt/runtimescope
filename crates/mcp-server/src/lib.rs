@@ -9,16 +9,26 @@
 mod sidecar;
 mod tools;
 
+use collector_core::auth::AuthManager;
 use collector_core::{
-    data_dir, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore, StoreHandle,
-    DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
+    data_dir, host_from_env, open_store, port_from_env, serve, AuthMode, CommandHub, PmStore,
+    StoreHandle, DEFAULT_HTTP_PORT, DEFAULT_WS_PORT, VERSION,
 };
 use rmcp::{
     handler::server::{tool::ToolRouter, ServerHandler},
     tool_handler,
     transport::stdio,
+    transport::streamable_http_server::{
+        session::local::LocalSessionManager, StreamableHttpServerConfig, StreamableHttpService,
+    },
     ServiceExt,
 };
+use std::sync::Arc;
+
+/// Default port for the remote MCP HTTP transport (ADR-0011) — distinct from the
+/// collector's WS (6767) and HTTP/dashboard (6768). Override with
+/// `RUNTIMESCOPE_MCP_HTTP_PORT`.
+const DEFAULT_MCP_HTTP_PORT: u16 = 6770;
 
 #[derive(Clone)]
 pub struct Mcp {
@@ -80,28 +90,26 @@ async fn collector_already_running(port: u16) -> bool {
         .is_some_and(|code| (200..300).contains(&code))
 }
 
-pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+/// Shared setup for both transports: cutover guard, open the store/pm, embed the
+/// collector in-process (ADR-0008) OR attach to an already-running standalone one,
+/// and kick off pm/ project discovery. Returns the handles the transport serves.
+///
+/// The embed/attach call: if a standalone collector already serves `:http_port`
+/// (the common launchd/systemd setup the SDKs report to), DON'T start a second —
+/// it would fail to bind and run a duplicate retention sweep against the shared
+/// collector.db. We open the same data dir, so the tools read the SDK's events
+/// either way; attach as a pure reader and let the standalone own ingestion.
+async fn prepare() -> Result<(StoreHandle, CommandHub, PmStore), Box<dyn std::error::Error>> {
     let ws_port = port_from_env("RUNTIMESCOPE_PORT", DEFAULT_WS_PORT);
     let http_port = port_from_env("RUNTIMESCOPE_HTTP_PORT", DEFAULT_HTTP_PORT);
     // First-run cutover guard: back up legacy Node-era data before opening the
     // stores (or leave it with RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1) — M6 Slice D.
-    // Abort if the backup failed rather than run on a half-migrated store.
     collector_core::migration::first_run_guard(&data_dir()).map_err(std::io::Error::other)?;
     let store = open_store().await?;
     let hub = CommandHub::new();
     // pm/ store (M5): separate pm.db alongside the event store's collector.db.
     let pm = PmStore::open(&data_dir().join("pm.db"))?;
 
-    // Embed the collector in-process (ADR-0008): WS + HTTP run alongside MCP so
-    // the command channel's send is an in-process call, and the tools read the
-    // same store the SDK feeds.
-    //
-    // BUT if a standalone collector is already serving this port (the common
-    // setup: a launchd/systemd `collector-server` the SDKs report to), DON'T start
-    // a second one — it would just fail to bind ("Address already in use") and,
-    // worse, run a duplicate retention sweep against the shared collector.db. We
-    // open the same data dir, so the read tools see the SDK's events either way;
-    // attach as a pure reader and let the standalone own ingestion/WS/retention.
     if collector_already_running(http_port).await {
         eprintln!(
             "[RuntimeScope] attached to the collector already serving :{http_port} \
@@ -113,12 +121,10 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         let serve_pm = pm.clone();
         tokio::spawn(async move {
             // MCP auth mode: config-file-only, ignores RUNTIMESCOPE_AUTH_TOKEN (Node
-            // parity, mcp-server/src/index.ts).
-            // process_monitor = true: mcp-server serves live /api/processes + /api/ports
-            // (Node `new ProcessMonitor(store)`); the standalone collector-server passes false.
-            // Embedded collector always binds loopback — the MCP server is a local stdio
-            // process; RUNTIMESCOPE_HOST only governs the standalone collector-server
-            // (ADR-0010). Remote MCP exposure is ADR-0011, not this.
+            // parity). process_monitor = true: serves live /api/processes + /api/ports.
+            // The EMBEDDED collector always binds loopback — RUNTIMESCOPE_HOST governs
+            // only the standalone collector-server (ADR-0010). Exposing the MCP itself
+            // remotely is run_http() (ADR-0011), which gates with a bearer token.
             let host = std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST);
             if let Err(e) = serve(serve_store, serve_hub, serve_pm, host, ws_port, http_port, VERSION.to_string(), AuthMode::Mcp, true).await {
                 eprintln!("[RuntimeScope] embedded collector failed: {e}");
@@ -126,23 +132,15 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
-    // The conformance mcp-driver waits for this exact marker before sending
-    // JSON-RPC (and only then attaches — see the harness note). Print it before
-    // serve(stdio()) so initialize lands after the transport reader is up.
-    eprintln!("[RuntimeScope] MCP server running on stdio");
-
-    // pm/ project discovery (M5): scan ~/.claude/projects for REAL projects (the
-    // over-discovery fix) + index their sessions into pm.db. Backgrounded so it
-    // never delays the MCP transport; a no-op when ~/.claude/projects is absent
-    // (e.g. the conformance harness's temp HOME). Incremental on re-run.
+    // pm/ project discovery (M5): scan ~/.claude/projects for REAL projects + index
+    // their sessions into pm.db. Backgrounded so it never delays the transport; a
+    // no-op when the dirs are absent. Incremental on re-run.
     {
         let pm_bg = pm.clone();
         let claude_base =
             std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude");
         let rs_base = data_dir();
         tokio::task::spawn_blocking(move || {
-            // Claude projects (~/.claude/projects, filtered) + RuntimeScope projects
-            // (~/.runtimescope/projects). Both no-op when absent.
             let r = collector_core::pm_discovery::discover_claude_projects(&claude_base, &pm_bg);
             let r2 = collector_core::discover_runtimescope_projects(&rs_base, &pm_bg);
             let projects = r.projects_discovered + r.projects_updated + r2.projects_discovered + r2.projects_updated;
@@ -155,7 +153,92 @@ pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
         });
     }
 
+    Ok((store, hub, pm))
+}
+
+/// Run the MCP server over **stdio** (the local default; collector embedded or
+/// attached per ADR-0008). The binary wrapper provides the tokio runtime.
+pub async fn run() -> Result<(), Box<dyn std::error::Error>> {
+    let (store, hub, pm) = prepare().await?;
+
+    // The conformance mcp-driver waits for this exact marker before sending
+    // JSON-RPC. Print it before serve(stdio()) so initialize lands after the
+    // transport reader is up.
+    eprintln!("[RuntimeScope] MCP server running on stdio");
+
     let service = Mcp::new(store, hub, pm).serve(stdio()).await?;
     service.waiting().await?;
+    Ok(())
+}
+
+/// Per-request bearer gate for the remote HTTP transport.
+struct McpHttpGate {
+    auth: AuthManager,
+    pm: PmStore,
+}
+
+/// Reject any request without a valid bearer (global token OR workspace `tk_`
+/// key) — mirrors the collector's `resolve_caller`. The remote MCP is never
+/// exposed unauthenticated (run_http refuses to start without a configured token).
+async fn require_bearer(
+    axum::extract::State(gate): axum::extract::State<Arc<McpHttpGate>>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> axum::response::Response {
+    use axum::http::{header::AUTHORIZATION, StatusCode};
+    use axum::response::IntoResponse;
+    let presented = req.headers().get(AUTHORIZATION).and_then(|v| v.to_str().ok());
+    let tok = AuthManager::extract_bearer(presented);
+    let ok = tok.is_some_and(|t| gate.auth.validate(t) || gate.pm.get_workspace_by_api_key(t).is_some());
+    if !ok {
+        return (StatusCode::UNAUTHORIZED, "Unauthorized: a valid bearer token is required").into_response();
+    }
+    next.run(req).await
+}
+
+/// Run the MCP server over **Streamable HTTP** (ADR-0011) so a coding agent can
+/// reach a DEPLOYED app's runtime remotely. Mounted at `/mcp`, **bearer-gated**:
+/// requires `RUNTIMESCOPE_AUTH_TOKEN` (or a workspace API key) and refuses to
+/// start otherwise — a remote MCP is never exposed unauthenticated. Binds
+/// `RUNTIMESCOPE_HOST` + `RUNTIMESCOPE_MCP_HTTP_PORT` (default 6770), distinct
+/// from the collector ports. OAuth 2.1 for interactive claude.ai custom
+/// connectors is a follow-up; bearer covers Claude Code (`claude mcp add
+/// --transport http`) and the MCP-connector API's `authorization_token`.
+pub async fn run_http() -> Result<(), Box<dyn std::error::Error>> {
+    // Standalone auth mode reads RUNTIMESCOPE_AUTH_TOKEN (+ config keys), matching
+    // the standalone collector — the token an operator already sets for ingest.
+    let gate_auth = AuthManager::for_mode(AuthMode::Standalone);
+    let (store, hub, pm) = prepare().await?;
+    if !gate_auth.enabled() && !pm.has_active_api_keys() {
+        return Err("remote MCP over HTTP requires RUNTIMESCOPE_AUTH_TOKEN (or a workspace API key) \
+                    — refusing to expose an unauthenticated MCP"
+            .into());
+    }
+
+    let host = host_from_env();
+    let port = port_from_env("RUNTIMESCOPE_MCP_HTTP_PORT", DEFAULT_MCP_HTTP_PORT);
+
+    // One shared Mcp; the factory hands a clone to each session (Mcp: Clone).
+    let mcp = Mcp::new(store, hub, pm.clone());
+    let svc = StreamableHttpService::new(
+        move || Ok::<_, std::io::Error>(mcp.clone()),
+        Arc::new(LocalSessionManager::default()),
+        StreamableHttpServerConfig::default(),
+    );
+
+    let gate = Arc::new(McpHttpGate { auth: gate_auth, pm });
+    let app = axum::Router::new()
+        .nest_service("/mcp", svc)
+        .layer(axum::middleware::from_fn_with_state(gate, require_bearer));
+
+    let listener = tokio::net::TcpListener::bind((host, port)).await?;
+    eprintln!("[RuntimeScope] MCP server (Streamable HTTP) on http://{host}:{port}/mcp");
+    if !host.is_loopback() {
+        eprintln!(
+            "[RuntimeScope]   ⚠ bound to {host} (non-loopback) — expose ONLY behind TLS + a \
+             tunnel/proxy (ADR-0010/0011); requests require a bearer token"
+        );
+    }
+    axum::serve(listener, app).await?;
     Ok(())
 }

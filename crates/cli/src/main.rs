@@ -14,7 +14,7 @@ fn main() {
         }
         Some("service") => service::run(args.get(2).map(String::as_str)),
         Some("dashboard") => dashboard(&args[2..]),
-        Some("mcp") => mcp_serve(),
+        Some("mcp") => mcp_serve(&args[2..]),
         Some("help") | Some("--help") | Some("-h") | None => {
             print_help();
             0
@@ -28,11 +28,14 @@ fn main() {
     std::process::exit(code);
 }
 
-/// `runtimescope mcp` — run the MCP server (embedded collector, ADR-0008) over
-/// stdio JSON-RPC. The stable entrypoint Claude Code / the plugin point at; same
-/// implementation as the `mcp-server` binary. Keeps stdout clean (logs → stderr
-/// inside `run()`); we print nothing here so the JSON-RPC stream isn't corrupted.
-fn mcp_serve() -> i32 {
+/// `runtimescope mcp [--http]` — run the MCP server (embedded/attached collector,
+/// ADR-0008). Default transport is **stdio** (the entrypoint Claude Code / the
+/// plugin point at; stdout stays clean so the JSON-RPC stream isn't corrupted).
+/// `--http` (or `RUNTIMESCOPE_MCP_TRANSPORT=http`) serves Streamable HTTP for
+/// REMOTE access to a deployed app (ADR-0011) — bearer-gated, behind the tunnel.
+fn mcp_serve(args: &[String]) -> i32 {
+    let http = args.iter().any(|a| a == "--http")
+        || std::env::var("RUNTIMESCOPE_MCP_TRANSPORT").as_deref() == Ok("http");
     let rt = match tokio::runtime::Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -40,7 +43,12 @@ fn mcp_serve() -> i32 {
             return 1;
         }
     };
-    match rt.block_on(runtimescope_mcp::run()) {
+    let result = if http {
+        rt.block_on(runtimescope_mcp::run_http())
+    } else {
+        rt.block_on(runtimescope_mcp::run())
+    };
+    match result {
         Ok(()) => 0,
         Err(e) => {
             eprintln!("[RuntimeScope] mcp server exited with error: {e}");
@@ -104,6 +112,7 @@ fn print_help() {
     println!("                  (install | stop | start | restart | status | uninstall)");
     println!("  dashboard       Start the collector if needed + open the dashboard (--network for the LAN URL)");
     println!("  mcp             Run the MCP server over stdio (for Claude Code: claude mcp add runtimescope -- runtimescope mcp)");
+    println!("  mcp --http      Run the MCP server over Streamable HTTP for remote access (ADR-0011; needs RUNTIMESCOPE_AUTH_TOKEN)");
     println!("  version         Print the version");
     println!("  help            Show this help");
 }

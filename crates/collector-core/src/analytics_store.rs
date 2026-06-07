@@ -90,6 +90,35 @@ CREATE TABLE IF NOT EXISTS analytics_projections (
   notes        TEXT,
   set_by       TEXT
 );
+-- Uptime / status (slice 5). Probe targets + per-check history + incidents.
+CREATE TABLE IF NOT EXISTS analytics_monitored_apps (
+  id          TEXT PRIMARY KEY,
+  name        TEXT NOT NULL,
+  url         TEXT NOT NULL,
+  probe_path  TEXT,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  created_at  INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS analytics_uptime_checks (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id     TEXT NOT NULL,
+  checked_at INTEGER NOT NULL,
+  source     TEXT NOT NULL,   -- 'probe' | 'heartbeat'
+  state      INTEGER NOT NULL, -- 0 up / 1 degraded / 2 down
+  resp_ms    INTEGER,
+  FOREIGN KEY (app_id) REFERENCES analytics_monitored_apps(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_uptime_checks_app_time ON analytics_uptime_checks(app_id, checked_at);
+CREATE TABLE IF NOT EXISTS analytics_incidents (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  app_id      TEXT NOT NULL,
+  type        TEXT NOT NULL,
+  severity    TEXT NOT NULL,  -- 'down' | 'degraded'
+  started_at  INTEGER NOT NULL,
+  resolved_at INTEGER,
+  FOREIGN KEY (app_id) REFERENCES analytics_monitored_apps(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_incidents_app_open ON analytics_incidents(app_id, resolved_at);
 ";
 
 #[derive(Clone, Debug, Serialize)]
@@ -575,6 +604,232 @@ impl AnalyticsStore {
     }
 }
 
+// ── Uptime / status (slice 5) ───────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize)]
+pub struct MonitoredApp {
+    pub id: String,
+    pub name: String,
+    pub url: String,
+    #[serde(rename = "probePath")]
+    pub probe_path: Option<String>,
+    pub enabled: bool,
+    #[serde(rename = "createdAt")]
+    pub created_at: i64,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Incident {
+    pub id: i64,
+    #[serde(rename = "appId")]
+    pub app_id: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub severity: String,
+    #[serde(rename = "startedAt")]
+    pub started_at: i64,
+    #[serde(rename = "resolvedAt")]
+    pub resolved_at: Option<i64>,
+}
+
+/// Lowercase slug: alnum runs joined by '-'. Empty ⇒ "app".
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    let mut dash = false;
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            out.push(ch.to_ascii_lowercase());
+            dash = false;
+        } else if !out.is_empty() && !dash {
+            out.push('-');
+            dash = true;
+        }
+    }
+    let s = out.trim_end_matches('-').to_string();
+    if s.is_empty() {
+        "app".to_string()
+    } else {
+        s
+    }
+}
+
+impl AnalyticsStore {
+    /// Register a probe target. `id` is a slug of `name`; a duplicate slug errors.
+    pub fn add_app(&self, name: &str, url: &str, probe_path: Option<&str>) -> Result<MonitoredApp, String> {
+        let id = slugify(name);
+        let now = now_ms();
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analytics_monitored_apps (id, name, url, probe_path, enabled, created_at) VALUES (?1, ?2, ?3, ?4, 1, ?5)",
+            params![id, name, url, probe_path, now],
+        )
+        .map_err(|e| format!("could not add app (duplicate name?): {e}"))?;
+        Ok(MonitoredApp { id, name: name.to_string(), url: url.to_string(), probe_path: probe_path.map(String::from), enabled: true, created_at: now })
+    }
+
+    pub fn list_apps(&self) -> Vec<MonitoredApp> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn
+            .prepare("SELECT id, name, url, probe_path, enabled, created_at FROM analytics_monitored_apps ORDER BY name")
+        {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_apps failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map([], |r| {
+            Ok(MonitoredApp {
+                id: r.get(0)?,
+                name: r.get(1)?,
+                url: r.get(2)?,
+                probe_path: r.get(3)?,
+                enabled: r.get::<_, i64>(4)? != 0,
+                created_at: r.get(5)?,
+            })
+        });
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_apps failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Stop monitoring (cascades checks + incidents). True if a row was removed.
+    pub fn delete_app(&self, id: &str) -> bool {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM analytics_monitored_apps WHERE id = ?1", params![id])
+            .map(|n| n > 0)
+            .unwrap_or(false)
+    }
+
+    pub fn record_check(&self, app_id: &str, source: &str, state: u8, resp_ms: Option<i64>) -> Result<(), String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analytics_uptime_checks (app_id, checked_at, source, state, resp_ms) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![app_id, now_ms(), source, state as i64, resp_ms],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(())
+    }
+
+    /// Checks for an app since `since_ms`, as `(checked_at, state, resp_ms)`.
+    pub fn recent_checks(&self, app_id: &str, since_ms: i64) -> Vec<(i64, u8, Option<i64>)> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(
+            "SELECT checked_at, state, resp_ms FROM analytics_uptime_checks WHERE app_id = ?1 AND checked_at >= ?2 ORDER BY checked_at",
+        ) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics recent_checks failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![app_id, since_ms], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(1)? as u8, r.get::<_, Option<i64>>(2)?))
+        });
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics recent_checks failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// The currently-open incident for an app, if any.
+    pub fn ongoing_incident(&self, app_id: &str) -> Option<Incident> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            "SELECT id, app_id, type, severity, started_at, resolved_at FROM analytics_incidents
+             WHERE app_id = ?1 AND resolved_at IS NULL ORDER BY started_at DESC LIMIT 1",
+            params![app_id],
+            |r| {
+                Ok(Incident {
+                    id: r.get(0)?,
+                    app_id: r.get(1)?,
+                    kind: r.get(2)?,
+                    severity: r.get(3)?,
+                    started_at: r.get(4)?,
+                    resolved_at: r.get(5)?,
+                })
+            },
+        )
+        .optional()
+        .unwrap_or_else(|e| {
+            tracing::warn!("analytics ongoing_incident failed: {e}");
+            None
+        })
+    }
+
+    pub fn open_incident(&self, app_id: &str, kind: &str, severity: &str) -> Result<i64, String> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO analytics_incidents (app_id, type, severity, started_at) VALUES (?1, ?2, ?3, ?4)",
+            params![app_id, kind, severity, now_ms()],
+        )
+        .map_err(|e| e.to_string())?;
+        Ok(conn.last_insert_rowid())
+    }
+
+    /// Resolve all open incidents for an app. Returns how many were closed.
+    pub fn resolve_incidents(&self, app_id: &str) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE analytics_incidents SET resolved_at = ?2 WHERE app_id = ?1 AND resolved_at IS NULL",
+            params![app_id, now_ms()],
+        )
+        .unwrap_or(0)
+    }
+
+    /// Incidents filtered by `status` (`ongoing`|`resolved`|`all`) since `since_ms`.
+    pub fn list_incidents(&self, status: &str, since_ms: Option<i64>) -> Vec<Incident> {
+        let cond = match status {
+            "ongoing" => "resolved_at IS NULL",
+            "resolved" => "resolved_at IS NOT NULL",
+            _ => "1=1",
+        };
+        let sql = format!(
+            "SELECT id, app_id, type, severity, started_at, resolved_at FROM analytics_incidents
+             WHERE {cond} AND started_at >= ?1 ORDER BY started_at DESC"
+        );
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = match conn.prepare(&sql) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::warn!("analytics list_incidents failed (prepare): {e}");
+                return Vec::new();
+            }
+        };
+        let rows = stmt.query_map(params![since_ms.unwrap_or(0)], |r| {
+            Ok(Incident {
+                id: r.get(0)?,
+                app_id: r.get(1)?,
+                kind: r.get(2)?,
+                severity: r.get(3)?,
+                started_at: r.get(4)?,
+                resolved_at: r.get(5)?,
+            })
+        });
+        match rows {
+            Ok(it) => it.filter_map(Result::ok).collect(),
+            Err(e) => {
+                tracing::warn!("analytics list_incidents failed (rows): {e}");
+                Vec::new()
+            }
+        }
+    }
+
+    /// Prune uptime checks older than `older_than_ms` (keeps the store bounded).
+    pub fn prune_uptime_checks(&self, older_than_ms: i64) -> usize {
+        let conn = self.conn.lock().unwrap();
+        conn.execute("DELETE FROM analytics_uptime_checks WHERE checked_at < ?1", params![older_than_ms])
+            .unwrap_or(0)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -686,6 +941,36 @@ mod tests {
         assert_eq!(projs.len(), 1);
         assert_eq!(projs[0].proj_hours, 1300.0);
         assert_eq!(projs[0].set_by.as_deref(), Some("Director"));
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn uptime_apps_checks_and_incidents_roundtrip() {
+        let path = tmp();
+        let s = AnalyticsStore::open(&path).unwrap();
+
+        let app = s.add_app("My API", "https://api.example.com", Some("/health")).unwrap();
+        assert_eq!(app.id, "my-api");
+        assert!(s.add_app("My API", "https://x", None).is_err(), "duplicate slug errors");
+        assert_eq!(s.list_apps().len(), 1);
+
+        s.record_check(&app.id, "probe", 0, Some(120)).unwrap();
+        s.record_check(&app.id, "probe", 2, None).unwrap();
+        assert_eq!(s.recent_checks(&app.id, now_ms() - 86_400_000).len(), 2);
+
+        assert!(s.ongoing_incident(&app.id).is_none());
+        let id = s.open_incident(&app.id, "Slow response (512ms)", "degraded").unwrap();
+        assert_eq!(s.ongoing_incident(&app.id).unwrap().id, id);
+        assert_eq!(s.list_incidents("ongoing", None).len(), 1);
+        assert_eq!(s.resolve_incidents(&app.id), 1);
+        assert!(s.ongoing_incident(&app.id).is_none());
+        assert_eq!(s.list_incidents("resolved", None).len(), 1);
+
+        // delete cascades checks + incidents (FK ON DELETE CASCADE).
+        assert!(s.delete_app(&app.id));
+        assert_eq!(s.recent_checks(&app.id, 0).len(), 0);
+        assert_eq!(s.list_incidents("all", None).len(), 0);
 
         let _ = std::fs::remove_file(&path);
     }

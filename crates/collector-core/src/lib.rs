@@ -13,6 +13,7 @@ pub mod analytics_mosaic;
 pub mod analytics_roi;
 pub mod analytics_rollups;
 pub mod analytics_store;
+pub mod analytics_uptime;
 pub mod auth;
 pub mod command;
 pub mod dev_server;

@@ -338,6 +338,34 @@ pub async fn serve(
         });
     }
 
+    // Uptime active-probe task (slice 5): probe every enabled app on an interval,
+    // record checks, open/resolve incidents. RUNTIMESCOPE_UPTIME_PROBE_SECS
+    // (default 60, min 5; 0 disables active probing — heartbeat-only).
+    let probe_secs = std::env::var("RUNTIMESCOPE_UPTIME_PROBE_SECS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(60);
+    if probe_secs > 0 {
+        let panalytics = analytics.clone();
+        let allow_private = uptime_allow_private();
+        let slow_ms = uptime_slow_ms();
+        let secs = probe_secs.max(5);
+        tokio::spawn(async move {
+            let client = probe_client();
+            let mut tick = tokio::time::interval(Duration::from_secs(secs));
+            let prune_every = (3600 / secs).max(1); // ~hourly
+            let mut ticks: u64 = 0;
+            loop {
+                tick.tick().await;
+                probe_all(&panalytics, &client, allow_private, slow_ms).await;
+                ticks += 1;
+                if ticks.is_multiple_of(prune_every) {
+                    panalytics.prune_uptime_checks(now_ms() - 90 * 86_400_000);
+                }
+            }
+        });
+    }
+
     let state = AppState {
         store,
         hub,
@@ -390,13 +418,20 @@ pub async fn serve(
         .route("/api/analytics/mosaic/sync", post(analytics_mosaic_sync))
         .route("/api/analytics/forecast", get(analytics_forecast))
         .route("/api/analytics/trace", get(analytics_trace))
+        // Uptime / status (slice 5)
+        .route("/api/analytics/status", get(analytics_status))
+        .route("/api/analytics/status/check-all", post(analytics_check_all))
+        .route("/api/analytics/incidents", get(analytics_incidents))
+        .route("/api/analytics/monitored-apps", post(analytics_add_app))
+        .route("/api/analytics/monitored-apps/{id}", delete(analytics_delete_app))
+        .route("/api/analytics/heartbeat", post(analytics_heartbeat))
         // Not-yet-built analytics backend surfaces (greppable; the dashboard stubs
         // reference the same tags). Specs: docs/specs/analytics-data-model.md +
         // analytics-uptime-slice5.md.
         //   TODO(analytics-survey): /api/analytics/surveys (GET/POST) + responses + the show_survey command channel — slice 4
-        //   TODO(analytics-status):  /api/analytics/status + /incidents + /heartbeat + /monitored-apps + probe task — slice 5
         //   TODO(analytics-admin):   de-anon route (X-Admin-Key → AnalyticsStore::get_pii, already in the store) + login audit — slice 6
         //   TODO(analytics-mcp):     MCP tools get_adoption_metrics / get_feature_usage / get_user_funnel / get_roi_report
+        //   TODO(analytics-status-heartbeat): SDK auto-heartbeat client wiring + missed-heartbeat→down detection (endpoint exists)
         .route("/api/analytics/overview", get(analytics_overview))
         .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/trends", get(analytics_trends))
@@ -1099,6 +1134,219 @@ async fn analytics_baseline_whatif(State(s): State<AppState>, headers: HeaderMap
         Ok(v) => Json(json!({ "data": v })).into_response(),
         Err(e) => mosaic_error(e),
     }
+}
+
+// ── Uptime / status (slice 5) ───────────────────────────────────────────────
+
+fn uptime_slow_ms() -> u64 {
+    std::env::var("RUNTIMESCOPE_UPTIME_SLOW_MS").ok().and_then(|v| v.parse().ok()).unwrap_or(400)
+}
+fn uptime_allow_private() -> bool {
+    std::env::var("RUNTIMESCOPE_UPTIME_ALLOW_PRIVATE").map(|v| v == "1" || v.eq_ignore_ascii_case("true")).unwrap_or(false)
+}
+
+/// Probe HTTP client: short timeout, NO redirects (a redirect could point at an
+/// internal host — SSRF), rustls TLS for external https.
+fn probe_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(10))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .unwrap_or_default()
+}
+
+fn probe_target(app: &crate::analytics_store::MonitoredApp) -> String {
+    match &app.probe_path {
+        Some(p) if !p.is_empty() => format!("{}/{}", app.url.trim_end_matches('/'), p.trim_start_matches('/')),
+        _ => app.url.clone(),
+    }
+}
+
+/// Probe one app: SSRF-guard (DNS re-check at probe time), time the GET, classify.
+/// A blocked/invalid target or transport error ⇒ down.
+async fn probe_app(
+    client: &reqwest::Client,
+    app: &crate::analytics_store::MonitoredApp,
+    allow_private: bool,
+    slow_ms: u64,
+) -> (u8, Option<i64>) {
+    use crate::analytics_uptime::{classify, guard_probe_url, DOWN};
+    let url = match guard_probe_url(&probe_target(app), allow_private).await {
+        Ok(u) => u,
+        Err(_) => return (DOWN, None),
+    };
+    let t0 = Instant::now();
+    let resp = client.get(url).send().await;
+    let ms = t0.elapsed().as_millis() as i64;
+    match resp {
+        Ok(r) if r.status().is_success() => (classify(true, ms as u64, slow_ms), Some(ms)),
+        Ok(_) => (DOWN, Some(ms)),
+        Err(_) => (DOWN, None),
+    }
+}
+
+/// Probe all enabled apps, record checks, and open/resolve incidents on state
+/// transitions. Returns the count probed. Shared by the background task + check-all.
+async fn probe_all(analytics: &AnalyticsStore, client: &reqwest::Client, allow_private: bool, slow_ms: u64) -> usize {
+    use crate::analytics_uptime::{DOWN, UP};
+    let apps = analytics.list_apps();
+    let mut n = 0;
+    for app in apps.iter().filter(|a| a.enabled) {
+        let (state, ms) = probe_app(client, app, allow_private, slow_ms).await;
+        let _ = analytics.record_check(&app.id, "probe", state, ms);
+        let ongoing = analytics.ongoing_incident(&app.id).is_some();
+        if state == UP {
+            if ongoing {
+                analytics.resolve_incidents(&app.id);
+            }
+        } else if !ongoing {
+            let (kind, sev) = if state == DOWN {
+                (ms.map(|m| format!("Down (no 2xx, {m}ms)")).unwrap_or_else(|| "Down (unreachable)".into()), "down")
+            } else {
+                (format!("Slow response ({}ms > {}ms)", ms.unwrap_or(0), slow_ms), "degraded")
+            };
+            let _ = analytics.open_incident(&app.id, &kind, sev);
+        }
+        n += 1;
+    }
+    n
+}
+
+/// GET /api/analytics/status — apps + per-app uptime/strip/last + fleet KPIs.
+async fn analytics_status(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let now = now_ms();
+    let day = 86_400_000i64;
+    let apps = s.analytics.list_apps();
+    let (mut healthy, mut degraded, mut down) = (0i64, 0i64, 0i64);
+    let (mut resp_sum, mut resp_n) = (0f64, 0i64);
+    let (mut up_sum, mut up_n) = (0f64, 0i64);
+    let mut data = Vec::new();
+    for app in &apps {
+        let checks = s.analytics.recent_checks(&app.id, now - 90 * day);
+        let st = crate::analytics_uptime::app_status(&checks, now);
+        match st["lastState"].as_i64() {
+            Some(0) => healthy += 1,
+            Some(1) => degraded += 1,
+            Some(2) => down += 1,
+            _ => {}
+        }
+        if st["lastState"].as_i64() == Some(0) {
+            if let Some(ms) = st["lastRespMs"].as_f64() {
+                resp_sum += ms;
+                resp_n += 1;
+            }
+        }
+        if let Some(p) = st["uptimePct"].as_f64() {
+            up_sum += p;
+            up_n += 1;
+        }
+        let mut obj = serde_json::to_value(app).unwrap_or_else(|_| json!({}));
+        if let (Some(o), Some(stobj)) = (obj.as_object_mut(), st.as_object()) {
+            for (k, v) in stobj {
+                o.insert(k.clone(), v.clone());
+            }
+        }
+        data.push(obj);
+    }
+    let kpis = json!({
+        "appsMonitored": apps.len(),
+        "healthy": healthy,
+        "degraded": degraded,
+        "down": down,
+        "activeIncidents": s.analytics.list_incidents("ongoing", None).len(),
+        "incidents30d": s.analytics.list_incidents("all", Some(now - 30 * day)).len(),
+        "avgRespMs": if resp_n > 0 { json!((resp_sum / resp_n as f64).round()) } else { Value::Null },
+        "overallUptimePct": if up_n > 0 { json!((up_sum / up_n as f64 * 100.0).round() / 100.0) } else { Value::Null },
+    });
+    Json(json!({ "data": data, "count": apps.len(), "kpis": kpis })).into_response()
+}
+
+/// GET /api/analytics/incidents?status=ongoing|resolved|all&window=
+async fn analytics_incidents(State(s): State<AppState>, headers: HeaderMap, Query(q): Query<HashMap<String, String>>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let status = q.get("status").map(String::as_str).unwrap_or("ongoing");
+    let since = q.get("window").and_then(|w| crate::analytics_rollups::window_cutoff(now_ms(), w));
+    let inc = s.analytics.list_incidents(status, since);
+    let count = inc.len();
+    Json(json!({ "data": inc, "count": count })).into_response()
+}
+
+#[derive(serde::Deserialize)]
+struct MonitoredAppBody {
+    name: String,
+    url: String,
+    #[serde(rename = "probePath")]
+    probe_path: Option<String>,
+}
+
+/// POST /api/analytics/monitored-apps — register a probe target (SSRF-guarded at
+/// add time; the probe re-guards for DNS rebind).
+async fn analytics_add_app(State(s): State<AppState>, headers: HeaderMap, body: String) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<MonitoredAppBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {name, url, probePath?}" }))).into_response();
+    };
+    if let Err(e) = crate::analytics_uptime::guard_probe_url(&b.url, uptime_allow_private()).await {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "BLOCKED_TARGET", "error": e }))).into_response();
+    }
+    match s.analytics.add_app(&b.name, &b.url, b.probe_path.as_deref()) {
+        Ok(app) => Json(json!({ "data": app })).into_response(),
+        Err(e) => (StatusCode::CONFLICT, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// DELETE /api/analytics/monitored-apps/{id}
+async fn analytics_delete_app(State(s): State<AppState>, headers: HeaderMap, Path(id): Path<String>) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    if s.analytics.delete_app(&id) {
+        Json(json!({ "data": { "deleted": true } })).into_response()
+    } else {
+        (StatusCode::NOT_FOUND, Json(json!({ "error": "app not found" }))).into_response()
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct HeartbeatBody {
+    #[serde(rename = "appId")]
+    app_id: String,
+}
+
+/// POST /api/analytics/heartbeat — SDK liveness ping. Ingest-side (rate-limited,
+/// not dashboard-auth-gated, like /api/events): records an 'up' heartbeat check.
+async fn analytics_heartbeat(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if !s.rate.allow(Some(peer), &headers) {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "rate limited" }))).into_response();
+    }
+    let Ok(b) = serde_json::from_str::<HeartbeatBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {appId}" }))).into_response();
+    };
+    match s.analytics.record_check(&b.app_id, "heartbeat", crate::analytics_uptime::UP, None) {
+        Ok(()) => Json(json!({ "data": { "ok": true } })).into_response(),
+        Err(_) => (StatusCode::NOT_FOUND, Json(json!({ "error": "unknown appId — register via monitored-apps first" }))).into_response(),
+    }
+}
+
+/// POST /api/analytics/status/check-all — probe every enabled app now.
+async fn analytics_check_all(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let n = probe_all(&s.analytics, &probe_client(), uptime_allow_private(), uptime_slow_ms()).await;
+    Json(json!({ "data": { "probed": n } })).into_response()
 }
 
 /// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
@@ -4587,6 +4835,93 @@ mod slice_g_dev_server_tests {
         assert_eq!(s, 200);
         assert_eq!(v["data"][0]["quarter"], quarter);
         assert!(v["data"][0]["actualValue"].as_f64().unwrap() > 0.0, "projection actuals derived from the quarter's events");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Slice 5: the uptime endpoints — SSRF block at add time, add/status/incidents/
+    // delete/heartbeat. Uses IP-literal targets so the SSRF guard resolves offline.
+    #[tokio::test]
+    async fn uptime_status_endpoints_and_ssrf_guard() {
+        let dir = std::env::temp_dir().join(format!("up-http-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let probe = analytics.clone(); // seed checks/incidents directly
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/status", get(analytics_status))
+            .route("/api/analytics/incidents", get(analytics_incidents))
+            .route("/api/analytics/monitored-apps", axum::routing::post(analytics_add_app))
+            .route("/api/analytics/monitored-apps/{id}", axum::routing::delete(analytics_delete_app))
+            .route("/api/analytics/heartbeat", axum::routing::post(analytics_heartbeat))
+            .with_state(state);
+
+        // SSRF: a loopback target is rejected at add time.
+        let (s, v) = req(&app, "POST", "/api/analytics/monitored-apps", Some(r#"{"name":"Internal","url":"http://127.0.0.1:9/x"}"#)).await;
+        assert_eq!(s, 400);
+        assert_eq!(v["code"], "BLOCKED_TARGET");
+        // file:// scheme rejected too.
+        let (s, _v) = req(&app, "POST", "/api/analytics/monitored-apps", Some(r#"{"name":"F","url":"file:///etc/passwd"}"#)).await;
+        assert_eq!(s, 400);
+
+        // A public target (IP literal → resolves offline) is accepted.
+        let (s, v) = req(&app, "POST", "/api/analytics/monitored-apps", Some(r#"{"name":"My API","url":"https://93.184.216.34/health"}"#)).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"]["id"], "my-api");
+
+        // status: app present, no checks yet → null uptime/lastState.
+        let (s, v) = req(&app, "GET", "/api/analytics/status", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["kpis"]["appsMonitored"], 1);
+        assert!(v["data"][0]["uptimePct"].is_null());
+
+        // seed a check + incident, re-read.
+        probe.record_check("my-api", "probe", 0, Some(120)).unwrap();
+        probe.open_incident("my-api", "Slow response (512ms > 400ms)", "degraded").unwrap();
+        let (_s, v) = req(&app, "GET", "/api/analytics/status", None).await;
+        assert_eq!(v["data"][0]["lastState"], 0);
+        assert_eq!(v["kpis"]["healthy"], 1);
+        let (_s, v) = req(&app, "GET", "/api/analytics/incidents?status=ongoing", None).await;
+        assert_eq!(v["count"], 1);
+
+        // heartbeat (needs ConnectInfo): known app ok, unknown app 404.
+        let hb = |app_id: &str| {
+            let mut r = Request::builder()
+                .method("POST")
+                .uri("/api/analytics/heartbeat")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(r#"{{"appId":"{app_id}"}}"#)))
+                .unwrap();
+            r.extensions_mut().insert(axum::extract::ConnectInfo("127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap()));
+            r
+        };
+        let (s, _v) = read_json(app.clone().oneshot(hb("my-api")).await.unwrap()).await;
+        assert_eq!(s, 200);
+        let (s, _v) = read_json(app.clone().oneshot(hb("nope")).await.unwrap()).await;
+        assert_eq!(s, 404, "heartbeat for an unregistered app is rejected");
+
+        // delete → gone.
+        let (s, _v) = req(&app, "DELETE", "/api/analytics/monitored-apps/my-api", None).await;
+        assert_eq!(s, 200);
+        let (_s, v) = req(&app, "GET", "/api/analytics/status", None).await;
+        assert_eq!(v["count"], 0);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

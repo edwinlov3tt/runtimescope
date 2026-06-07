@@ -1,9 +1,15 @@
 # Draft — Analytics slice 5: uptime / status
 
-> Draft design for the **Status** view (`docs/ui-update/analytics-status.html`),
+> Design for the **Status** view (`docs/ui-update/analytics-status.html`),
 > ADR-0012 slice 5. Companion to [analytics-data-model.md](./analytics-data-model.md)
-> (§ Status). Status: **DRAFT** — not yet implemented. Built on the existing
-> `analytics.db` (slices 1-3) + the SDK.
+> (§ Status). Status: **IMPLEMENTED (collector-side)** — store (3 tables + prune +
+> cascade), pure rollups (`classify`/`app_status`) + the SSRF guard
+> (`analytics_uptime.rs`), the 6 endpoints, and the background probe task are live
+> and tested (unit + HTTP + a live self-probe). **Deferred** (tagged
+> `TODO(analytics-status-heartbeat)`): the SDK auto-heartbeat client wiring and
+> missed-heartbeat→down detection (the `/heartbeat` endpoint exists; the active
+> probe is the primary signal). The dashboard page remains the `TODO(analytics-status)`
+> stub — now has a backend to wire.
 
 ## What the prototype renders (the contract)
 

@@ -26,10 +26,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 # `debug-embed` forces compile-time embedding in debug builds too (the
 # conformance harness runs the debug binary from arbitrary CWDs).
 rust-embed = { version = "8", features = ["debug-embed"] }
-# Optional Mosaic sidecar client (ADR-0013 slice 3b) — http-only (no TLS pulled
-# in; the mc-daemon runs on loopback). Used only when RUNTIMESCOPE_MOSAIC_URL is
-# set; absent ⇒ the SQL ROI path (3a) is authoritative.
-reqwest = { version = "0.12", default-features = false, features = ["json"] }
+# HTTP client: the Mosaic sidecar (3b, loopback http) + the uptime active probe
+# (slice 5), which must reach external HTTPS apps → rustls TLS (no OpenSSL).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Unix-only: process-group signalling for the dev-server lifecycle (group-kill
 # the whole tree on stop; ESRCH detection for the "already exited" path).

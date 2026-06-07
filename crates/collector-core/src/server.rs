@@ -5,6 +5,7 @@
 //! `ws_port` (default 6767), HTTP API on `http_port` (default 6768). All store
 //! access is async (the store is the dedicated-thread `StoreHandle`).
 
+use crate::analytics_store::AnalyticsStore;
 use crate::auth::{AuthManager, AuthMode};
 use crate::command::CommandHub;
 use crate::dev_server::{
@@ -242,6 +243,8 @@ struct AppState {
     store: StoreHandle,
     hub: CommandHub,
     pm: PmStore,
+    /// Product-analytics store (analytics.db) — ADR-0012; end-user identity + ROI.
+    analytics: AnalyticsStore,
     auth: AuthManager,
     /// Per-client ingest rate limiter (POST /api/events + SDK WS handshake).
     rate: Arc<RateLimiter>,
@@ -284,10 +287,21 @@ pub async fn serve(
     let dev_starting: StartingSet = Arc::new(Mutex::new(std::collections::HashSet::new()));
     reattach_dev_servers(&pm, &dev_servers);
 
+    // Product-analytics store (ADR-0012). Opened from the data dir like pm.db; a
+    // failure here shouldn't down the collector, so fall back to an in-memory DB
+    // (analytics is additive — event ingest/reads must still work).
+    let analytics = AnalyticsStore::open(&crate::data_dir().join("analytics.db"))
+        .or_else(|e| {
+            eprintln!("[RuntimeScope] analytics store open failed ({e}); using in-memory");
+            AnalyticsStore::open(std::path::Path::new(":memory:"))
+        })
+        .map_err(std::io::Error::other)?;
+
     let state = AppState {
         store,
         hub,
         pm,
+        analytics,
         auth: AuthManager::for_mode(auth_mode),
         rate: Arc::new(RateLimiter::from_env()),
         started: Instant::now(),
@@ -316,6 +330,11 @@ pub async fn serve(
         .route("/api/projects", get(projects))
         .route("/api/events", post(post_events))
         .route("/api/events/{kind}", get(events_by_kind))
+        // analytics subsystem (ADR-0012, slice 1-2): end-user identity + reads
+        .route("/api/analytics/identify", post(analytics_identify))
+        .route("/api/analytics/roles", get(analytics_roles))
+        .route("/api/analytics/users", get(analytics_users))
+        .route("/api/analytics/users/{anon_id}", get(analytics_user_by_id))
         // pm/ project-manager surface (M5)
         .route("/api/pm/discover", post(pm_discover))
         .route("/api/pm/projects", get(pm_projects))
@@ -470,6 +489,84 @@ fn unauthorized() -> Response {
 
 fn too_many_requests() -> Response {
     (StatusCode::TOO_MANY_REQUESTS, Json(json!({ "error": "Too Many Requests", "code": "RATE_LIMITED" }))).into_response()
+}
+
+// ── Analytics subsystem (ADR-0012) ──────────────────────────────────────────
+// Slice 1-2: end-user identity (identify) + base anonymized reads. Rollups
+// (per-user/feature/role over the event stream) + ROI land in later slices.
+// The read paths return ONLY anonymized records — PII (email/ip) is reachable
+// solely via the admin-token de-anon path (slice 6), never these routes.
+
+#[derive(serde::Deserialize)]
+struct IdentifyBody {
+    email: String,
+    role: Option<String>,
+    consent: Option<bool>,
+}
+
+/// POST /api/analytics/identify — the SDK's `identify()`. Records/refreshes an
+/// end-user and returns the anon id the SDK then stamps on `track()` events.
+/// Rate-limited + auth-gated exactly like event ingest.
+async fn analytics_identify(
+    State(s): State<AppState>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
+    body: String,
+) -> Response {
+    if !s.rate.allow(Some(peer), &headers) {
+        return too_many_requests();
+    }
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let Ok(b) = serde_json::from_str::<IdentifyBody>(&body) else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "Body must be {email, role?, consent?}" }))).into_response();
+    };
+    if b.email.trim().is_empty() {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "email is required" }))).into_response();
+    }
+    let role = b.role.unwrap_or_default();
+    let consent = b.consent.unwrap_or(false);
+    let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
+    match s.analytics.identify(b.email.trim(), &role, consent, ip.as_deref()) {
+        Ok(anon) => (StatusCode::OK, Json(json!({ "data": { "anonId": anon, "role": role, "consent": consent } }))).into_response(),
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
+    }
+}
+
+/// GET /api/analytics/roles — role → hourly rate (seeded defaults, editable).
+async fn analytics_roles(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let roles = s.analytics.roles();
+    let count = roles.len();
+    Json(json!({ "data": roles, "count": count })).into_response()
+}
+
+/// GET /api/analytics/users — anonymized end-users (NO PII).
+async fn analytics_users(State(s): State<AppState>, headers: HeaderMap) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let users = s.analytics.list_users();
+    let count = users.len();
+    Json(json!({ "data": users, "count": count })).into_response()
+}
+
+/// GET /api/analytics/users/{anon_id} — one anonymized end-user (NO PII).
+async fn analytics_user_by_id(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Path(anon_id): Path<String>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    match s.analytics.get_user(&anon_id) {
+        Some(u) => Json(json!({ "data": u })).into_response(),
+        None => (StatusCode::NOT_FOUND, Json(json!({ "error": "User not found" }))).into_response(),
+    }
 }
 
 fn forbidden(msg: &str) -> Response {
@@ -3331,6 +3428,7 @@ mod slice_g_dev_server_tests {
 
         let store = StoreHandle::open(root.join("data")).await.expect("store");
         let pm = PmStore::open(&root.join("pm.db")).expect("pm");
+        let analytics = AnalyticsStore::open(&root.join("analytics.db")).expect("analytics");
         pm.upsert_project(&crate::pm_store::PmProject {
             id: "p1".into(),
             name: "Proj".into(),
@@ -3344,6 +3442,7 @@ mod slice_g_dev_server_tests {
             store,
             hub: CommandHub::new(),
             pm,
+            analytics,
             auth: AuthManager::for_mode(AuthMode::Standalone),
             rate: Arc::new(RateLimiter::from_env()),
             started: Instant::now(),
@@ -3432,6 +3531,74 @@ mod slice_g_dev_server_tests {
         assert_eq!((s, v), (200, json!({ "data": { "status": "stopped" } })));
 
         let _ = std::fs::remove_dir_all(&root);
+    }
+
+    // Analytics HTTP (ADR-0012 slice 1-2): identify writes an anon user; the read
+    // routes return it WITHOUT PII; roles are seeded; unknown id → 404.
+    #[tokio::test]
+    async fn analytics_identify_then_reads_expose_no_pii() {
+        let dir = std::env::temp_dir().join(format!("an-http-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            auth: AuthManager::for_mode(AuthMode::Mcp), // no token → auth inactive
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/identify", axum::routing::post(analytics_identify))
+            .route("/api/analytics/roles", get(analytics_roles))
+            .route("/api/analytics/users", get(analytics_users))
+            .route("/api/analytics/users/{anon_id}", get(analytics_user_by_id))
+            .with_state(state);
+
+        // identify — oneshot needs a ConnectInfo extension (loopback ⇒ rate-exempt).
+        let mut idreq = Request::builder()
+            .method("POST")
+            .uri("/api/analytics/identify")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"email":"Sara.Chen@Company.com","role":"Specialist","consent":true}"#.to_string()))
+            .unwrap();
+        idreq.extensions_mut().insert(axum::extract::ConnectInfo(
+            "127.0.0.1:5000".parse::<std::net::SocketAddr>().unwrap(),
+        ));
+        let (s, v) = read_json(app.clone().oneshot(idreq).await.unwrap()).await;
+        assert_eq!(s, 200, "identify ok");
+        let anon = v["data"]["anonId"].as_str().unwrap().to_string();
+        assert_eq!(anon.len(), 8);
+
+        // roles seeded
+        let (s, v) = req(&app, "GET", "/api/analytics/roles", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["count"], 5);
+
+        // users — the anon user is present, and the response carries NO PII
+        let (s, v) = req(&app, "GET", "/api/analytics/users", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["count"], 1);
+        assert_eq!(v["data"][0]["anonId"], anon);
+        assert_eq!(v["data"][0]["role"], "Specialist");
+        let body = v.to_string().to_lowercase();
+        assert!(!body.contains("sara") && !body.contains("email"), "read leaked PII: {body}");
+
+        // user by id + 404
+        let (s, _v) = req(&app, "GET", &format!("/api/analytics/users/{anon}"), None).await;
+        assert_eq!(s, 200);
+        let (s, _v) = req(&app, "GET", "/api/analytics/users/ZZZZZZZZ", None).await;
+        assert_eq!(s, 404);
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

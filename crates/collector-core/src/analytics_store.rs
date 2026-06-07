@@ -138,8 +138,11 @@ pub struct AnalyticsStore {
 
 impl AnalyticsStore {
     pub fn open(path: &Path) -> Result<Self, String> {
+        // Skip dir creation for `:memory:` (and any parentless path).
         if let Some(parent) = path.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            if !parent.as_os_str().is_empty() {
+                std::fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+            }
         }
         let conn = Connection::open(path).map_err(|e| e.to_string())?;
         conn.pragma_update(None, "foreign_keys", true).map_err(|e| e.to_string())?;

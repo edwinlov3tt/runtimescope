@@ -19,7 +19,8 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn now_ms() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as i64
+    // Fall back to 0 rather than panic if the clock is before the epoch.
+    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0)
 }
 
 /// Default fully-loaded role rates ($/hr) — from the KPI methodology
@@ -172,34 +173,41 @@ impl AnalyticsStore {
     }
 
     /// Stable, deterministic anon id from an email (same email → same id), so the
-    /// dashboard never needs the email. 8 uppercase hex chars (4 bytes of SHA-256)
-    /// — ~4.3B space, ample for internal-tools scale.
+    /// dashboard never needs the email. 16 uppercase hex chars (8 bytes of
+    /// SHA-256) — a 64-bit space, so the birthday bound keeps collisions
+    /// negligible well past any realistic user count (4 bytes was ~50% at ~65k).
     pub fn anon_id_for(email: &str) -> String {
         let mut h = Sha256::new();
         h.update(email.trim().to_lowercase().as_bytes());
         let d = h.finalize();
-        format!("{:02X}{:02X}{:02X}{:02X}", d[0], d[1], d[2], d[3])
+        d[..8].iter().map(|b| format!("{b:02X}")).collect()
     }
 
     /// Record/refresh an end-user identity (SDK `identify()`). Upserts the anon
     /// user (role/consent + last_seen; first_seen set once) and the PII row.
     /// Returns the anon id the SDK then stamps on its `track()` events.
+    /// `role`/`consent` are optional: when `None` the existing value is preserved
+    /// (a re-identify that omits `consent` must NOT silently revoke it). Callers
+    /// should pass `ip = None` unless `consent == Some(true)`.
     pub fn identify(
         &self,
         email: &str,
-        role: &str,
-        consent: bool,
+        role: Option<&str>,
+        consent: Option<bool>,
         ip: Option<&str>,
     ) -> Result<String, String> {
         let anon = Self::anon_id_for(email);
         let now = now_ms();
+        let consent_i: Option<i64> = consent.map(|c| c as i64);
         let conn = self.conn.lock().unwrap();
         conn.execute(
             "INSERT INTO analytics_users (anon_id, role, consent, first_seen, last_seen)
-             VALUES (?1, ?2, ?3, ?4, ?4)
+             VALUES (?1, COALESCE(?2, ''), COALESCE(?3, 0), ?4, ?4)
              ON CONFLICT(anon_id) DO UPDATE SET
-               role = excluded.role, consent = excluded.consent, last_seen = excluded.last_seen",
-            params![anon, role, consent as i64, now],
+               role = COALESCE(?2, analytics_users.role),
+               consent = COALESCE(?3, analytics_users.consent),
+               last_seen = ?4",
+            params![anon, role, consent_i, now],
         )
         .map_err(|e| e.to_string())?;
         conn.execute(
@@ -558,10 +566,15 @@ mod tests {
         let s = AnalyticsStore::open(&path).unwrap();
 
         // identify is deterministic: same email → same anon id.
-        let a1 = s.identify("Sara.Chen@Company.com", "Specialist", true, Some("10.0.0.1")).unwrap();
-        let a2 = s.identify("sara.chen@company.com ", "Specialist", true, None).unwrap();
+        let a1 = s.identify("Sara.Chen@Company.com", Some("Specialist"), Some(true), Some("10.0.0.1")).unwrap();
+        let a2 = s.identify("sara.chen@company.com ", Some("Specialist"), Some(true), None).unwrap();
         assert_eq!(a1, a2, "same email (case/space-insensitive) → same anon id");
-        assert_eq!(a1.len(), 8, "anon id is 8 hex chars");
+        assert_eq!(a1.len(), 16, "anon id is 16 hex chars (8 bytes)");
+
+        // Re-identify with consent omitted (None) must NOT revoke prior consent.
+        s.identify("sara.chen@company.com", None, None, None).unwrap();
+        assert!(s.get_user(&a1).unwrap().consent, "omitted consent must be preserved, not revoked");
+        assert_eq!(s.get_user(&a1).unwrap().role, "Specialist", "omitted role preserved");
 
         // The dashboard read carries NO email/ip.
         let u = s.get_user(&a1).expect("user exists");

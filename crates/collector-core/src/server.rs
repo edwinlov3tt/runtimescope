@@ -580,11 +580,12 @@ async fn analytics_identify(
     if b.email.trim().is_empty() {
         return (StatusCode::BAD_REQUEST, Json(json!({ "code": "INVALID_PAYLOAD", "error": "email is required" }))).into_response();
     }
-    let role = b.role.unwrap_or_default();
-    let consent = b.consent.unwrap_or(false);
-    let ip = s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string());
-    match s.analytics.identify(b.email.trim(), &role, consent, ip.as_deref()) {
-        Ok(anon) => (StatusCode::OK, Json(json!({ "data": { "anonId": anon, "role": role, "consent": consent } }))).into_response(),
+    // role/consent are preserved on omit (no silent revoke). IP is PII — only
+    // captured with explicit consent.
+    let role = b.role.filter(|r| !r.trim().is_empty());
+    let ip = if b.consent == Some(true) { s.rate.client_ip(Some(peer), &headers).map(|i| i.to_string()) } else { None };
+    match s.analytics.identify(b.email.trim(), role.as_deref(), b.consent, ip.as_deref()) {
+        Ok(anon) => (StatusCode::OK, Json(json!({ "data": { "anonId": anon, "role": role, "consent": b.consent } }))).into_response(),
         Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e }))).into_response(),
     }
 }
@@ -651,7 +652,7 @@ async fn analytics_baselines(
         return unauthorized();
     }
     let project = q.get("project_id").map(String::as_str);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let feat_roi = roi_ctx(&s).by_feature(&events);
     let mut uses: HashMap<String, u64> = HashMap::new();
     for e in &events {
@@ -839,7 +840,7 @@ async fn analytics_projections(
         return unauthorized();
     }
     let project = q.get("project_id").map(String::as_str);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let ctx = roi_ctx(&s);
     let data: Vec<Value> = s
         .analytics
@@ -925,8 +926,8 @@ async fn build_facts_for(
     analytics: &AnalyticsStore,
     project: Option<&str>,
 ) -> Vec<crate::analytics_mosaic::Cell> {
-    let events = store.events_by_type("custom", project).await;
-    let sessions = store.events_by_type("session", project).await;
+    let events = store.events_by_type_full("custom", project).await;
+    let sessions = store.events_by_type_full("session", project).await;
     let mut session_app: HashMap<String, String> = HashMap::new();
     for se in &sessions {
         if let (Some(sid), Some(app)) =
@@ -1087,7 +1088,7 @@ async fn analytics_overview(
     }
     let project = q.get("project_id").map(String::as_str);
     let window = q.get("window").map(String::as_str).unwrap_or("30d");
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let invited = s.analytics.list_users().len();
     let mut ov = crate::analytics_rollups::overview(&events, now_ms(), window, invited);
     // ROI $ (slice 3a), over the same window.
@@ -1114,7 +1115,7 @@ async fn analytics_features(
     }
     let project = q.get("project_id").map(String::as_str);
     let window = q.get("window").map(String::as_str).unwrap_or("30d");
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let cutoff = crate::analytics_rollups::window_cutoff(now_ms(), window);
     let windowed: Vec<Value> = events
         .into_iter()
@@ -1149,7 +1150,7 @@ async fn analytics_trends(
     let project = q.get("project_id").map(String::as_str);
     let window = q.get("window").map(String::as_str).unwrap_or("12w");
     let buckets = q.get("buckets").and_then(|b| b.parse::<usize>().ok()).unwrap_or(12);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let t = crate::analytics_rollups::trends(&events, now_ms(), window, buckets);
     Json(json!({ "data": t })).into_response()
 }
@@ -1165,7 +1166,7 @@ async fn analytics_funnel(
         return unauthorized();
     }
     let project = q.get("project_id").map(String::as_str);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let invited = s.analytics.list_users().len();
     let f = crate::analytics_rollups::funnel(&events, now_ms(), invited);
     Json(json!({ "data": f })).into_response()
@@ -1185,7 +1186,7 @@ async fn analytics_feature_trends(
     let window = q.get("window").map(String::as_str).unwrap_or("12w");
     let buckets = q.get("buckets").and_then(|b| b.parse().ok()).unwrap_or(12);
     let top = q.get("top").and_then(|t| t.parse().ok()).unwrap_or(4);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let t = crate::analytics_rollups::feature_trends(&events, now_ms(), window, buckets, top);
     Json(json!({ "data": t })).into_response()
 }
@@ -1207,7 +1208,7 @@ async fn analytics_event_mix(
     let cutoff = crate::analytics_rollups::window_cutoff(now_ms(), window);
     let mut out: Vec<Value> = Vec::new();
     for t in MIX_TYPES {
-        let evs = s.store.events_by_type(t, project).await;
+        let evs = s.store.events_by_type_full(t, project).await;
         let count = evs
             .iter()
             .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
@@ -1231,7 +1232,7 @@ async fn analytics_cohorts(
     }
     let project = q.get("project_id").map(String::as_str);
     let weeks = q.get("weeks").and_then(|w| w.parse().ok()).unwrap_or(8);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let rows = crate::analytics_rollups::cohort_retention(&events, now_ms(), weeks);
     let count = rows.len();
     Json(json!({ "data": rows, "count": count })).into_response()
@@ -1241,7 +1242,7 @@ async fn analytics_cohorts(
 /// users/events/prev + value$/prevValue$ over the current vs prior window.
 /// Returns (rows, key_name `role`|`app`).
 async fn compute_compare(s: &AppState, by: &str, project: Option<&str>, window: &str) -> (Vec<Value>, &'static str) {
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let now = now_ms();
     let ctx = roi_ctx(s);
     let cur_cut = crate::analytics_rollups::window_cutoff(now, window).unwrap_or(now - 30 * 86_400_000);
@@ -1253,7 +1254,7 @@ async fn compute_compare(s: &AppState, by: &str, project: Option<&str>, window: 
     let (mut rows, key_name, cur_val, prev_val) = if by == "app" {
         // custom events don't carry the app; derive sessionId → appName from the
         // persisted `session` events.
-        let sessions = s.store.events_by_type("session", project).await;
+        let sessions = s.store.events_by_type_full("session", project).await;
         let mut session_app: HashMap<String, String> = HashMap::new();
         for se in &sessions {
             if let (Some(sid), Some(app)) =
@@ -1334,7 +1335,7 @@ async fn analytics_users(
         return unauthorized();
     }
     let project = q.get("project_id").map(String::as_str);
-    let events = s.store.events_by_type("custom", project).await;
+    let events = s.store.events_by_type_full("custom", project).await;
     let rollups = crate::analytics_rollups::user_rollups(&events);
     let roi = roi_ctx(&s).by_user(&events); // lifetime value attributed per user
     let data: Vec<Value> = s
@@ -4388,7 +4389,7 @@ mod slice_g_dev_server_tests {
         let (s, v) = read_json(app.clone().oneshot(idreq).await.unwrap()).await;
         assert_eq!(s, 200, "identify ok");
         let anon = v["data"]["anonId"].as_str().unwrap().to_string();
-        assert_eq!(anon.len(), 8);
+        assert_eq!(anon.len(), 16);
 
         // roles seeded
         let (s, v) = req(&app, "GET", "/api/analytics/roles", None).await;
@@ -4453,6 +4454,94 @@ mod slice_g_dev_server_tests {
 
         let (s, _v) = req(&app, "GET", "/api/analytics/trace?coord=a,b", None).await;
         assert_eq!(s, 503);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // End-to-end over the real handlers (slice 3a): seed a baseline + an identified
+    // user + anon-stamped custom events, then exercise overview/features/baselines/
+    // submissions/projections — asserting the $ enrichment, the full-history read
+    // path, and the submission flag/accept flow.
+    #[tokio::test]
+    async fn analytics_roi_endpoints_end_to_end() {
+        use chrono::{Datelike, TimeZone, Utc};
+        let dir = std::env::temp_dir().join(format!("an-e2e-{}-{}", std::process::id(), now_ms()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let store = StoreHandle::open(dir.join("data")).await.unwrap();
+        let pm = PmStore::open(&dir.join("pm.db")).unwrap();
+        let analytics = AnalyticsStore::open(&dir.join("analytics.db")).unwrap();
+        analytics.upsert_baseline("geocode", 8.0, 2.4, true, "admin", None, Some("seed")).unwrap();
+        let anon = analytics.identify("sara@co.com", Some("Specialist"), Some(true), None).unwrap(); // $50
+        let now = now_ms();
+        let ev = |id: &str, ts: i64| {
+            json!({ "eventId": id, "sessionId": "s1", "timestamp": ts, "eventType": "custom", "name": "geocode", "anonId": anon, "properties": { "count": 10 } })
+        };
+        store.add_batch("proj".into(), vec![ev("e1", now), ev("e2", now - 1000)]).await.unwrap();
+
+        let state = AppState {
+            store,
+            hub: CommandHub::new(),
+            pm,
+            analytics,
+            mosaic: None,
+            auth: AuthManager::for_mode(AuthMode::Mcp),
+            rate: Arc::new(RateLimiter::from_env()),
+            started: Instant::now(),
+            version: crate::VERSION.to_string(),
+            dev_servers: Arc::new(Mutex::new(HashMap::new())),
+            dev_starting: Arc::new(Mutex::new(std::collections::HashSet::new())),
+            process_monitor: false,
+            last_snapshot: Arc::new(Mutex::new(0)),
+        };
+        let app = Router::new()
+            .route("/api/analytics/overview", get(analytics_overview))
+            .route("/api/analytics/features", get(analytics_features))
+            .route("/api/analytics/baselines", get(analytics_baselines).put(analytics_put_baseline))
+            .route("/api/analytics/baselines/submissions", get(analytics_submissions).post(analytics_post_submission))
+            .route("/api/analytics/baselines/submissions/{id}/accept", axum::routing::post(analytics_accept_submission))
+            .route("/api/analytics/projections", get(analytics_projections).post(analytics_post_projection))
+            .with_state(state);
+
+        // overview $: 2 × (8-2.4)*10/60*50 = 2 × 46.67 = 93.33
+        let (s, v) = req(&app, "GET", "/api/analytics/overview?window=30d", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"]["activeUsers"], 1);
+        assert!((v["data"]["valueSaved"].as_f64().unwrap() - 93.33).abs() < 0.05, "valueSaved={:?}", v["data"]["valueSaved"]);
+
+        // features $: geocode has value + uses
+        let (s, v) = req(&app, "GET", "/api/analytics/features?window=30d", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"][0]["feature"], "geocode");
+        assert!(v["data"][0]["value"].as_f64().unwrap() > 0.0);
+
+        // baselines: live uses=2; PUT a new one
+        let (s, v) = req(&app, "GET", "/api/analytics/baselines", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"][0]["uses"], 2);
+        let (s, _v) = req(&app, "PUT", "/api/analytics/baselines", Some(r#"{"fn":"export","manualMin":15,"toolMin":5,"perItem":false}"#)).await;
+        assert_eq!(s, 200);
+
+        // submission vs current manual 8, est 12 → 50% divergence → flagged; then accept.
+        let (s, _v) = req(&app, "POST", "/api/analytics/baselines/submissions", Some(r#"{"fn":"geocode","manualMin":12}"#)).await;
+        assert_eq!(s, 200);
+        let (s, v) = req(&app, "GET", "/api/analytics/baselines/submissions", None).await;
+        assert_eq!(s, 200);
+        let sub = &v["data"][0];
+        assert_eq!(sub["flagged"], true);
+        assert_eq!(sub["currentManualMin"], 8.0);
+        let sid = sub["id"].as_i64().unwrap();
+        let (s, _v) = req(&app, "POST", &format!("/api/analytics/baselines/submissions/{sid}/accept"), None).await;
+        assert_eq!(s, 200);
+
+        // projections: POST the quarter containing `now`, GET → live-derived actuals > 0.
+        let dt = Utc.timestamp_millis_opt(now).single().unwrap();
+        let quarter = format!("Q{} {}", (dt.month() - 1) / 3 + 1, dt.year());
+        let (s, _v) = req(&app, "POST", "/api/analytics/projections", Some(&format!(r#"{{"quarter":"{quarter}","projHours":100,"projValue":5000,"setBy":"Director"}}"#))).await;
+        assert_eq!(s, 200);
+        let (s, v) = req(&app, "GET", "/api/analytics/projections", None).await;
+        assert_eq!(s, 200);
+        assert_eq!(v["data"][0]["quarter"], quarter);
+        assert!(v["data"][0]["actualValue"].as_f64().unwrap() > 0.0, "projection actuals derived from the quarter's events");
 
         let _ = std::fs::remove_dir_all(&dir);
     }

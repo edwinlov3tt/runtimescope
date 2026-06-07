@@ -120,6 +120,10 @@ enum Cmd {
     Sessions { reply: oneshot::Sender<Vec<SessionInfo>> },
     ConnectedCount { reply: oneshot::Sender<usize> },
     EventsByType { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
+    /// Like EventsByType but filters by type FIRST over FULL durable history (no
+    /// hot-tier all-types cap) — analytics aggregations need the whole `custom`
+    /// stream, not the newest N events of all types.
+    EventsByTypeFull { event_type: String, project: Option<String>, reply: oneshot::Sender<Vec<Value>> },
     Timeline {
         project: Option<String>,
         types: Option<Vec<String>>,
@@ -420,6 +424,9 @@ impl StoreHandle {
                     Cmd::EventsByType { event_type, project, reply } => {
                         let _ = reply.send(query_events(&conn, &event_type, project.as_deref(), cap));
                     }
+                    Cmd::EventsByTypeFull { event_type, project, reply } => {
+                        let _ = reply.send(query_events_typed(&conn, &event_type, project.as_deref()));
+                    }
                     Cmd::Timeline { project, types, since_ms, session_id, reply } => {
                         let _ = reply.send(query_timeline(
                             &conn,
@@ -555,6 +562,22 @@ impl StoreHandle {
     pub async fn events_by_type(&self, event_type: &str, project: Option<&str>) -> Vec<Value> {
         let (reply, rx) = oneshot::channel();
         let cmd = Cmd::EventsByType {
+            event_type: event_type.to_string(),
+            project: project.map(String::from),
+            reply,
+        };
+        if self.tx.send(cmd).await.is_err() {
+            return Vec::new();
+        }
+        rx.await.unwrap_or_default()
+    }
+
+    /// Full type-filtered history (no hot-tier cap) — for analytics aggregations
+    /// that must see the whole `custom`/`session` stream, not the newest N of all
+    /// types. See [`Cmd::EventsByTypeFull`].
+    pub async fn events_by_type_full(&self, event_type: &str, project: Option<&str>) -> Vec<Value> {
+        let (reply, rx) = oneshot::channel();
+        let cmd = Cmd::EventsByTypeFull {
             event_type: event_type.to_string(),
             project: project.map(String::from),
             reply,
@@ -921,6 +944,30 @@ fn query_session_history(conn: &Connection, project: &str, limit: usize) -> Vec<
 /// within the **hot tier**: the newest `cap` events across the whole store
 /// (Node's ring-buffer window), then filtered by type/project. This bounds the
 /// read API to the configured buffer size while SQLite keeps full history.
+/// Filter by type FIRST over full durable history (no all-types hot-tier cap) —
+/// for analytics aggregations that need the whole `custom`/`session` stream.
+/// Newest-first. (`query_events` caps the newest N across ALL types then filters,
+/// which is correct for the recent-activity dashboard pages but starves a
+/// low-frequency type like `custom` in a busy app.)
+fn query_events_typed(conn: &Connection, event_type: &str, project: Option<&str>) -> Vec<Value> {
+    let mut stmt = match conn.prepare(
+        "SELECT data FROM events WHERE event_type = ?1 AND (?2 IS NULL OR project = ?2) ORDER BY id DESC",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map(rusqlite::params![event_type, project], |r| r.get::<_, String>(0));
+    let mut out = Vec::new();
+    if let Ok(rows) = rows {
+        for row in rows.flatten() {
+            if let Ok(v) = serde_json::from_str::<Value>(&row) {
+                out.push(v);
+            }
+        }
+    }
+    out
+}
+
 fn query_events(conn: &Connection, event_type: &str, project: Option<&str>, cap: usize) -> Vec<Value> {
     let mut stmt = match conn.prepare(
         "SELECT data FROM (SELECT id, data, event_type, project FROM events ORDER BY id DESC LIMIT ?3) \

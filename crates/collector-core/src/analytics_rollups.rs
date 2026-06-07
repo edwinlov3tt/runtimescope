@@ -13,17 +13,28 @@ use std::collections::{HashMap, HashSet};
 
 const DAY_MS: i64 = 86_400_000;
 
-/// Cutoff timestamp for a window label (`7d`/`30d`/`90d`), or `None` for `all`.
-/// Unknown labels default to 30 days.
+/// Cutoff timestamp for a window label, or `None` for `all`/empty. Parses
+/// `<n><unit>` where unit is `d` (days), `w` (weeks), `mo`/`m` (months≈30d), or
+/// bare `<n>` (days) — so `7d`, `12w`, `12mo` all resolve correctly. Unparseable
+/// / non-positive falls back to 30 days.
 pub fn window_cutoff(now: i64, window: &str) -> Option<i64> {
-    let days = match window {
-        "all" | "" => return None,
-        "7d" => 7,
-        "90d" => 90,
-        "30d" => 30,
-        other => other.trim_end_matches('d').parse::<i64>().unwrap_or(30),
+    let w = window.trim();
+    if w.is_empty() || w == "all" {
+        return None;
+    }
+    let (num, per_unit_days) = if let Some(n) = w.strip_suffix("mo") {
+        (n, 30)
+    } else if let Some(n) = w.strip_suffix('w') {
+        (n, 7)
+    } else if let Some(n) = w.strip_suffix('d') {
+        (n, 1)
+    } else if let Some(n) = w.strip_suffix('m') {
+        (n, 30) // "12m" months alias
+    } else {
+        (w, 1) // bare number ⇒ days
     };
-    Some(now - days * DAY_MS)
+    let days = num.trim().parse::<i64>().ok().filter(|d| *d > 0).unwrap_or(30);
+    Some(now - days * per_unit_days * DAY_MS)
 }
 
 fn anon_of(e: &Value) -> Option<&str> {
@@ -44,7 +55,8 @@ pub fn active_users(events: &[Value], now: i64, window: &str) -> usize {
     let cutoff = window_cutoff(now, window);
     let mut set = HashSet::new();
     for e in events {
-        if cutoff.is_none_or(|c| ts_of(e) >= c) {
+        let t = ts_of(e);
+        if t <= now && cutoff.is_none_or(|c| t >= c) {
             if let Some(a) = anon_of(e) {
                 set.insert(a);
             }
@@ -211,6 +223,9 @@ pub fn funnel(events: &[Value], now: i64, invited: usize) -> Value {
     let mut sessions: HashMap<&str, HashSet<&str>> = HashMap::new();
     let mut last: HashMap<&str, i64> = HashMap::new();
     for e in events {
+        if ts_of(e) > now {
+            continue; // ignore future-dated (clock-skewed) events
+        }
         let Some(a) = anon_of(e) else { continue };
         if let Some(s) = session_of(e) {
             sessions.entry(a).or_default().insert(s);
@@ -500,6 +515,21 @@ mod tests {
         assert_eq!(dir["users"], 0); // none current
         assert_eq!(dir["prevUsers"], 1); // C in prior window
         assert_eq!(dir["prevEvents"], 1);
+    }
+
+    #[test]
+    fn window_cutoff_parses_d_w_mo_units() {
+        let now = 1_000_000 * DAY_MS;
+        let days = |w: &str| window_cutoff(now, w).map(|c| (now - c) / DAY_MS);
+        assert_eq!(window_cutoff(now, "all"), None);
+        assert_eq!(window_cutoff(now, ""), None);
+        assert_eq!(days("7d"), Some(7));
+        assert_eq!(days("30d"), Some(30));
+        assert_eq!(days("12w"), Some(84)); // was silently 30 before the fix
+        assert_eq!(days("12mo"), Some(360));
+        assert_eq!(days("90"), Some(90)); // bare number ⇒ days
+        assert_eq!(days("garbage"), Some(30)); // graceful default
+        assert_eq!(days("-5d"), Some(30)); // non-positive ⇒ default
     }
 
     #[test]

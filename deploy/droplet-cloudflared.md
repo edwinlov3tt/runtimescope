@@ -148,6 +148,44 @@ RuntimeScope.connect({
 });
 ```
 
+## 5b. Remote MCP (optional) — let a coding agent inspect the deployed app
+
+Expose the MCP tool surface over Streamable HTTP (ADR-0011) so Claude Code can
+query the deployed app's runtime. It's **bearer-gated** and refuses to start
+without a token, so it can ride the tunnel directly.
+
+On the droplet, run it alongside the collector (reads the same store via attach):
+
+```bash
+RUNTIMESCOPE_AUTH_TOKEN=$AUTH_TOKEN RUNTIMESCOPE_MCP_HTTP_PORT=6770 \
+  runtimescope mcp --http      # serves http://127.0.0.1:6770/mcp (loopback)
+```
+
+Add a third tunnel hostname for it (no Access — agents send the bearer, not SSO):
+
+```yaml
+# ~/.cloudflared/config.yml ingress (add above the 404 catch-all)
+  - hostname: mcp.example.com
+    service: http://127.0.0.1:6770
+```
+```bash
+cloudflared tunnel route dns runtimescope mcp.example.com
+```
+
+Connect Claude Code:
+
+```bash
+claude mcp add runtimescope-prod --transport http \
+  https://mcp.example.com/mcp \
+  --header "Authorization: Bearer $AUTH_TOKEN"
+```
+
+Now the agent can call `detect_issues`, `get_network_requests`, etc. against the
+**deployed** app. (Command-channel tools like `capture_dom_snapshot` only work
+for an SDK currently connected to that collector's WS.) Interactive claude.ai
+custom connectors need OAuth — a tracked follow-up; the bearer path above covers
+Claude Code + the MCP-connector API today.
+
 ## 6. Backups + retention
 
 - The collector keeps `RUNTIMESCOPE_RETENTION_DAYS` (default 90) of events and

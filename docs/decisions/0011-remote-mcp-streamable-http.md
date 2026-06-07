@@ -1,6 +1,6 @@
 # ADR-0011: Remote MCP over Streamable HTTP (coding agents reach a deployed app)
 
-**Status:** `Proposed`
+**Status:** `Accepted` — implemented 2026-06-07 (see Notes)
 **Date:** 2026-06-02
 **Deciders:** Edwin (owner) + implementing instance
 **Phase:** `Deploy & Remote-MCP`
@@ -123,3 +123,26 @@ Sequence after ADR-0010 — the transport is only useful once there's a deployed
 collector to attach to. Settle the WS-routing/DSN single-443 detail (ADR-0010
 Notes) alongside, since the deployed SDK and the remote MCP both need consistent
 endpoint resolution through the tunnel.
+
+**Implemented 2026-06-07** (bearer slice; OAuth deferred):
+
+- `runtimescope_mcp::run_http()` serves the tool surface over **Streamable HTTP**
+  via rmcp's `StreamableHttpService` (feature `transport-streamable-http-server`)
+  mounted on an axum `Router` at **`/mcp`**, with a `from_fn` **bearer middleware**
+  (`require_bearer`) in front. `run()`/`run_http()` share a `prepare()` that
+  embeds-or-attaches the collector (ADR-0008) — so it reads the deployed store.
+- **Fail-closed:** `run_http()` refuses to start unless a token is configured
+  (`RUNTIMESCOPE_AUTH_TOKEN` via a Standalone `AuthManager`, or a workspace API
+  key). The gate accepts a global token OR a workspace `tk_` key — mirrors
+  `resolve_caller`. Binds `RUNTIMESCOPE_HOST` + `RUNTIMESCOPE_MCP_HTTP_PORT`
+  (default **6770**); warns on a non-loopback bind.
+- Entrypoints: `runtimescope mcp --http` and the `mcp-server` bin honor `--http`
+  / `RUNTIMESCOPE_MCP_TRANSPORT=http`. stdio remains the default.
+- **Verified live:** 401 without/with-wrong bearer; with the token, `initialize`
+  returns `capabilities.tools` and `tools/list` returns **65 tools** over HTTP
+  with a real session id. 101 collector-core tests pass; clippy clean.
+- ⚠ **OAuth 2.1 deferred** (slice 4b): bearer covers Claude Code
+  (`claude mcp add --transport http … --header "Authorization: Bearer …"`) and
+  the MCP-connector API's `authorization_token`. Interactive claude.ai custom
+  connectors (DCR/PKCE/PRM) are a follow-up — the rmcp `auth` feature + an OAuth
+  layer in front of `/mcp`.

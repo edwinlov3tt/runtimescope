@@ -8,17 +8,22 @@ import {
   Database,
   Gauge,
   CheckCheck,
+  ArrowRight,
 } from 'lucide-react';
 import type { LucideIcon } from 'lucide-react';
 import { useDataStore } from '@/stores/use-data-store';
 import { useAppStore } from '@/stores/use-app-store';
+import { useNotificationStore } from '@/stores/use-notification-store';
 import { detectIssues } from '@/lib/issue-detector';
+import { formatRelativeTime } from '@/lib/format';
 import type { DetectedIssue, IssueSeverity } from '@/lib/runtime-types';
 
 // ---------------------------------------------------------------------------
 // Real notifications are derived from the live event store via detectIssues()
-// — the same detector the Overview page uses. No mock data: an empty store
-// yields an empty bell. (Previously this shipped 7 fabricated notifications.)
+// — the same detector the Issues page uses (src/pages/issues/issues-page.tsx).
+// There is no mock data and no parallel detection path: an empty store yields
+// an empty bell. Read-state and per-alert "first seen" timestamps are persisted
+// per-browser in localStorage via useNotificationStore.
 // ---------------------------------------------------------------------------
 
 const SEVERITY_COLORS = {
@@ -56,7 +61,6 @@ function patternMeta(pattern: string): { icon: LucideIcon; source: string } {
 
 export const NotificationDropdown = memo(function NotificationDropdown() {
   const [open, setOpen] = useState(false);
-  const [readIds, setReadIds] = useState<Set<string>>(new Set());
   const ref = useRef<HTMLDivElement>(null);
 
   const network = useDataStore((s) => s.network);
@@ -67,11 +71,25 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   const dbEvents = useDataStore((s) => s.database);
   const selectedProject = useAppStore((s) => s.selectedProject);
 
+  const readIds = useNotificationStore((s) => s.readIds);
+  const firstSeen = useNotificationStore((s) => s.firstSeen);
+  const observe = useNotificationStore((s) => s.observe);
+  const markRead = useNotificationStore((s) => s.markRead);
+  const markAllReadAction = useNotificationStore((s) => s.markAllRead);
+
+  // Same computation the Issues page uses: aggregate the live event arrays and
+  // run the shared detector. Reactive via zustand selectors + useMemo.
   const issues: DetectedIssue[] = useMemo(() => {
     const all = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
     if (all.length === 0) return [];
     return detectIssues(all);
   }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+
+  // Record first-seen time for any newly-detected alerts (real timestamps).
+  useEffect(() => {
+    if (issues.length === 0) return;
+    observe(issues.map((i) => i.id));
+  }, [issues, observe]);
 
   const unreadCount = issues.filter((i) => !readIds.has(i.id)).length;
 
@@ -85,11 +103,21 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
   }, [open]);
 
   const markAllRead = () => {
-    setReadIds(new Set(issues.map((i) => i.id)));
+    markAllReadAction(issues.map((i) => i.id));
   };
 
-  const markRead = (id: string) => {
-    setReadIds((prev) => new Set(prev).add(id));
+  // "View All Notifications" → deep-link into the existing Issues page. When a
+  // PM project is open the Issues tab lives inside the project view
+  // (runtimeSubTab); otherwise fall back to the legacy runtime view.
+  const viewAll = () => {
+    const app = useAppStore.getState();
+    if (app.selectedPmProject) {
+      app.setRuntimeSubTab('issues');
+    } else {
+      app.setActiveView('runtime');
+      app.setActiveTab('issues');
+    }
+    setOpen(false);
   };
 
   return (
@@ -141,6 +169,7 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
                 const severity = SEVERITY_MAP[issue.severity];
                 const sev = SEVERITY_COLORS[severity];
                 const unread = !readIds.has(issue.id);
+                const seenAt = firstSeen[issue.id];
                 return (
                   <div
                     key={issue.id}
@@ -161,6 +190,9 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
                           <span className="text-[9px] font-semibold px-1.5 py-px rounded bg-bg-overlay text-text-secondary">{selectedProject}</span>
                         )}
                         <span className="text-[9px] font-semibold px-1.5 py-px rounded bg-bg-overlay text-text-muted">{source}</span>
+                        {seenAt !== undefined && (
+                          <span className="text-[9px] font-medium text-text-disabled ml-auto shrink-0">{formatRelativeTime(seenAt)}</span>
+                        )}
                       </div>
                     </div>
                     {unread && (
@@ -171,6 +203,17 @@ export const NotificationDropdown = memo(function NotificationDropdown() {
               })
             )}
           </div>
+
+          {/* Footer — View All deep-links into the Issues page */}
+          {issues.length > 0 && (
+            <button
+              onClick={(e) => { e.stopPropagation(); viewAll(); }}
+              className="w-full flex items-center justify-center gap-1.5 px-3.5 py-2.5 border-t border-border-muted text-[11px] font-medium text-text-muted hover:text-text-primary hover:bg-bg-hover transition-colors cursor-pointer"
+            >
+              View all notifications
+              <ArrowRight size={12} />
+            </button>
+          )}
         </div>
       )}
     </div>

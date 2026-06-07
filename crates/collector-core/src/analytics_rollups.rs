@@ -480,11 +480,15 @@ mod tests {
     #[test]
     fn feature_trends_top_n_folds_rest_into_other() {
         let now = 1_000 * DAY_MS;
+        // Unambiguous totals so the top-N pick is deterministic: geocode 3 >
+        // export 2 > minor 1 (top_n=2 → geocode+export; minor folds to "other").
         let events = vec![
             ev("A", "geocode", "s1", now - 1 * DAY_MS),
             ev("A", "geocode", "s1", now - 2 * DAY_MS),
+            ev("A", "geocode", "s1", now - 3 * DAY_MS),
             ev("A", "export", "s1", now - 1 * DAY_MS),
-            ev("A", "minor", "s1", now - 1 * DAY_MS), // top_n=2 → folded into "other"
+            ev("A", "export", "s1", now - 2 * DAY_MS),
+            ev("A", "minor", "s1", now - 1 * DAY_MS),
         ];
         let t = feature_trends(&events, now, "30d", 3, 2);
         let series = t["series"].as_array().unwrap();
@@ -492,7 +496,7 @@ mod tests {
         assert!(names.contains(&"geocode") && names.contains(&"export") && names.contains(&"other"));
         let geo = series.iter().find(|s| s["feature"] == "geocode").unwrap();
         let sum: u64 = geo["data"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).sum();
-        assert_eq!(sum, 2);
+        assert_eq!(sum, 3);
     }
 
     #[test]

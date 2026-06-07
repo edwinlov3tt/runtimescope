@@ -333,6 +333,8 @@ pub async fn serve(
         // analytics subsystem (ADR-0012, slice 1-2): end-user identity + reads
         .route("/api/analytics/identify", post(analytics_identify))
         .route("/api/analytics/roles", get(analytics_roles))
+        .route("/api/analytics/overview", get(analytics_overview))
+        .route("/api/analytics/features", get(analytics_features))
         .route("/api/analytics/users", get(analytics_users))
         .route("/api/analytics/users/{anon_id}", get(analytics_user_by_id))
         // pm/ project-manager surface (M5)
@@ -544,14 +546,81 @@ async fn analytics_roles(State(s): State<AppState>, headers: HeaderMap) -> Respo
     Json(json!({ "data": roles, "count": count })).into_response()
 }
 
-/// GET /api/analytics/users — anonymized end-users (NO PII).
-async fn analytics_users(State(s): State<AppState>, headers: HeaderMap) -> Response {
+/// GET /api/analytics/overview?window=&project_id= — usage KPIs (active users,
+/// adoption, events, DAU/WAU/MAU, stickiness). ROI/$ deferred to slice 3.
+async fn analytics_overview(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
-    let users = s.analytics.list_users();
-    let count = users.len();
-    Json(json!({ "data": users, "count": count })).into_response()
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let events = s.store.events_by_type("custom", project).await;
+    let invited = s.analytics.list_users().len();
+    let ov = crate::analytics_rollups::overview(&events, now_ms(), window, invited);
+    Json(json!({ "data": ov })).into_response()
+}
+
+/// GET /api/analytics/features?window=&project_id= — per-feature usage rollup
+/// (users, events, adoption% over active users). ROI/$ deferred to slice 3.
+async fn analytics_features(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let window = q.get("window").map(String::as_str).unwrap_or("30d");
+    let events = s.store.events_by_type("custom", project).await;
+    let cutoff = crate::analytics_rollups::window_cutoff(now_ms(), window);
+    let windowed: Vec<Value> = events
+        .into_iter()
+        .filter(|e| cutoff.is_none_or(|c| e.get("timestamp").and_then(Value::as_i64).unwrap_or(0) >= c))
+        .collect();
+    let active = crate::analytics_rollups::active_users(&windowed, now_ms(), "all");
+    let feats = crate::analytics_rollups::feature_rollups(&windowed, active);
+    let count = feats.len();
+    Json(json!({ "data": feats, "count": count })).into_response()
+}
+
+/// GET /api/analytics/users — anonymized end-users (NO PII), enriched with
+/// per-user usage rollups (events / features / sessions) from the event stream.
+async fn analytics_users(
+    State(s): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<HashMap<String, String>>,
+) -> Response {
+    if !http_authorized(&s, &headers) {
+        return unauthorized();
+    }
+    let project = q.get("project_id").map(String::as_str);
+    let events = s.store.events_by_type("custom", project).await;
+    let rollups = crate::analytics_rollups::user_rollups(&events);
+    let data: Vec<Value> = s
+        .analytics
+        .list_users()
+        .into_iter()
+        .map(|u| {
+            let mut base = serde_json::to_value(&u).unwrap_or_else(|_| json!({}));
+            let roll = rollups
+                .get(&u.anon_id)
+                .cloned()
+                .unwrap_or_else(|| json!({ "events": 0, "features": 0, "sessions": 0 }));
+            if let (Some(b), Some(r)) = (base.as_object_mut(), roll.as_object()) {
+                for (k, v) in r {
+                    b.insert(k.clone(), v.clone());
+                }
+            }
+            base
+        })
+        .collect();
+    let count = data.len();
+    Json(json!({ "data": data, "count": count })).into_response()
 }
 
 /// GET /api/analytics/users/{anon_id} — one anonymized end-user (NO PII).

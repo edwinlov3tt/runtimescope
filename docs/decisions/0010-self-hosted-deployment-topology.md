@@ -1,6 +1,6 @@
 # ADR-0010: Self-hosted deployment topology (droplet + Cloudflare Tunnel)
 
-**Status:** `Proposed`
+**Status:** `Accepted` — implemented 2026-06-02 (see Notes)
 **Date:** 2026-06-02
 **Deciders:** Edwin (owner) + implementing instance
 **Phase:** `Deploy & Remote-MCP`
@@ -131,8 +131,28 @@ auth can be added later without undoing any of this.
 
 ## Notes
 
-The DSN→endpoint single-443 mismatch (`dsn.ts`) is a real gap for the "one HTTPS
-domain" topology and is called out in ADR-0011's open questions, since the remote
-MCP + SDK both need consistent endpoint resolution over a tunnel. Decide the
-WS-routing detail (one domain with Upgrade-header routing vs a second hostname for
-`:6767`) during Path A implementation.
+**Implemented 2026-06-02** (commits `cfa7062`, `7aa502d`):
+
+- `RUNTIMESCOPE_HOST` is honored by the standalone collector (`host_from_env()` +
+  `serve(host, …)`), default `127.0.0.1`, fail-closed to loopback; non-loopback
+  binds warn. The embedded MCP collector always binds loopback. **Verified live**
+  (`0.0.0.0` → `*:port`; default → loopback) + unit-tested.
+- Rust multi-stage `Dockerfile` replaces the Node one; `docker-compose.yml` +
+  `deploy/docker-compose.prod.yml` refreshed; **`deploy/droplet-cloudflared.md`**
+  is the recommended runbook (cloudflared dials loopback; local Caddy does the
+  WS/HTTP split + bearer injection; SDK ingest on a second hostname).
+- ⚠ **Docker image not yet built** (no Docker in the authoring env) — Dockerfile/
+  compose are written + reviewed but unverified; build them on a Docker host
+  before relying on the container path. The code change is verified.
+
+WS-routing was resolved as **two hostnames** (dashboard vs SDK-WS) in the runbook,
+because cloudflared ingress can't split by the `Upgrade` header on one hostname
+(Caddy can, via `@websocket`). The DSN→endpoint single-443 mismatch (`dsn.ts`)
+remains a tracked follow-up — apps use explicit `serverUrl`/`endpoint` for now.
+
+The **dashboard-token caveat** surfaced during implementation and is load-bearing:
+when `RUNTIMESCOPE_AUTH_TOKEN` is set the read API requires it but the dashboard
+sends none, so a token-protected dashboard is empty *everywhere* (not just
+remotely). The runbook works around it with proxy-layer bearer injection behind
+Cloudflare Access; **first-party dashboard auth** is now the priority hardening
+follow-up.

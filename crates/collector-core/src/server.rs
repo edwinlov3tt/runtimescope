@@ -2456,6 +2456,9 @@ async fn pm_projects(State(s): State<AppState>, headers: HeaderMap, Query(q): Qu
     if let Some(ws) = q.get("workspace_id") {
         projects.retain(|p| p.workspace_id.as_deref() == Some(ws.as_str()));
     }
+    // Operator always-exclude list (~/.runtimescope/config.json "excludeProjects").
+    let exclude = crate::excluded_projects();
+    projects.retain(|p| !crate::project_excluded(&exclude, &p.id, &p.name, p.runtimescope_project.as_deref()));
     let count = projects.len();
     Json(json!({ "data": projects, "count": count })).into_response()
 }
@@ -3474,11 +3477,13 @@ async fn pm_projects_summaries(
     if !http_authorized(&s, &headers) {
         return unauthorized();
     }
-    let summaries = s.pm.get_project_summaries(
+    let mut summaries = s.pm.get_project_summaries(
         q.get("start_date").map(String::as_str),
         q.get("end_date").map(String::as_str),
         q_hide_empty(&q),
     );
+    let exclude = crate::excluded_projects();
+    summaries.retain(|p| !crate::project_excluded(&exclude, &p.id, &p.name, p.runtimescope_project.as_deref()));
     let count = summaries.len();
     Json(json!({ "data": summaries, "count": count })).into_response()
 }

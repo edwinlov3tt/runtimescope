@@ -89,11 +89,69 @@ mod host_tests {
     }
 }
 
+#[cfg(test)]
+mod exclude_tests {
+    use super::project_excluded;
+    use std::collections::HashSet;
+
+    #[test]
+    fn matches_id_name_or_projectid_case_insensitive() {
+        // entries are stored lowercased (see excluded_projects)
+        let ex: HashSet<String> = ["my-proj", "noisy app", "proj_abc"].iter().map(|s| s.to_string()).collect();
+        assert!(project_excluded(&ex, "My-Proj", "X", None), "by id");
+        assert!(project_excluded(&ex, "x", "Noisy App", None), "by name");
+        assert!(project_excluded(&ex, "x", "y", Some("PROJ_ABC")), "by projectId");
+        assert!(!project_excluded(&ex, "other", "other", Some("proj_zzz")), "no match");
+        assert!(!project_excluded(&HashSet::new(), "my-proj", "x", None), "empty set never excludes");
+    }
+}
+
 /// The data directory: `$HOME/.runtimescope` (the conformance harness sets HOME
 /// to an isolated temp dir, so a restart-at-same-HOME finds the prior data).
 pub fn data_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".runtimescope")
+}
+
+/// Operator "always-exclude" project list from `~/.runtimescope/config.json`
+/// (`"excludeProjects": ["…", …]`). Read fresh each call so edits take effect
+/// without a restart. Entries are lowercased; a project matches if its id, name,
+/// or runtimescope projectId is in the set (see `project_excluded`). Missing
+/// file/key ⇒ empty set.
+pub fn excluded_projects() -> std::collections::HashSet<String> {
+    let path = data_dir().join("config.json");
+    let Ok(raw) = std::fs::read_to_string(path) else {
+        return std::collections::HashSet::new();
+    };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&raw) else {
+        return std::collections::HashSet::new();
+    };
+    v.get("excludeProjects")
+        .and_then(|x| x.as_array())
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|e| e.as_str())
+                .map(|s| s.trim().to_lowercase())
+                .filter(|s| !s.is_empty())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// True if `(id, name, project_id)` matches any entry in the exclude set
+/// (case-insensitive). `project_id` is the runtimescope `proj_…` id, if known.
+pub fn project_excluded(
+    exclude: &std::collections::HashSet<String>,
+    id: &str,
+    name: &str,
+    project_id: Option<&str>,
+) -> bool {
+    if exclude.is_empty() {
+        return false;
+    }
+    exclude.contains(&id.to_lowercase())
+        || exclude.contains(&name.trim().to_lowercase())
+        || project_id.is_some_and(|p| exclude.contains(&p.to_lowercase()))
 }
 
 /// Open the persistent store (runs WAL recovery before returning).

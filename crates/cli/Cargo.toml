@@ -14,6 +14,6 @@ homepage.workspace = true
 # `cargo install runtimescope` installs all three into ~/.cargo/bin.
 
 [dependencies]
-collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.11.5" }
-runtimescope-mcp = { path = "../mcp-server", version = "0.11.5" }
+collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.12.0" }
+runtimescope-mcp = { path = "../mcp-server", version = "0.12.0" }
 tokio.workspace = true

@@ -11,7 +11,7 @@ homepage.workspace = true
 path = "src/lib.rs"
 
 [dependencies]
-collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.11.5" }
+collector-core = { package = "runtimescope-core", path = "../collector-core", version = "0.12.0" }
 rmcp = { version = "1.7", features = ["server", "transport-io", "transport-streamable-http-server", "macros"] }
 # Remote MCP transport (ADR-0011): serve the tool surface over Streamable HTTP.
 axum = { version = "0.8", features = ["ws"] }

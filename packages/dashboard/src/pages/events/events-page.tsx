@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo, useCallback } from 'react';
 import { fetchCustomEvents } from '@/lib/api';
+import { useAppStore, timeRangeToSinceSeconds } from '@/stores/use-app-store';
 import { Badge, Button, DataTable, DetailPanel, EmptyState } from '@/components/ui';
 import { RefreshCw, Zap, ArrowRight, ChevronDown, ChevronRight } from 'lucide-react';
 import { cn } from '@/lib/cn';
@@ -201,23 +202,27 @@ export function EventsPage() {
   const [nameFilter, setNameFilter] = useState<string | null>(null);
   const [funnelSteps, setFunnelSteps] = useState<string[]>([]);
 
+  // Respect the global header date-range filter (undefined for 'all').
+  const timeRange = useAppStore((s) => s.timeRange);
+  const sinceSeconds = timeRangeToSinceSeconds(timeRange);
+
   const loadEvents = useCallback(async () => {
     setLoading(true);
-    const data = await fetchCustomEvents({ since_seconds: 3600 });
+    const data = await fetchCustomEvents({ since_seconds: sinceSeconds });
     setEvents(data ?? []);
     setLoading(false);
-  }, []);
+  }, [sinceSeconds]);
 
   useEffect(() => { loadEvents(); }, [loadEvents]);
 
   // Auto-refresh every 5s
   useEffect(() => {
     const interval = setInterval(async () => {
-      const data = await fetchCustomEvents({ since_seconds: 3600 });
+      const data = await fetchCustomEvents({ since_seconds: sinceSeconds });
       if (data) setEvents(data);
     }, 5000);
     return () => clearInterval(interval);
-  }, []);
+  }, [sinceSeconds]);
 
   const catalog = useMemo(() => buildCatalog(events), [events]);
   const filteredEvents = useMemo(

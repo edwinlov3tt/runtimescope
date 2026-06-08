@@ -36,6 +36,9 @@ Ideas and planned features organized by phase. Based on PRD milestones (M1-M13).
 | Dev Process Monitor | M | Medium | ⬜ Backlog | M7 |
 | Infrastructure Connector (MCP Hub) | L | Medium | ⬜ Backlog | M8 |
 | [SSH-Friendly Remote Viewing](ssh-remote-viewing.md) | S | Medium | ⬜ Backlog | — |
+| [Real Notification / Alerting System](real-notification-alerting.md) | M | High | ⬜ Backlog | audit 0004 |
+| [Global Search / Command Palette (⌘K)](command-palette-search.md) | M | Med-High | ⬜ Backlog | audit 0004 |
+| [Header Date-Range Filter](header-date-range-filter.md) | S-M | Medium | ⬜ Backlog | audit 0004 |
 
 ## v2.0 — Future
 

@@ -10,6 +10,54 @@ interface DetailPanelState {
 
 type ActiveView = 'home' | 'project' | 'runtime' | 'settings' | 'analytics';
 
+// --- Time range (global header date-range filter) ---
+
+/**
+ * Preset time windows for scoping event/session queries.
+ * - `'all'` means no time bound (no `since_seconds` sent).
+ * The numeric presets are durations in seconds, converted to the collector's
+ * `since_seconds` param ("events newer than now - since_seconds*1000").
+ */
+export type TimeRangePreset = '15m' | '1h' | '24h' | '7d' | 'all';
+
+export interface TimeRange {
+  preset: TimeRangePreset;
+}
+
+/** Seconds for each numeric preset. */
+export const TIME_RANGE_SECONDS: Record<Exclude<TimeRangePreset, 'all'>, number> = {
+  '15m': 15 * 60,
+  '1h': 60 * 60,
+  '24h': 24 * 60 * 60,
+  '7d': 7 * 24 * 60 * 60,
+};
+
+export const TIME_RANGE_LABELS: Record<TimeRangePreset, string> = {
+  '15m': 'Last 15 minutes',
+  '1h': 'Last hour',
+  '24h': 'Last 24 hours',
+  '7d': 'Last 7 days',
+  all: 'All time',
+};
+
+/** Short label for the header pill. */
+export const TIME_RANGE_PILL_LABELS: Record<TimeRangePreset, string> = {
+  '15m': 'Last 15m',
+  '1h': 'Last 1h',
+  '24h': 'Last 24h',
+  '7d': 'Last 7d',
+  all: 'All time',
+};
+
+/**
+ * Resolve a TimeRange to a `since_seconds` value for event reads.
+ * Returns `undefined` for 'all' (no time bound).
+ */
+export function timeRangeToSinceSeconds(range: TimeRange): number | undefined {
+  if (range.preset === 'all') return undefined;
+  return TIME_RANGE_SECONDS[range.preset];
+}
+
 interface AppState {
   // --- Navigation ---
   activeView: ActiveView;
@@ -45,6 +93,25 @@ interface AppState {
   selectedProject: string | null;
   setProjects: (projects: ProjectInfo[]) => void;
   setSelectedProject: (project: string | null) => void;
+
+  // --- Time range (global header date-range filter) ---
+  timeRange: TimeRange;
+  setTimeRange: (range: TimeRange) => void;
+
+  // --- Focused event (palette → deep-link to a specific row) ---
+  focusedEventId: string | null;
+  setFocusedEventId: (id: string | null) => void;
+
+  // --- URL deep-linking: hydrate nav state from the URL. Sets only the provided
+  //     fields; switching projects flushes buffers like selectPmProject does. ---
+  restoreNav: (nav: Partial<{
+    view: ActiveView;
+    tab: string;
+    projectTab: ProjectTab;
+    runtimeSubTab: string;
+    analyticsSubTab: string;
+    pmProject: string | null;
+  }>) => void;
 }
 
 export const useAppStore = create<AppState>((set, get) => ({
@@ -79,6 +146,24 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
+  restoreNav: (nav) => {
+    const cur = get();
+    if (nav.pmProject !== undefined && nav.pmProject !== cur.selectedPmProject) {
+      // Switching projects — drop the runtime app filter + flush buffers
+      // (mirrors selectPmProject) so a deep-linked project can't show another's data.
+      set({ selectedProject: null });
+      useDataStore.getState().clearAll();
+    }
+    const patch: Partial<AppState> = {};
+    if (nav.view !== undefined) patch.activeView = nav.view;
+    if (nav.tab !== undefined) patch.activeTab = nav.tab;
+    if (nav.projectTab !== undefined) patch.activeProjectTab = nav.projectTab;
+    if (nav.runtimeSubTab !== undefined) patch.runtimeSubTab = nav.runtimeSubTab;
+    if (nav.analyticsSubTab !== undefined) patch.analyticsSubTab = nav.analyticsSubTab;
+    if (nav.pmProject !== undefined) patch.selectedPmProject = nav.pmProject;
+    set(patch);
+  },
+
   detailPanel: { open: false, rowIndex: null },
   openDetail: (index) => set({ detailPanel: { open: true, rowIndex: index } }),
   closeDetail: () => set({ detailPanel: { open: false, rowIndex: null } }),
@@ -96,4 +181,22 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ projects });
   },
   setSelectedProject: (project) => set({ selectedProject: project }),
+
+  // Default to "all time" — a bounded default (e.g. 24h) silently hides issues
+  // and events older than the window on load, and with WS connected the single
+  // bounded initial fetch is the only read. Users opt into a narrower window via
+  // the header picker.
+  timeRange: { preset: 'all' },
+  setTimeRange: (range) => {
+    if (get().timeRange.preset === range.preset) return;
+    // NB: we deliberately do NOT clearAll() here. Wiping all six event buffers
+    // blanks always-mounted consumers (the notification bell, overview) until
+    // each tab is revisited, since only the active tab refetches. Instead the
+    // active tab's fetch fully replaces its data with the new window, and
+    // useLiveData refetches all event types on a range change (see use-live-data).
+    set({ timeRange: range });
+  },
+
+  focusedEventId: null,
+  setFocusedEventId: (id) => set({ focusedEventId: id }),
 }));

@@ -5,7 +5,7 @@ import { useDataStore } from '@/stores/use-data-store';
 import { useConnected } from '@/hooks/use-connected';
 import { computeOverviewStats } from '@/lib/overview-stats';
 import { eventsToActivity } from '@/lib/activity-mapper';
-import { detectIssues } from '@/lib/issue-detector';
+import { useDetectedIssues } from '@/hooks/use-detected-issues';
 import { Globe, Clock, Layers, AlertTriangle, Wifi, HardDrive } from 'lucide-react';
 
 export function OverviewPage() {
@@ -19,12 +19,15 @@ export function OverviewPage() {
 
   const EMPTY_STATS = { requests: { value: 0, change: 0, label: '', sparkline: [] }, latency: { value: 0, change: 0, label: '', sparkline: [] }, renders: { value: 0, change: 0, label: '', sparkline: [] }, issues: { value: 0, change: 0, sparkline: [] } };
 
+  // Shared detection (collapsed with the bell + issues page) instead of a
+  // duplicate inline detectIssues() compute.
+  const issues = useDetectedIssues();
+
   const s = useMemo(() => {
     const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];
     if (allEvents.length === 0) return EMPTY_STATS;
-    const issues = detectIssues(allEvents);
     return computeOverviewStats(network, renderEvents, issues);
-  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents]);
+  }, [network, consoleMsgs, stateEvents, renderEvents, perfEvents, dbEvents, issues]);
 
   const activity = useMemo(() => {
     const allEvents = [...network, ...consoleMsgs, ...stateEvents, ...renderEvents, ...perfEvents, ...dbEvents];

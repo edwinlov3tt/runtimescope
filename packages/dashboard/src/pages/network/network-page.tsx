@@ -55,6 +55,8 @@ const COLUMNS = [
     key: 'name',
     header: 'Name',
     width: '180px',
+    // computed from the URL — not a row field; sort by the derived name.
+    sortValue: (row: Record<string, unknown>) => getRequestName(row as unknown as NetworkEvent),
     render: (row: Record<string, unknown>) => (
       <span className="font-medium truncate block max-w-[160px]">
         {getRequestName(row as unknown as NetworkEvent)}
@@ -114,6 +116,8 @@ const COLUMNS = [
     key: 'size',
     header: 'Size',
     width: '80px',
+    // the field is responseBodySize, not 'size' — sort by the real field.
+    sortValue: (row: Record<string, unknown>) => row.responseBodySize as number,
     render: (row: Record<string, unknown>) => (
       <span className="tabular-nums text-text-tertiary">
         {formatBytes(row.responseBodySize as number)}

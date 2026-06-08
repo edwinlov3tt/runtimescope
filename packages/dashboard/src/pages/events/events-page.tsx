@@ -259,6 +259,7 @@ export function EventsPage() {
     {
       key: 'properties',
       header: 'Properties',
+      sortable: false, // an arbitrary object, not a sortable value
       render: (row: Record<string, unknown>) => (
         <span className="text-text-muted font-mono text-xs truncate block max-w-[400px]">
           {row.properties ? JSON.stringify(row.properties) : '-'}

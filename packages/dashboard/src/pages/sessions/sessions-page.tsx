@@ -104,6 +104,7 @@ export function SessionsPage() {
                       key: 'status',
                       header: '',
                       width: '32px',
+                      sortable: false, // a status dot, not a sortable value
                       render: (row) => (
                         <StatusDot color={(row as unknown as SessionInfo).isConnected ? 'green' : 'gray'} size="sm" />
                       ),

@@ -55,6 +55,8 @@ export function AnalyticsFeaturesPage() {
     {
       key: 'status',
       header: 'Status',
+      // status is derived from adoptionPct (not a row field) — sort by it.
+      sortValue: (f: FeatureRollup) => f.adoptionPct,
       render: (f: FeatureRollup) => {
         const s = statusFor(f.adoptionPct);
         return <Badge variant={s.variant}>{s.label}</Badge>;

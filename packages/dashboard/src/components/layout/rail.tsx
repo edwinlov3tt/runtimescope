@@ -26,6 +26,16 @@ import {
   Database,
   Footprints,
   Radio,
+  // Analytics context icons
+  BarChart3,
+  LineChart,
+  GitCompare,
+  Users,
+  Boxes,
+  Scale,
+  Target,
+  HeartPulse,
+  Shield,
 } from 'lucide-react';
 
 // ---------------------------------------------------------------------------
@@ -41,9 +51,10 @@ export interface RailItem {
 
 // Home context
 export const HOME_RAIL_ITEMS: RailItem[] = [
-  { id: 'home',     icon: LayoutDashboard,   label: 'Home' },
-  { id: 'sessions', icon: MessagesSquare,    label: 'Sessions' },
-  { id: 'runtime',  icon: Activity,          label: 'Runtime', badge: true },
+  { id: 'home',      icon: LayoutDashboard,   label: 'Home' },
+  { id: 'sessions',  icon: MessagesSquare,    label: 'Sessions' },
+  { id: 'analytics', icon: BarChart3,         label: 'Analytics' },
+  { id: 'runtime',   icon: Activity,          label: 'Runtime', badge: true },
   { id: 'git',      icon: GitCommitHorizontal, label: 'Git' },
   { id: 'tasks',    icon: CheckSquare,       label: 'Tasks' },
   { id: 'memory',   icon: Brain,             label: 'Memory' },
@@ -74,6 +85,23 @@ export const RUNTIME_RAIL_ITEMS: RailItem[] = [
 export const RUNTIME_RAIL_BOTTOM: RailItem[] = [
   { id: 'processes', icon: Cpu,      label: 'Processes' },
   { id: 'settings',  icon: Settings, label: 'Settings' },
+];
+
+// Analytics context (sub-context like Runtime — the rail is the section nav)
+export const ANALYTICS_RAIL_ITEMS: RailItem[] = [
+  { id: 'overview',    icon: LayoutDashboard, label: 'Overview' },
+  { id: 'trends',      icon: LineChart,       label: 'Trends' },
+  { id: 'compare',     icon: GitCompare,      label: 'Compare' },
+  { id: 'users',       icon: Users,           label: 'Users' },
+  { id: 'features',    icon: Boxes,           label: 'Features' },
+  { id: 'baselines',   icon: Scale,           label: 'Baselines' },
+  { id: 'projections', icon: Target,          label: 'Projections' },
+  { id: 'status',      icon: HeartPulse,      label: 'Status' },
+  { id: 'admin',       icon: Shield,          label: 'Admin' },
+];
+
+export const ANALYTICS_RAIL_BOTTOM: RailItem[] = [
+  { id: 'settings', icon: Settings, label: 'Settings' },
 ];
 
 // ---------------------------------------------------------------------------

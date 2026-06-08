@@ -8,7 +8,7 @@ interface DetailPanelState {
   rowIndex: number | null;
 }
 
-type ActiveView = 'home' | 'project' | 'runtime' | 'settings';
+type ActiveView = 'home' | 'project' | 'runtime' | 'settings' | 'analytics';
 
 interface AppState {
   // --- Navigation ---
@@ -23,6 +23,10 @@ interface AppState {
 
   runtimeSubTab: string;
   setRuntimeSubTab: (tab: string) => void;
+
+  // Analytics section (its own sub-context, like runtime)
+  analyticsSubTab: string;
+  setAnalyticsSubTab: (tab: string) => void;
 
   selectedPmProject: string | null;
   selectPmProject: (id: string) => void;
@@ -55,6 +59,9 @@ export const useAppStore = create<AppState>((set, get) => ({
 
   runtimeSubTab: 'overview',
   setRuntimeSubTab: (tab) => set({ runtimeSubTab: tab, detailPanel: { open: false, rowIndex: null } }),
+
+  analyticsSubTab: 'overview',
+  setAnalyticsSubTab: (tab) => set({ analyticsSubTab: tab, detailPanel: { open: false, rowIndex: null } }),
 
   selectedPmProject: null,
   selectPmProject: (id) => {

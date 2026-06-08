@@ -27,6 +27,29 @@ const SessionsPage = lazy(() => import('@/pages/sessions/sessions-page').then((m
 const BreadcrumbsPage = lazy(() => import('@/pages/breadcrumbs/breadcrumbs-page').then((m) => ({ default: m.BreadcrumbsPage })));
 const EventsPage = lazy(() => import('@/pages/events/events-page').then((m) => ({ default: m.EventsPage })));
 
+// Analytics section pages
+const AnalyticsOverviewPage = lazy(() => import('@/pages/analytics/overview-page').then((m) => ({ default: m.AnalyticsOverviewPage })));
+const AnalyticsTrendsPage = lazy(() => import('@/pages/analytics/trends-page').then((m) => ({ default: m.AnalyticsTrendsPage })));
+const AnalyticsComparePage = lazy(() => import('@/pages/analytics/compare-page').then((m) => ({ default: m.AnalyticsComparePage })));
+const AnalyticsUsersPage = lazy(() => import('@/pages/analytics/users-page').then((m) => ({ default: m.AnalyticsUsersPage })));
+const AnalyticsFeaturesPage = lazy(() => import('@/pages/analytics/features-page').then((m) => ({ default: m.AnalyticsFeaturesPage })));
+const AnalyticsBaselinesPage = lazy(() => import('@/pages/analytics/baselines-page').then((m) => ({ default: m.AnalyticsBaselinesPage })));
+const AnalyticsProjectionsPage = lazy(() => import('@/pages/analytics/projections-page').then((m) => ({ default: m.AnalyticsProjectionsPage })));
+const AnalyticsStatusPage = lazy(() => import('@/pages/analytics/status-page').then((m) => ({ default: m.AnalyticsStatusPage })));
+const AnalyticsAdminPage = lazy(() => import('@/pages/analytics/admin-page').then((m) => ({ default: m.AnalyticsAdminPage })));
+
+const ANALYTICS_PAGES: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
+  overview: AnalyticsOverviewPage,
+  trends: AnalyticsTrendsPage,
+  compare: AnalyticsComparePage,
+  users: AnalyticsUsersPage,
+  features: AnalyticsFeaturesPage,
+  baselines: AnalyticsBaselinesPage,
+  projections: AnalyticsProjectionsPage,
+  status: AnalyticsStatusPage,
+  admin: AnalyticsAdminPage,
+};
+
 const RUNTIME_PAGES: Record<string, React.LazyExoticComponent<React.ComponentType>> = {
   overview: OverviewPage,
   network: NetworkPage,
@@ -56,11 +79,22 @@ function PageFallback() {
 export function PageRouter() {
   const activeTab = useAppStore((s) => s.activeTab);
   const activeView = useAppStore((s) => s.activeView);
+  const analyticsSubTab = useAppStore((s) => s.analyticsSubTab);
   const source = useDataStore((s) => s.source);
 
   // Show collector offline state for runtime pages when collector isn't connected
   if (activeView === 'runtime' && source === 'mock') {
     return <CollectorOffline />;
+  }
+
+  // Analytics section — fetches /api/analytics/* directly (not gated on a live SDK)
+  if (activeView === 'analytics') {
+    const Page = ANALYTICS_PAGES[analyticsSubTab] ?? AnalyticsOverviewPage;
+    return (
+      <Suspense fallback={<PageFallback />}>
+        <Page />
+      </Suspense>
+    );
   }
 
   // Showcase/kitchen-sink for dev use

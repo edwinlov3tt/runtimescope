@@ -23,3 +23,7 @@ export { Textarea } from './textarea';
 export { Skeleton, TableSkeleton, CardsSkeleton, ListSkeleton } from './skeleton';
 export { WaterfallBar } from './waterfall-bar';
 export { ProcessCard } from './process-card';
+export { LineChart, DonutChart, BarChart, FunnelChart, Heatmap, ChartPanel, paletteAt, CHART_PALETTE } from './charts';
+export type { LineSeries, DonutSegment, BarGroup, FunnelStep, HeatmapRow } from './charts';
+export { KpiRow } from './kpi-row';
+export type { KpiSpec } from './kpi-row';

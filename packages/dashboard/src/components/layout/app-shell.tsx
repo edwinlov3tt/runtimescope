@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { useAppStore } from '@/stores/use-app-store';
-import { Rail, HOME_RAIL_ITEMS, HOME_RAIL_BOTTOM, RUNTIME_RAIL_ITEMS, RUNTIME_RAIL_BOTTOM } from '@/components/layout/rail';
+import { Rail, HOME_RAIL_ITEMS, HOME_RAIL_BOTTOM, RUNTIME_RAIL_ITEMS, RUNTIME_RAIL_BOTTOM, ANALYTICS_RAIL_ITEMS, ANALYTICS_RAIL_BOTTOM } from '@/components/layout/rail';
 import { Header } from '@/components/layout/header';
 import { ExpandableSidebar } from '@/components/layout/expandable-sidebar';
 import { PageRouter } from '@/components/layout/page-router';
@@ -11,8 +11,17 @@ import { ToastContainer } from '@/components/ui/toast-container';
 // Title / breadcrumb mapping
 // ---------------------------------------------------------------------------
 
-function getTitle(activeView: string, activeTab: string, activeProjectTab: string): { title: string; breadcrumb?: string } {
+const ANALYTICS_TITLES: Record<string, string> = {
+  overview: 'Overview', trends: 'Trends', compare: 'Compare', users: 'Users',
+  features: 'Features', baselines: 'Baselines', projections: 'Projections',
+  status: 'Status', admin: 'Admin',
+};
+
+function getTitle(activeView: string, activeTab: string, activeProjectTab: string, analyticsSubTab: string): { title: string; breadcrumb?: string } {
   if (activeView === 'home') return { title: 'Home' };
+  if (activeView === 'analytics') {
+    return { title: 'Analytics', breadcrumb: ANALYTICS_TITLES[analyticsSubTab] ?? analyticsSubTab };
+  }
   if (activeView === 'project') {
     const tabTitles: Record<string, string> = {
       sessions: 'Sessions', tasks: 'Tasks', notes: 'Notes', memory: 'Memory',
@@ -41,27 +50,41 @@ export function AppShell() {
   const setActiveView = useAppStore((s) => s.setActiveView);
   const setActiveTab = useAppStore((s) => s.setActiveTab);
   const setActiveProjectTab = useAppStore((s) => s.setActiveProjectTab);
+  const analyticsSubTab = useAppStore((s) => s.analyticsSubTab);
+  const setAnalyticsSubTab = useAppStore((s) => s.setAnalyticsSubTab);
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
 
   const isRuntime = activeView === 'runtime';
-  const railItems = isRuntime ? RUNTIME_RAIL_ITEMS : HOME_RAIL_ITEMS;
-  const railBottomItems = isRuntime ? RUNTIME_RAIL_BOTTOM : HOME_RAIL_BOTTOM;
+  const isAnalytics = activeView === 'analytics';
+  const isSubContext = isRuntime || isAnalytics;
+  const railItems = isAnalytics ? ANALYTICS_RAIL_ITEMS : isRuntime ? RUNTIME_RAIL_ITEMS : HOME_RAIL_ITEMS;
+  const railBottomItems = isAnalytics ? ANALYTICS_RAIL_BOTTOM : isRuntime ? RUNTIME_RAIL_BOTTOM : HOME_RAIL_BOTTOM;
 
   // Determine active rail item ID
-  const activeRailId = isRuntime
-    ? activeTab
-    : activeView === 'home'
-      ? 'home'
-      : activeProjectTab;
+  const activeRailId = isAnalytics
+    ? analyticsSubTab
+    : isRuntime
+      ? activeTab
+      : activeView === 'home'
+        ? 'home'
+        : activeProjectTab;
 
   const selectedPmProject = useAppStore((s) => s.selectedPmProject);
 
   // Items that require a project to be selected
   const PROJECT_DEPENDENT = new Set(['sessions', 'git', 'tasks', 'memory', 'rules', 'capex']);
-  const disabledIds = !isRuntime && !selectedPmProject ? PROJECT_DEPENDENT : undefined;
+  const disabledIds = !isSubContext && !selectedPmProject ? PROJECT_DEPENDENT : undefined;
 
   const handleRailSelect = useCallback((id: string) => {
+    if (isAnalytics) {
+      if (id === 'settings') {
+        setActiveView('settings');
+        return;
+      }
+      setAnalyticsSubTab(id);
+      return;
+    }
     if (isRuntime) {
       if (id === 'settings') {
         setActiveView('settings');
@@ -69,6 +92,11 @@ export function AppShell() {
       }
       setActiveTab(id);
     } else {
+      if (id === 'analytics') {
+        setActiveView('analytics');
+        setAnalyticsSubTab('overview');
+        return;
+      }
       if (id === 'home') {
         setActiveView('home');
       } else if (id === 'runtime') {
@@ -97,13 +125,13 @@ export function AppShell() {
         }
       }
     }
-  }, [isRuntime, selectedPmProject, setActiveView, setActiveTab, setActiveProjectTab]);
+  }, [isRuntime, isAnalytics, selectedPmProject, setActiveView, setActiveTab, setActiveProjectTab, setAnalyticsSubTab]);
 
   const handleBack = useCallback(() => {
     setActiveView('home');
   }, [setActiveView]);
 
-  const { title, breadcrumb } = getTitle(activeView, activeTab, activeProjectTab);
+  const { title, breadcrumb } = getTitle(activeView, activeTab, activeProjectTab, analyticsSubTab);
 
   return (
     <div className="h-screen w-screen flex overflow-hidden bg-bg-base">
@@ -112,18 +140,18 @@ export function AppShell() {
         bottomItems={railBottomItems}
         activeId={activeRailId}
         onSelect={handleRailSelect}
-        isSubContext={isRuntime}
+        isSubContext={isSubContext}
         onBack={handleBack}
         disabledIds={disabledIds}
       />
 
       <ExpandableSidebar
         open={sidebarOpen}
-        isSubContext={isRuntime}
+        isSubContext={isSubContext}
         mainItems={railItems}
         mainBottomItems={railBottomItems}
-        parentItems={isRuntime ? HOME_RAIL_ITEMS : undefined}
-        parentBottomItems={isRuntime ? HOME_RAIL_BOTTOM : undefined}
+        parentItems={isSubContext ? HOME_RAIL_ITEMS : undefined}
+        parentBottomItems={isSubContext ? HOME_RAIL_BOTTOM : undefined}
         activeId={activeRailId}
         onSelect={handleRailSelect}
       />

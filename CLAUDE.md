@@ -167,3 +167,11 @@ The `NPM_TOKEN` GitHub secret must be set for the action to authenticate. Packag
 | `RUNTIMESCOPE_ADMIN_KEY` | _unset_ | Admin de-anon secret (slice 6). When set, `/api/analytics/admin/*` (PII reveal: email/ip) requires `X-Admin-Key` matching it (constant-time); every access is audited. **Unset ⇒ the PII de-anon path is closed** (403) — it's opt-in, distinct from the dashboard/workspace tokens. |
 
 Both the MCP server and standalone collector use the same default ports (6767/6768). Only one should run at a time. The SDK defaults to `ws://localhost:6767`. The dashboard Vite proxy defaults to `http://127.0.0.1:6768`.
+
+### `~/.runtimescope/config.json`
+
+A small JSON config the collector reads at runtime (alongside the env vars). Known keys: `auth` (token section, see `auth.rs`) and **`excludeProjects`** — an operator "always-exclude" list. Any project whose **id, display name, or runtimescope projectId** matches an entry (case-insensitive) is filtered from `/api/pm/projects` + `/summaries`, so it never appears anywhere (dashboard dropdown / command palette / Home, and MCP) on any browser. Read fresh per request, so edits take effect without a restart. This is distinct from the dashboard's per-browser **hide** toggle (a user preference persisted in localStorage).
+
+```json
+{ "excludeProjects": ["proj_abc123", "Noisy Internal App", "some-project-id"] }
+```

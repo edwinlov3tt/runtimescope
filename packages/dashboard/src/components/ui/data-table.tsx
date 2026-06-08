@@ -10,6 +10,10 @@ interface Column<T> {
   mono?: boolean;
   render?: (row: T) => ReactNode;
   sortable?: boolean;
+  /** For columns whose displayed value is computed in `render` (not a field on
+   *  the row): how to sort. Without it, sorting falls back to `row[key]`, which is
+   *  `undefined` for a computed column ⇒ a no-op. */
+  sortValue?: (row: T) => string | number | boolean | null | undefined;
 }
 
 type SortDirection = 'asc' | 'desc';
@@ -48,9 +52,16 @@ export function DataTable<T extends Record<string, unknown>>({
 
   const sortedData = useMemo(() => {
     if (!sort) return data;
+    const col = columns.find((c) => c.key === sort.key);
+    // Computed columns provide sortValue(); otherwise sort by the raw field.
+    // Booleans normalize to 0/1 so they order sensibly.
+    const valueOf = (row: T): string | number | null | undefined => {
+      const raw = col?.sortValue ? col.sortValue(row) : (row as Record<string, unknown>)[sort.key];
+      return typeof raw === 'boolean' ? (raw ? 1 : 0) : (raw as string | number | null | undefined);
+    };
     return [...data].sort((a, b) => {
-      const aVal = a[sort.key];
-      const bVal = b[sort.key];
+      const aVal = valueOf(a);
+      const bVal = valueOf(b);
       if (aVal == null && bVal == null) return 0;
       if (aVal == null) return 1;
       if (bVal == null) return -1;
@@ -59,7 +70,7 @@ export function DataTable<T extends Record<string, unknown>>({
         : String(aVal).localeCompare(String(bVal));
       return sort.direction === 'asc' ? cmp : -cmp;
     });
-  }, [data, sort]);
+  }, [data, sort, columns]);
 
   const handleSort = (key: string) => {
     setSort((prev) => {

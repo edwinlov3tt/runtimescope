@@ -109,6 +109,9 @@ const SDK_CFG: Record<SdkStatus, { label: string; variant: 'green' | 'blue' | 'd
   'not-installed': { label: '-', variant: 'default' },
 };
 
+// Sort rank for the SDK column (ascending = most-active first).
+const SDK_RANK: Record<SdkStatus, number> = { live: 0, installed: 1, 'not-installed': 2 };
+
 // ---------------------------------------------------------------------------
 // Dev server button (inline, per-row)
 // ---------------------------------------------------------------------------
@@ -246,6 +249,10 @@ function makeColumns(runtimeProjects: ProjectInfo[]) {
       key: 'sdk_status',
       header: 'SDK',
       width: '70px',
+      sortable: true,
+      // Sort by status rank (live → installed → not-installed) since the cell is
+      // computed, not a row field.
+      sortValue: (row: Record<string, unknown>) => SDK_RANK[getSdkStatus(row as unknown as ProjectSummary, runtimeProjects)],
       render: (row: Record<string, unknown>) => {
         const r = row as unknown as ProjectSummary;
         const sdk = getSdkStatus(r, runtimeProjects);
@@ -258,6 +265,7 @@ function makeColumns(runtimeProjects: ProjectInfo[]) {
       key: 'dev_server',
       header: 'Dev',
       width: '90px',
+      sortable: false, // an action button, not a sortable value
       render: (row: Record<string, unknown>) => {
         const r = row as unknown as ProjectSummary;
         if (!r.path) return <span className="text-text-muted text-xs">-</span>;

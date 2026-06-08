@@ -17,7 +17,11 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/cn';
 import { useWorkspaceStore } from '@/stores/use-workspace-store';
-import type { PmWorkspace } from '@/lib/pm-types';
+import type { PmWorkspace, PmApiKey } from '@/lib/pm-types';
+
+// Stable empty array so the apiKeys selector below doesn't return a fresh `[]`
+// every render (which would re-render forever — React #185).
+const EMPTY_KEYS: PmApiKey[] = [];
 
 const PANEL = 'bg-bg-elevated border border-border-default rounded-lg';
 const BTN = 'h-8 px-3 rounded-md text-[12px] font-medium transition-colors cursor-pointer inline-flex items-center gap-1.5';
@@ -253,7 +257,7 @@ function WorkspaceEditForm({
 // ---------------------------------------------------------------------------
 
 function ApiKeysPanel({ workspaceId }: { workspaceId: string }) {
-  const keys = useWorkspaceStore((s) => s.apiKeysByWorkspace[workspaceId] ?? []);
+  const keys = useWorkspaceStore((s) => s.apiKeysByWorkspace[workspaceId]) ?? EMPTY_KEYS;
   const loading = useWorkspaceStore((s) => s.apiKeysLoading[workspaceId] ?? false);
   const fetchApiKeys = useWorkspaceStore((s) => s.fetchApiKeys);
   const createApiKey = useWorkspaceStore((s) => s.createApiKey);

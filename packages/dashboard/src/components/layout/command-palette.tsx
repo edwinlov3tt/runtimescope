@@ -4,6 +4,7 @@ import { Search, CornerDownLeft, Globe, Terminal, AlertTriangle, FolderGit2 } fr
 import { cn } from '@/lib/cn';
 import { useAppStore } from '@/stores/use-app-store';
 import { usePmStore } from '@/stores/use-pm-store';
+import { useHiddenProjects } from '@/stores/use-hidden-projects';
 import { useWorkspaceStore } from '@/stores/use-workspace-store';
 import { useDataStore } from '@/stores/use-data-store';
 import {
@@ -118,6 +119,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
   const listRef = useRef<HTMLDivElement>(null);
 
   const projects = usePmStore((s) => s.projects);
+  const hiddenIds = useHiddenProjects((s) => s.hiddenIds);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
   const selectPmProject = useAppStore((s) => s.selectPmProject);
   const network = useDataStore((s) => s.network);
@@ -169,10 +171,12 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
       });
     }
 
-    // (b) Projects / workspaces (scoped to active workspace, like the header dropdown)
+    // (b) Projects / workspaces (scoped to active workspace, like the header
+    // dropdown) — and excluding hidden projects, same as the dropdown + Home.
+    const visible = projects.filter((p) => !hiddenIds.has(p.id));
     const scoped = activeWorkspaceId
-      ? projects.filter((p) => p.workspaceId === activeWorkspaceId)
-      : projects;
+      ? visible.filter((p) => p.workspaceId === activeWorkspaceId)
+      : visible;
     for (const p of scoped) {
       out.push({
         id: `project:${p.id}`,
@@ -220,7 +224,7 @@ export function CommandPalette({ open, onClose }: { open: boolean; onClose: () =
     return out.filter(
       (r) => r.label.toLowerCase().includes(q) || (r.hint?.toLowerCase().includes(q) ?? false),
     );
-  }, [query, projects, activeWorkspaceId, selectPmProject, network, consoleEvents]);
+  }, [query, projects, hiddenIds, activeWorkspaceId, selectPmProject, network, consoleEvents]);
 
   // Clamp the highlighted index whenever the result set shrinks.
   useEffect(() => {

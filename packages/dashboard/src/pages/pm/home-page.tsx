@@ -3,6 +3,7 @@ import { usePmStore } from '@/stores/use-pm-store';
 import { useAppStore } from '@/stores/use-app-store';
 import { useDevServerStore } from '@/stores/use-dev-server-store';
 import { useWorkspaceStore } from '@/stores/use-workspace-store';
+import { useHiddenProjects } from '@/stores/use-hidden-projects';
 import { KpiCard, Badge, DataTable, EmptyState } from '@/components/ui';
 import { StatusDot } from '@/components/ui/status-dot';
 import {
@@ -281,6 +282,7 @@ export function HomePage() {
   const setHideEmptySessions = usePmStore((s) => s.setHideEmptySessions);
   const runtimeProjects = useAppStore((s) => s.projects);
   const activeWorkspaceId = useWorkspaceStore((s) => s.activeWorkspaceId);
+  const hiddenIds = useHiddenProjects((s) => s.hiddenIds);
 
   // Scope to the active workspace when one is selected.
   // Null activeWorkspaceId = "All workspaces" — show everything.
@@ -289,15 +291,15 @@ export function HomePage() {
     return new Set(allProjects.filter((p) => p.workspaceId === activeWorkspaceId).map((p) => p.id));
   }, [allProjects, activeWorkspaceId]);
 
+  // Workspace scope AND hidden-project exclusion (same hidden set as the header
+  // dropdown + command palette — hidden projects drop out of Home too).
   const projects = useMemo(() => {
-    if (!workspaceProjectIds) return allProjects;
-    return allProjects.filter((p) => workspaceProjectIds.has(p.id));
-  }, [allProjects, workspaceProjectIds]);
+    return allProjects.filter((p) => !hiddenIds.has(p.id) && (!workspaceProjectIds || workspaceProjectIds.has(p.id)));
+  }, [allProjects, workspaceProjectIds, hiddenIds]);
 
   const projectSummaries = useMemo(() => {
-    if (!workspaceProjectIds) return allProjectSummaries;
-    return allProjectSummaries.filter((p) => workspaceProjectIds.has(p.id));
-  }, [allProjectSummaries, workspaceProjectIds]);
+    return allProjectSummaries.filter((p) => !hiddenIds.has(p.id) && (!workspaceProjectIds || workspaceProjectIds.has(p.id)));
+  }, [allProjectSummaries, workspaceProjectIds, hiddenIds]);
 
   const [categoryFilter, setCategoryFilter] = useState<string | null>(null);
   // Active date preset

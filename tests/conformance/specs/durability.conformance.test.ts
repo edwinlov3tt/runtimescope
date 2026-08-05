@@ -12,7 +12,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { resolveCollectorCmd, SdkDriver, makeNetEvent } from '../harness/index.js';
@@ -88,5 +88,64 @@ describe('WAL durability', () => {
       await new Promise((r) => setTimeout(r, 100));
     }
     expect(recovered, 'all committed events recovered after SIGKILL + restart').toBe(N);
+  });
+
+  it('recovers fsync’d lines behind a tail torn mid-UTF-8-codepoint', async () => {
+    // A crash can tear the WAL inside a multi-byte UTF-8 sequence (any
+    // non-ASCII string in an event). The file is then not valid UTF-8 as a
+    // whole; recovery must still replay every complete line before the tear —
+    // a whole-file UTF-8 validation failure must never cost committed events.
+    rootDir = mkdtempSync(join(tmpdir(), 'rs-conf-dur-utf8-'));
+    const wsPort = port; const httpPort = port + 1; port += 4;
+
+    // 1. Boot once so the data dir + SQLite exist, then hard-kill.
+    current = spawnAt(rootDir, wsPort, httpPort);
+    await waitReady(httpPort);
+    current.proc.kill('SIGKILL');
+    await new Promise<void>((r) => current!.proc.on('exit', () => r()));
+
+    // 2. Fabricate the post-crash WAL: N good lines whose events carry
+    //    multi-byte UTF-8, then a final line torn mid-codepoint ('é' is
+    //    0xC3 0xA9 — only the 0xC3 byte made it to disk).
+    const N = 20;
+    const goodLines = Array.from({ length: N }, (_, i) =>
+      JSON.stringify({
+        seq: i + 1,
+        project: PROJECT,
+        event: {
+          eventId: `evt-utf8-${i}`,
+          sessionId: 'sess-utf8',
+          timestamp: Date.now(),
+          eventType: 'network',
+          url: `https://example.com/héllo/wörld/日本語/${i}`,
+          method: 'GET',
+          status: 200,
+          duration: 5,
+        },
+      })
+    );
+    const tornTail = Buffer.concat([
+      Buffer.from(`{"seq":${N + 1},"project":"${PROJECT}","event":{"eventId":"torn","msg":"h`),
+      Buffer.from([0xc3]), // first byte of a 2-byte codepoint — never completed
+    ]);
+    const walDir = join(rootDir, '.runtimescope', 'wal');
+    mkdirSync(walDir, { recursive: true });
+    writeFileSync(
+      join(walDir, 'active.jsonl'),
+      Buffer.concat([Buffer.from(goodLines.join('\n') + '\n'), tornTail])
+    );
+
+    // 3. Restart — every complete line must be healed past the tear and replayed.
+    current = spawnAt(rootDir, wsPort, httpPort);
+    await waitReady(httpPort);
+    const deadline = Date.now() + 8000;
+    let recovered = 0;
+    while (Date.now() < deadline) {
+      recovered = await fetch(`http://127.0.0.1:${httpPort}/api/events/network?project_id=${PROJECT}`)
+        .then((r) => r.json()).then((d: { count: number }) => d.count).catch(() => 0);
+      if (recovered >= N) break;
+      await new Promise((r) => setTimeout(r, 100));
+    }
+    expect(recovered, 'good lines before a torn UTF-8 tail must be recovered').toBe(N);
   });
 });

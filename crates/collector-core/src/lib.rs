@@ -158,3 +158,11 @@ pub fn project_excluded(
 pub async fn open_store() -> Result<StoreHandle, String> {
     StoreHandle::open(data_dir()).await
 }
+
+/// Open the persistent store as an ATTACHED READER — for a process (e.g. the
+/// MCP server) coexisting with a standalone collector that owns ingestion.
+/// Never opens, heals, replays, or truncates the owner's JSONL WAL, and reads
+/// session state fresh from SQLite (see [`StoreHandle::open_attached`]).
+pub async fn open_store_attached() -> Result<StoreHandle, String> {
+    StoreHandle::open_attached(data_dir()).await
+}

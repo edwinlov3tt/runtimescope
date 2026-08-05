@@ -3,8 +3,17 @@
 //! `append(events)` then `commit()` ⇒ the bytes are `fsync`'d to stable storage
 //! before `commit()` returns (`fsync(2)` — crash-durable; see `commit`). Recovery is torn-tail
 //! tolerant: replay stops at the first unparseable line, because a line that
-//! never completed its `fsync` was never durable. Mirrors `packages/collector/
-//! src/wal.ts`.
+//! never completed its `fsync` was never durable.
+//!
+//! All file scanning is BYTE-oriented, never `read_to_string`: a crash can tear
+//! the file mid-UTF-8-codepoint (any non-ASCII string in an event), and a
+//! whole-file UTF-8 validation failure must cost only the torn tail, not every
+//! fsync'd line before it.
+//!
+//! The owner takes an exclusive advisory lock (`flock`) on the WAL dir for the
+//! lifetime of the `Wal`, so a second process (e.g. an MCP server racing a
+//! standalone collector) can never heal/replay/truncate a live WAL out from
+//! under its owner.
 //!
 //! Slice scope: a single active file. Sealed-file rotation + bounded truncation
 //! (wal.ts `rotate`/`deleteSealed`) are an M1-completion TODO — not exercised by
@@ -17,49 +26,124 @@ use std::path::{Path, PathBuf};
 
 pub struct Wal {
     active: File,
+    path: PathBuf,
     seq: u64,
+    /// Set when an `append` failed partway: the file may end in a torn line.
+    /// The next `append` must heal it first, or its lines would sit behind
+    /// garbage that recovery stops at — fsync'd but unreachable.
+    needs_heal: bool,
+    /// Exclusive owner lock on the WAL dir (held open for the Wal's lifetime;
+    /// the OS releases it on process death, including SIGKILL).
+    _lock: File,
 }
 
 impl Wal {
-    /// Open (create) the active WAL under `dir`. Heals a torn tail first: a crash
-    /// mid-append can leave a partial/garbage final line; we truncate the file to
-    /// its last complete, parseable, newline-terminated line BEFORE reopening for
-    /// append, so future writes land on clean data and a later recovery doesn't
-    /// stop early and skip them (audit #4).
+    /// Open (create) the active WAL under `dir`. Takes the exclusive owner lock,
+    /// then heals a torn tail: a crash mid-append can leave a partial/garbage
+    /// final line; we truncate the file to its last complete, parseable,
+    /// newline-terminated line BEFORE reopening for append, so future writes
+    /// land on clean data and a later recovery doesn't stop early and skip them
+    /// (audit #4). Restores `seq` from the last healed line so reopened WALs
+    /// don't emit duplicate sequence numbers within one file.
     pub fn open(dir: &Path) -> std::io::Result<Self> {
         create_dir_all(dir)?;
+        let lock = Self::acquire_owner_lock(dir)?;
         let path = Self::active_path(dir);
-        Self::heal_torn_tail(&path);
+        let seq = match Self::heal_torn_tail(&path) {
+            Ok(last_seq) => last_seq,
+            Err(e) => {
+                // The active file exists but can't be read/truncated (real IO
+                // error — permissions, disk). Appending after unknown bytes
+                // risks stranding fsync'd data behind garbage, and silently
+                // starting over would discard it. Set it aside, loudly, so the
+                // bytes survive for manual recovery and the collector still
+                // boots with a clean WAL.
+                let aside = dir.join(format!(
+                    "corrupt-{}.jsonl",
+                    std::time::SystemTime::now()
+                        .duration_since(std::time::UNIX_EPOCH)
+                        .map(|d| d.as_millis())
+                        .unwrap_or(0)
+                ));
+                eprintln!(
+                    "[RuntimeScope] durability: cannot heal WAL ({e}); moving {} aside to {}",
+                    path.display(),
+                    aside.display()
+                );
+                std::fs::rename(&path, &aside)?;
+                0
+            }
+        };
         let active = OpenOptions::new().create(true).append(true).open(&path)?;
-        Ok(Wal { active, seq: 0 })
+        Ok(Wal { active, path, seq, needs_heal: false, _lock: lock })
     }
 
     fn active_path(dir: &Path) -> PathBuf {
         dir.join("active.jsonl")
     }
 
-    /// Truncate the active file to its last good-line boundary (best-effort).
-    fn heal_torn_tail(path: &Path) {
-        let Ok(content) = std::fs::read_to_string(path) else { return };
-        if content.is_empty() {
-            return;
+    /// Exclusive, non-blocking advisory lock on `dir/.owner.lock`. Fails fast
+    /// with a clear error when another live process owns this WAL — better to
+    /// refuse to start than to truncate a WAL someone else is fsyncing into.
+    fn acquire_owner_lock(dir: &Path) -> std::io::Result<File> {
+        let lock = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false) // contents irrelevant — only the flock matters
+            .open(dir.join(".owner.lock"))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            // SAFETY: `lock` owns a valid, open fd for the duration of the call.
+            if unsafe { libc::flock(lock.as_raw_fd(), libc::LOCK_EX | libc::LOCK_NB) } != 0 {
+                let os = std::io::Error::last_os_error();
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::WouldBlock,
+                    format!(
+                        "WAL at {} is owned by another running collector ({os}); \
+                         refusing to open it as a second writer",
+                        dir.display()
+                    ),
+                ));
+            }
+        }
+        Ok(lock)
+    }
+
+    /// Truncate the active file to its last good-line boundary (byte-oriented,
+    /// torn-UTF-8 safe). Returns the highest `seq` among the surviving lines.
+    fn heal_torn_tail(path: &Path) -> std::io::Result<u64> {
+        let bytes = match std::fs::read(path) {
+            Ok(b) => b,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(0),
+            Err(e) => return Err(e),
+        };
+        if bytes.is_empty() {
+            return Ok(0);
         }
         let mut valid_len = 0usize;
-        for line in content.split_inclusive('\n') {
-            if !line.ends_with('\n') {
+        let mut last_seq = 0u64;
+        for line in bytes.split_inclusive(|&b| b == b'\n') {
+            if line.last() != Some(&b'\n') {
                 break; // partial final line — never fsync'd, drop it
             }
-            let trimmed = line.trim_end();
-            if !trimmed.is_empty() && serde_json::from_str::<Value>(trimmed).is_err() {
-                break; // unparseable line — torn; stop here
+            let trimmed = line.trim_ascii();
+            if !trimmed.is_empty() {
+                match serde_json::from_slice::<Value>(trimmed) {
+                    Ok(entry) => {
+                        if let Some(s) = entry.get("seq").and_then(Value::as_u64) {
+                            last_seq = last_seq.max(s);
+                        }
+                    }
+                    Err(_) => break, // unparseable line — torn; stop here
+                }
             }
             valid_len += line.len();
         }
-        if valid_len < content.len() {
-            if let Ok(f) = OpenOptions::new().write(true).open(path) {
-                let _ = f.set_len(valid_len as u64);
-            }
+        if valid_len < bytes.len() {
+            OpenOptions::new().write(true).open(path)?.set_len(valid_len as u64)?;
         }
+        Ok(last_seq)
     }
 
     /// Clear the active WAL. Safe to call once a batch's events are durably in
@@ -77,9 +161,18 @@ impl Wal {
     /// carried because it's derived from the session at ingest time and isn't on
     /// the event itself — recovery needs it to restore project scoping. Not
     /// durable until `commit`.
+    ///
+    /// A failed write may leave a torn final line mid-run; the next call heals
+    /// it before appending (and refuses to append if it can't), so fsync'd lines
+    /// written later are never stranded behind garbage that recovery stops at.
     pub fn append(&mut self, project: &str, events: &[Value]) -> std::io::Result<()> {
         if events.is_empty() {
             return Ok(());
+        }
+        if self.needs_heal {
+            let last_seq = Self::heal_torn_tail(&self.path)?;
+            self.seq = self.seq.max(last_seq);
+            self.needs_heal = false;
         }
         let mut buf = String::new();
         for ev in events {
@@ -89,7 +182,11 @@ impl Wal {
             );
             buf.push('\n');
         }
-        self.active.write_all(buf.as_bytes())
+        if let Err(e) = self.active.write_all(buf.as_bytes()) {
+            self.needs_heal = true;
+            return Err(e);
+        }
+        Ok(())
     }
 
     /// fsync the active file. Durability contract: returns only once the appended
@@ -120,7 +217,9 @@ impl Wal {
     }
 
     /// Replay every recovery file under `dir` into a flat, ingestion-ordered
-    /// list of `(project, event)`. Torn-tail tolerant per file.
+    /// list of `(project, event)`. Torn-tail tolerant per file, byte-oriented
+    /// (a torn multi-byte codepoint costs only the line it tore, never the
+    /// fsync'd lines before it).
     pub fn recover(dir: &Path) -> Vec<(String, Value)> {
         let mut out = Vec::new();
         // Sealed files first (oldest-first by name), then the active file.
@@ -140,12 +239,24 @@ impl Wal {
         files.push(Self::active_path(dir));
 
         for path in files {
-            let Ok(raw) = std::fs::read_to_string(&path) else { continue };
-            for line in raw.split('\n') {
-                if line.trim().is_empty() {
+            let raw = match std::fs::read(&path) {
+                Ok(b) => b,
+                Err(e) => {
+                    if e.kind() != std::io::ErrorKind::NotFound {
+                        eprintln!(
+                            "[RuntimeScope] durability: cannot read WAL file {} during recovery: {e}",
+                            path.display()
+                        );
+                    }
                     continue;
                 }
-                match serde_json::from_str::<Value>(line) {
+            };
+            for line in raw.split(|&b| b == b'\n') {
+                let trimmed = line.trim_ascii();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                match serde_json::from_slice::<Value>(trimmed) {
                     Ok(entry) => {
                         if let Some(ev) = entry.get("event") {
                             let project = entry
@@ -207,6 +318,80 @@ mod tests {
         assert_eq!(recovered.len(), 2, "post-tear append must survive recovery");
         assert_eq!(recovered[0].1["eventId"], "e1");
         assert_eq!(recovered[1].1["eventId"], "e2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn torn_utf8_tail_heals_and_keeps_prior_lines() {
+        // The tear can split a multi-byte UTF-8 codepoint (any non-ASCII string
+        // in an event). The file is then not valid UTF-8 as a whole; healing and
+        // recovery must still keep every complete line before the tear instead
+        // of dropping the entire file.
+        let dir = std::env::temp_dir().join(format!("wal-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let good = json!({ "seq": 1, "project": "p", "event": { "eventId": "e1", "msg": "héllo wörld" } }).to_string();
+        let mut bytes = good.clone().into_bytes();
+        bytes.push(b'\n');
+        // Torn line ending mid-codepoint: 'é' is 0xC3 0xA9 — write only 0xC3.
+        bytes.extend_from_slice(b"{\"seq\":2,\"project\":\"p\",\"event\":{\"msg\":\"h");
+        bytes.push(0xC3);
+        std::fs::write(dir.join("active.jsonl"), &bytes).unwrap();
+
+        // Recovery before healing must keep the good line (byte-oriented scan).
+        let recovered = Wal::recover(&dir);
+        assert_eq!(recovered.len(), 1, "good line before a torn codepoint must survive");
+        assert_eq!(recovered[0].1["eventId"], "e1");
+
+        // Healing must truncate only the torn tail; appends after it must land
+        // on clean data and be recoverable.
+        let mut wal = Wal::open(&dir).unwrap();
+        wal.append("p", &[json!({ "eventId": "e2" })]).unwrap();
+        wal.commit().unwrap();
+        drop(wal);
+        let recovered = Wal::recover(&dir);
+        assert_eq!(recovered.len(), 2, "post-heal append must survive recovery");
+        assert_eq!(recovered[1].1["eventId"], "e2");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn reopen_resumes_seq_after_healed_lines() {
+        // seq must not restart at 0 while the active file still holds lines with
+        // higher seqs — duplicate seq values would corrupt any consumer that
+        // orders by it.
+        let dir = std::env::temp_dir().join(format!("wal-seq-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        {
+            let mut wal = Wal::open(&dir).unwrap();
+            wal.append("p", &[json!({ "eventId": "e1" }), json!({ "eventId": "e2" })]).unwrap();
+            wal.commit().unwrap();
+        }
+        {
+            let mut wal = Wal::open(&dir).unwrap();
+            wal.append("p", &[json!({ "eventId": "e3" })]).unwrap();
+            wal.commit().unwrap();
+        }
+        let raw = std::fs::read_to_string(dir.join("active.jsonl")).unwrap();
+        let seqs: Vec<u64> = raw
+            .lines()
+            .map(|l| serde_json::from_str::<Value>(l).unwrap()["seq"].as_u64().unwrap())
+            .collect();
+        assert_eq!(seqs, vec![1, 2, 3], "reopen must resume seq, not restart it");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn second_owner_open_is_refused_while_first_is_live() {
+        let dir = std::env::temp_dir().join(format!("wal-lock-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let wal = Wal::open(&dir).unwrap();
+        let second = Wal::open(&dir);
+        assert!(second.is_err(), "a second live owner must be refused");
+        drop(wal);
+        // After the first owner is gone, opening succeeds again.
+        assert!(Wal::open(&dir).is_ok(), "lock must be released with the owner");
         std::fs::remove_dir_all(&dir).ok();
     }
 

@@ -73,7 +73,7 @@ pub struct SnapshotRow {
     pub metrics: Value,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct SessionInfo {
     pub session_id: String,
     /// The app/project display name (NOT the runtime projectId — audit #7).
@@ -167,13 +167,33 @@ impl StoreHandle {
     /// Open the store at `data_dir` (creating it), run WAL recovery, and return
     /// once recovery is complete (so `/readyz` is honest about being warm).
     pub async fn open(data_dir: PathBuf) -> Result<StoreHandle, String> {
-        Self::open_with_cap(data_dir, None).await
+        Self::open_inner(data_dir, None, false).await
+    }
+
+    /// Open the store as an ATTACHED READER: a standalone collector already owns
+    /// this data dir (it holds the WAL owner lock and runs ingestion + the
+    /// retention sweep). Attach mode must never heal/replay/truncate the live
+    /// JSONL WAL — `set_len` from a second process can chop lines the owner has
+    /// fsync'd but not yet committed to SQLite. SQLite itself is fine to share
+    /// (WAL journal mode + busy_timeout); writes this process makes (e.g.
+    /// snapshots) go straight into SQLite transactions.
+    ///
+    /// Session reads re-query SQLite per request — the owner keeps the sessions
+    /// table (including `is_connected`) current, and this process's in-memory
+    /// list would otherwise be frozen at open.
+    pub async fn open_attached(data_dir: PathBuf) -> Result<StoreHandle, String> {
+        Self::open_inner(data_dir, None, true).await
     }
 
     /// Like `open`, but with an explicit hot-tier cap override. Tests use a tiny
     /// cap to exercise the capped (`events_by_type`) vs full-history
     /// (`events_by_type_full`) read paths without inserting 10k+ rows.
+    #[cfg(test)]
     pub(crate) async fn open_with_cap(data_dir: PathBuf, cap_override: Option<usize>) -> Result<StoreHandle, String> {
+        Self::open_inner(data_dir, cap_override, false).await
+    }
+
+    async fn open_inner(data_dir: PathBuf, cap_override: Option<usize>, attach: bool) -> Result<StoreHandle, String> {
         let (tx, mut rx) = mpsc::channel::<Cmd>(1024);
         let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
         // Live feed for dashboard WS clients. Lagging/slow clients drop frames
@@ -182,21 +202,47 @@ impl StoreHandle {
         let bcast = events_tx.clone();
 
         std::thread::spawn(move || {
-            let init = (|| -> Result<(Connection, Wal), String> {
+            let init = (|| -> Result<(Connection, Option<Wal>), String> {
                 std::fs::create_dir_all(&data_dir).map_err(|e| e.to_string())?;
                 let conn = Connection::open(data_dir.join("collector.db")).map_err(|e| e.to_string())?;
+                // Two processes can share collector.db (standalone owner + an
+                // attached MCP reader) — wait out the other's write locks
+                // instead of surfacing SQLITE_BUSY.
+                conn.busy_timeout(std::time::Duration::from_secs(5)).map_err(|e| e.to_string())?;
                 conn.pragma_update(None, "journal_mode", "WAL").map_err(|e| e.to_string())?;
                 conn.pragma_update(None, "synchronous", "NORMAL").map_err(|e| e.to_string())?;
                 conn.execute_batch(SCHEMA).map_err(|e| e.to_string())?;
+                if attach {
+                    // Attached reader: the standalone owner holds the WAL lock and
+                    // does recovery itself. Touching its live WAL here would race
+                    // its fsyncs (see open_attached).
+                    return Ok((conn, None));
+                }
                 let mut wal = Wal::open(&data_dir.join("wal")).map_err(|e| e.to_string())?;
-                // Recover: replay the JSONL WAL into SQLite (deduped by event_id).
-                for (project, ev) in Wal::recover(&data_dir.join("wal")) {
-                    let _ = insert_event(&conn, &project, &ev);
+                // Recover: replay the JSONL WAL into SQLite (deduped by event_id),
+                // atomically. A replay error ABORTS the open with the WAL intact —
+                // truncating after a failed replay would delete the only durable
+                // copy of those events (never discard a Result on a write path).
+                let recovered = Wal::recover(&data_dir.join("wal"));
+                if !recovered.is_empty() {
+                    let tx = conn.unchecked_transaction().map_err(|e| e.to_string())?;
+                    for (project, ev) in &recovered {
+                        insert_event(&conn, project, ev).map_err(|e| {
+                            format!("WAL replay failed — events preserved in the WAL: {e}")
+                        })?;
+                    }
+                    tx.commit()
+                        .map_err(|e| format!("WAL replay commit failed — events preserved in the WAL: {e}"))?;
+                    eprintln!("[RuntimeScope] recovered {} event(s) from the WAL", recovered.len());
                 }
                 // Recovered events are now durable in SQLite — clear the redundant
                 // JSONL WAL so boot stays O(in-flight), not O(history) (audit #3).
-                let _ = wal.truncate();
-                Ok((conn, wal))
+                // A truncate failure is safe to continue past: replaying
+                // already-stored events on the next boot is a dedup no-op.
+                if let Err(e) = wal.truncate() {
+                    eprintln!("[RuntimeScope] WAL truncate after recovery failed: {e}");
+                }
+                Ok((conn, Some(wal)))
             })();
 
             let (conn, mut wal) = match init {
@@ -267,16 +313,20 @@ impl StoreHandle {
 
                         let mut err: Option<String> = None;
                         // 1) WAL: append every batch, then ONE fsync for the group.
-                        for (project, events, _) in &group {
-                            if let Err(e) = wal.append(project, events) {
-                                eprintln!("[RuntimeScope] durability: WAL append failed: {e}");
-                                err.get_or_insert(format!("WAL: {e}"));
+                        //    (Attach mode has no WAL — the standalone owner does; this
+                        //    process's rare writes rely on the SQLite txn below.)
+                        if let Some(wal) = wal.as_mut() {
+                            for (project, events, _) in &group {
+                                if let Err(e) = wal.append(project, events) {
+                                    eprintln!("[RuntimeScope] durability: WAL append failed: {e}");
+                                    err.get_or_insert(format!("WAL: {e}"));
+                                }
                             }
-                        }
-                        if err.is_none() {
-                            if let Err(e) = wal.commit() {
-                                eprintln!("[RuntimeScope] durability: WAL fsync failed: {e}");
-                                err.get_or_insert(format!("WAL: {e}"));
+                            if err.is_none() {
+                                if let Err(e) = wal.commit() {
+                                    eprintln!("[RuntimeScope] durability: WAL fsync failed: {e}");
+                                    err.get_or_insert(format!("WAL: {e}"));
+                                }
                             }
                         }
                         // 2) Cumulative per-type accept counters (every event).
@@ -314,8 +364,10 @@ impl StoreHandle {
                         // 4) Group is durable in SQLite — truncate the JSONL WAL once
                         //    (audit #3), only if every write succeeded.
                         if err.is_none() {
-                            if let Err(e) = wal.truncate() {
-                                eprintln!("[RuntimeScope] WAL truncate failed: {e}");
+                            if let Some(wal) = wal.as_mut() {
+                                if let Err(e) = wal.truncate() {
+                                    eprintln!("[RuntimeScope] WAL truncate failed: {e}");
+                                }
                             }
                         }
                         // 5) Live feed: push each event to dashboard WS clients
@@ -421,14 +473,23 @@ impl StoreHandle {
                         // Attach the live per-session event count (Node's
                         // SessionInfo.eventCount) from SQLite — one grouped query.
                         let counts = session_event_counts(&conn);
-                        let mut list = sessions.clone();
+                        // Attach mode: the standalone owner registers sessions and
+                        // keeps is_connected current in SQLite — this process's
+                        // in-memory list is frozen at open, so re-read per query.
+                        let mut list =
+                            if attach { load_sessions_live(&conn) } else { sessions.clone() };
                         for s in &mut list {
                             s.event_count = counts.get(&s.session_id).copied().unwrap_or(0);
                         }
                         let _ = reply.send(list);
                     }
                     Cmd::ConnectedCount { reply } => {
-                        let _ = reply.send(sessions.iter().filter(|s| s.is_connected).count());
+                        let count = if attach {
+                            load_sessions_live(&conn).iter().filter(|s| s.is_connected).count()
+                        } else {
+                            sessions.iter().filter(|s| s.is_connected).count()
+                        };
+                        let _ = reply.send(count);
                     }
                     Cmd::EventsByType { event_type, project, reply } => {
                         let _ = reply.send(query_events(&conn, &event_type, project.as_deref(), cap));
@@ -463,14 +524,27 @@ impl StoreHandle {
                         // App-scoped (not projectId-scoped): events belonging to a
                         // session of this appName. Disambiguates the monorepo case
                         // where several apps share one projectId (Node's per-app
-                        // SQLite store equivalent).
-                        let sids: Vec<String> =
-                            sessions.iter().filter(|s| s.app_name == app).map(|s| s.session_id.clone()).collect();
+                        // SQLite store equivalent). Attach mode reads the sessions
+                        // the standalone owner registered, not the frozen list.
+                        let fresh = if attach { Some(load_sessions_live(&conn)) } else { None };
+                        let sids: Vec<String> = fresh
+                            .as_deref()
+                            .unwrap_or(&sessions)
+                            .iter()
+                            .filter(|s| s.app_name == app)
+                            .map(|s| s.session_id.clone())
+                            .collect();
                         let _ = reply.send(query_events_for_sessions(&conn, &sids));
                     }
                     Cmd::EventCountForApp { app, reply } => {
-                        let sids: Vec<String> =
-                            sessions.iter().filter(|s| s.app_name == app).map(|s| s.session_id.clone()).collect();
+                        let fresh = if attach { Some(load_sessions_live(&conn)) } else { None };
+                        let sids: Vec<String> = fresh
+                            .as_deref()
+                            .unwrap_or(&sessions)
+                            .iter()
+                            .filter(|s| s.app_name == app)
+                            .map(|s| s.session_id.clone())
+                            .collect();
                         let _ = reply.send(count_events_for_sessions(&conn, &sids));
                     }
                     Cmd::SaveSnapshot { session_id, project, label, created_at, metrics, reply } => {
@@ -696,6 +770,30 @@ fn load_sessions(conn: &Connection) -> Vec<SessionInfo> {
             project_id: r.get(2)?,
             connected_at: r.get(3)?,
             is_connected: false,
+            event_count: 0,
+        })
+    });
+    rows.map(|rows| rows.flatten().collect()).unwrap_or_default()
+}
+
+/// Attach-mode session reads: the standalone owner keeps the sessions table —
+/// INCLUDING `is_connected` — current in SQLite, so an attached process re-reads
+/// it per query instead of trusting its own in-memory list (which only this
+/// process's never-arriving RegisterSession commands would update).
+fn load_sessions_live(conn: &Connection) -> Vec<SessionInfo> {
+    let mut stmt = match conn.prepare(
+        "SELECT session_id, app_name, project_id, connected_at, is_connected FROM sessions",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = stmt.query_map([], |r| {
+        Ok(SessionInfo {
+            session_id: r.get(0)?,
+            app_name: r.get(1)?,
+            project_id: r.get(2)?,
+            connected_at: r.get(3)?,
+            is_connected: r.get::<_, i64>(4)? != 0,
             event_count: 0,
         })
     });
@@ -1046,6 +1144,63 @@ mod tests {
         // The projectId scope, by contrast, holds BOTH apps' events.
         assert!(store.event_count(Some("projShared")).await > store.event_count_for_app("app-alpha").await);
         assert_eq!(store.event_count_for_app("app-alpha").await, alpha.len());
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // Attach mode (a standalone collector owns the data dir): an attached
+    // reader must never replay or truncate the owner's live JSONL WAL, and it
+    // must see sessions the owner registers after the attach — both halves of
+    // the concurrent-writer race from the Phase-1 durability audit.
+    #[tokio::test]
+    async fn attach_mode_leaves_the_wal_alone_but_sees_owner_sessions() {
+        let dir = std::env::temp_dir().join(format!("store-attach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+
+        // The "standalone owner" (holds the WAL owner lock).
+        let owner = StoreHandle::open(dir.clone()).await.unwrap();
+
+        // Simulate fsync'd-but-not-yet-committed bytes sitting in the owner's
+        // live WAL at the moment a second process attaches.
+        let line = serde_json::json!({
+            "seq": 1, "project": "p",
+            "event": { "eventId": "inflight-1", "sessionId": "sidX", "timestamp": 1, "eventType": "network" }
+        })
+        .to_string();
+        let wal_path = dir.join("wal").join("active.jsonl");
+        std::fs::write(&wal_path, format!("{line}\n")).unwrap();
+
+        let attached = StoreHandle::open_attached(dir.clone()).await.unwrap();
+
+        // (1) The owner's WAL is byte-for-byte untouched and was NOT replayed.
+        assert_eq!(
+            std::fs::read_to_string(&wal_path).unwrap(),
+            format!("{line}\n"),
+            "attach must not heal/replay/truncate the owner's WAL"
+        );
+        assert_eq!(
+            attached.event_count(Some("p")).await,
+            0,
+            "attach must not replay the owner's in-flight WAL into SQLite"
+        );
+
+        // (2) Sessions the owner registers AFTER the attach are visible, live —
+        //     the attached reader re-reads SQLite instead of a frozen list.
+        owner.register_session("sid-late".into(), "app-late".into(), None).await;
+        // register_session is fire-and-forget; round-trip the owner's command
+        // loop so the registration is persisted before the attached read.
+        let _ = owner.sessions().await;
+        let seen = attached.sessions().await;
+        assert!(
+            seen.iter().any(|s| s.session_id == "sid-late" && s.is_connected),
+            "attached reader must see owner-registered sessions: {seen:?}"
+        );
+        assert_eq!(attached.connected_count().await, 1);
+        assert_eq!(
+            attached.event_count_for_app("app-late").await,
+            owner.event_count_for_app("app-late").await,
+            "app-scoped reads must agree between owner and attached reader"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

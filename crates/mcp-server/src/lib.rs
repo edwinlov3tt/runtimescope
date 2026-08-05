@@ -105,15 +105,24 @@ async fn prepare() -> Result<(StoreHandle, CommandHub, PmStore), Box<dyn std::er
     // First-run cutover guard: back up legacy Node-era data before opening the
     // stores (or leave it with RUNTIMESCOPE_PRESERVE_LEGACY_DATA=1) — M6 Slice D.
     collector_core::migration::first_run_guard(&data_dir()).map_err(std::io::Error::other)?;
-    let store = open_store().await?;
+    // Decide embed-vs-attach BEFORE opening the store: owner-mode open heals,
+    // replays, and truncates the shared JSONL WAL, which must never happen while
+    // a standalone collector owns it (it may have fsync'd lines not yet in
+    // SQLite). Attach mode opens the same SQLite db as a pure reader instead.
+    // (Belt-and-braces: even if this probe races a starting standalone, the
+    // WAL's exclusive owner lock makes the loser fail fast rather than truncate.)
+    let attached = collector_already_running(http_port).await;
+    let store = if attached { collector_core::open_store_attached().await? } else { open_store().await? };
     let hub = CommandHub::new();
     // pm/ store (M5): separate pm.db alongside the event store's collector.db.
     let pm = PmStore::open(&data_dir().join("pm.db"))?;
 
-    if collector_already_running(http_port).await {
+    if attached {
         eprintln!(
             "[RuntimeScope] attached to the collector already serving :{http_port} \
-             (reading its store; not starting a second collector)"
+             (reading its store; not starting a second collector). Session-targeted \
+             live captures (e.g. get_dom_snapshot) need the SDK's WS connection, \
+             which the standalone owns — they are unavailable in attach mode."
         );
     } else {
         let serve_store = store.clone();
